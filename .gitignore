@@ -1,0 +1,50 @@
+# Dependencies
+node_modules/
+/.pnp
+.pnp.js
+
+# Expo
+.expo/
+.expo-shared/
+dist/
+npm-debug.*
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+*.orig.*
+web-build/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Firebase
+firebase-key.json
+.firebaserc
+
+# Data / Testing
+data/motion-calibration/*.json
+data/beta-feedback/*.json
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+
+# Logs
+logs/
+*.log
