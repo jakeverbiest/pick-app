@@ -47,7 +47,20 @@ Weekly progress, learnings, and metrics. Updated every Friday.
 
 ## Week 2 (June 9-15, 2026)
 
-TBD
+### ✅ Completed (so far)
+- [x] Weight Calibration system (Task #22) — learns lb/pickup from scale weigh-ins, replaces 0.05 hardcode; Settings calibration card
+- [x] Draft Privacy Policy + Terms of Service (`/legal/`) — app-store blockers, pending lawyer review
+- [x] CONTEXT.md brought current (was stale at May 31)
+- [x] Fixed duplicate style prop bug in settings.tsx Danger Zone
+
+### 🔧 Work in Progress
+- False positive reduction (needs field data from calibrated walks)
+- Task #20 remainder: visual design pass
+
+### 🎯 Next
+- First calibrated walk: weigh haul, enter scale weight, confirm factor updates
+- 2-3 more weigh-ins to activate calibration (replaces default at 2 samples)
+- App store prep checklist
 
 ---
 
