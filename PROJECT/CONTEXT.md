@@ -34,6 +34,8 @@ Since the May 31 detector validation, the app gained (June 3–10 sessions):
 
 **Bags metric everywhere (June 10):** Profile shows "Bags Collected" card + total weight ≈ bags; Leaderboard weight metric now displays as bags.
 
+**Validation walk #2 (June 10, evening, rules live):** 91 actual pickups, 68 registered, of which ~7 were stair false-positives → ~61/91 = **67% recall** (up from 40% with old thresholds), FP source identified: descending stairs. Scale: 2.5 lb gross − 1.7 lb bucket = **0.8 lb net** → real factor ≈ 0.012 lb/detected item (old 0.05 default over-estimated ~4x). No weight entered in-app, so calibration unpoisoned. **Responses shipped:** (1) flight recorder — every motion event (peak/duration/gyro/confidence/reason) recorded on-device and included in session export, so off-WiFi walks now produce tuning data; (2) tare warning in weight entry ("net weight only"); (3) manual weigh-in entry in Settings calibration card. **Next tuning question:** do stair events differ from pickups on gyro? Flight recorder will answer on the next walk.
+
 **Known issues / open items:**
 1. **False positives** — Jake reports "a huge amount" in real walks (e.g., 256 items in 22 min). Re-measure after the June 10 threshold fix; consider gyro discrimination next.
 1b. **Segment system untested in field** — verify Overpass fetch on phone, snap quality with 20s GPS intervals (may need denser GPS during cleanup), and Firestore write volume.

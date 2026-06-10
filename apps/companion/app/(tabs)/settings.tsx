@@ -25,6 +25,26 @@ export default function SettingsScreen() {
   const [devMode, setDevMode] = useState(false);
   const [calibration, setCalibration] = useState<CalibrationState | null>(null);
   const [legalDoc, setLegalDoc] = useState<'privacy' | 'terms' | null>(null);
+  const [manualItems, setManualItems] = useState('');
+  const [manualWeight, setManualWeight] = useState('');
+
+  const addManualWeighIn = async () => {
+    const items = parseInt(manualItems, 10);
+    const weight = parseFloat(manualWeight);
+    if (!items || items <= 0 || !weight || weight <= 0) {
+      Alert.alert('⚠️ Check values', 'Enter the detected pickup count and the NET trash weight (bucket subtracted).');
+      return;
+    }
+    const state = await weightCalibration.addSample(items, weight, 'manual');
+    if (state) {
+      setCalibration(state);
+      setManualItems('');
+      setManualWeight('');
+      Alert.alert('✅ Weigh-in added', `Factor is now ${state.factor.toFixed(3)} lb/pickup (${state.sampleCount} sample${state.sampleCount === 1 ? '' : 's'})`);
+    } else {
+      Alert.alert('⚠️ Rejected', 'That combination is implausible (factor outside 0.001–2.0 lb/item). Double-check the numbers.');
+    }
+  };
 
   useEffect(() => {
     loadSettings();
@@ -351,6 +371,33 @@ export default function SettingsScreen() {
                 Need {2 - (calibration?.sampleCount ?? 0)} more weigh-in{(2 - (calibration?.sampleCount ?? 0)) === 1 ? '' : 's'} to replace the 0.05 default
               </Text>
             )}
+          </View>
+
+          {/* Manual weigh-in (e.g., logging a walk after the fact) */}
+          <View style={styles.manualWeighInBox}>
+            <Text style={styles.calibrationSamplesTitle}>Add a weigh-in manually</Text>
+            <View style={styles.manualWeighInRow}>
+              <TextInput
+                style={styles.manualWeighInInput}
+                placeholder="Pickups detected"
+                keyboardType="number-pad"
+                value={manualItems}
+                onChangeText={setManualItems}
+              />
+              <TextInput
+                style={styles.manualWeighInInput}
+                placeholder="Net trash lb"
+                keyboardType="decimal-pad"
+                value={manualWeight}
+                onChangeText={setManualWeight}
+              />
+              <TouchableOpacity style={styles.manualWeighInButton} onPress={addManualWeighIn}>
+                <Text style={styles.manualWeighInButtonText}>Add</Text>
+              </TouchableOpacity>
+            </View>
+            <Text style={styles.teamInputHint}>
+              Net weight = scale reading minus your bucket/bag
+            </Text>
           </View>
 
           {(calibration?.samples?.length ?? 0) > 0 && (
@@ -1018,6 +1065,40 @@ const styles = StyleSheet.create({
     color: '#666',
     textAlign: 'center',
     marginTop: 4,
+  },
+  manualWeighInBox: {
+    backgroundColor: COLORS.white,
+    borderRadius: 8,
+    padding: 12,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: '#e0e8dc',
+  },
+  manualWeighInRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginBottom: 6,
+  },
+  manualWeighInInput: {
+    flex: 1,
+    borderWidth: 1,
+    borderColor: '#ddd',
+    borderRadius: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 8,
+    fontSize: 12,
+    color: COLORS.darkSage,
+  },
+  manualWeighInButton: {
+    backgroundColor: COLORS.accent,
+    borderRadius: 6,
+    paddingHorizontal: 16,
+    justifyContent: 'center',
+  },
+  manualWeighInButtonText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#fff',
   },
   calibrationSamplesBox: {
     backgroundColor: COLORS.light,

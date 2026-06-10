@@ -26,8 +26,26 @@ interface TuningParams {
   cooldownMs: number;
 }
 
+/**
+ * Flight-recorder entry: every finalized motion event, accepted or not.
+ * Survives off-WiFi walks (kept in memory, included in session export)
+ * so threshold tuning never depends on a live Metro console again.
+ */
+export interface MotionEventRecord {
+  t: number; // seconds since session start
+  peak: number; // g
+  duration: number; // ms
+  peakTime: number; // ms from motion start
+  gyro: number; // peak gyro during motion
+  confidence: number;
+  accepted: boolean;
+  reason: string; // 'ok' or rejection reason
+}
+
 class MotionDetector {
   private pickupEvents: PickupEvent[] = [];
+  private sessionEvents: MotionEventRecord[] = [];
+  private sessionStartTime: number = 0;
   private lastPickupTime: number = 0;
   private isListening: boolean = false;
   private accelSubscription: any = null;
@@ -59,6 +77,8 @@ class MotionDetector {
       this.onPickupCallback = onPickup || null;
       this.onErrorCallback = onError || null;
       this.isListening = true;
+      this.sessionEvents = [];
+      this.sessionStartTime = Date.now();
 
       // Request location permissions
       const { status } = await Location.requestForegroundPermissionsAsync();
@@ -139,37 +159,44 @@ class MotionDetector {
       if (MotionShapeDetector.shouldFinalize(magnitude, now)) {
         const profile = MotionShapeDetector.finalizeProfile();
         if (profile) {
-          const confidence = MotionShapeDetector.analyzeProfile();
-          // analyzeProfile was already called, so get the finalized one
-          const finalConfidence = this.evaluateProfile(profile);
+          const result = evaluatePickupProfile({
+            duration: profile.duration,
+            peakAccel: profile.peakAccel,
+            peakAccelTime: profile.peakAccelTime,
+            peakGyro: profile.peakGyro,
+            lastAccel: profile.samples[profile.samples.length - 1].accel,
+          });
+          const finalConfidence = result.confidence;
+          const accepted = finalConfidence > 30;
 
-          console.log(`⏸️ Motion stopped. Duration: ${profile.duration}ms, Peak: ${profile.peakAccel.toFixed(2)}g, Confidence: ${finalConfidence}%`);
+          // Flight recorder: every event, accepted or not (export-friendly)
+          this.sessionEvents.push({
+            t: Math.round((Date.now() - this.sessionStartTime) / 1000),
+            peak: Math.round(profile.peakAccel * 100) / 100,
+            duration: profile.duration,
+            peakTime: profile.peakAccelTime,
+            gyro: Math.round(profile.peakGyro * 100) / 100,
+            confidence: finalConfidence,
+            accepted,
+            reason: result.reason,
+          });
 
-          if (finalConfidence > 30) {
+          console.log(`⏸️ Motion stopped. Duration: ${profile.duration}ms, Peak: ${profile.peakAccel.toFixed(2)}g, Gyro: ${profile.peakGyro.toFixed(2)}, Confidence: ${finalConfidence}%`);
+
+          if (accepted) {
             // Confidence threshold: lowered from 40 to 30 to catch more pickups
             this.detectPickupFromShape(now, profile, finalConfidence);
           } else {
-            console.log(`⛔ Failed confidence check (${finalConfidence}% < 30%)`);
+            console.log(`⛔ Rejected: ${result.reason} (confidence ${finalConfidence}%)`);
           }
         }
       }
     }
   }
 
-  private evaluateProfile(profile: any): number {
-    // Pure scoring lives in motionEvaluation.ts (single source of truth for
-    // thresholds; regression-tested against the June 10 field log).
-    const result = evaluatePickupProfile({
-      duration: profile.duration,
-      peakAccel: profile.peakAccel,
-      peakAccelTime: profile.peakAccelTime,
-      peakGyro: profile.peakGyro,
-      lastAccel: profile.samples[profile.samples.length - 1].accel,
-    });
-    if (result.confidence === 0) {
-      console.log(`❌ ${result.reason}`);
-    }
-    return result.confidence;
+  /** Flight recorder: all motion events from the current/last session. */
+  getSessionEvents(): MotionEventRecord[] {
+    return [...this.sessionEvents];
   }
 
   private detectPickupFromShape(timestamp: number, profile: any, confidence: number) {
