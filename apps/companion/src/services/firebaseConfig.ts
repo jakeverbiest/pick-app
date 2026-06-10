@@ -34,13 +34,24 @@ console.log('✅ Firebase app initialized');
 // Initialize Auth with AsyncStorage persistence exactly once.
 // initializeAuth throws if called twice (e.g., Fast Refresh) — fall back to
 // the existing instance.
+//
+// NOTE: getReactNativePersistence only exists in firebase's React Native
+// bundle. metro.config.js (unstable_enablePackageExports = false) is what
+// makes Metro load that bundle — if it's missing/removed, we degrade to
+// memory persistence (logins won't survive restarts) instead of crashing.
 let firebaseAuth: Auth;
 try {
-  firebaseAuth = initializeAuth(firebaseApp, {
-    persistence: getReactNativePersistence(AsyncStorage),
-  });
-  console.log('✅ Firebase Auth initialized with AsyncStorage persistence');
+  if (typeof getReactNativePersistence === 'function') {
+    firebaseAuth = initializeAuth(firebaseApp, {
+      persistence: getReactNativePersistence(AsyncStorage),
+    });
+    console.log('✅ Firebase Auth initialized with AsyncStorage persistence');
+  } else {
+    firebaseAuth = initializeAuth(firebaseApp);
+    console.warn('⚠️ RN persistence unavailable (wrong firebase bundle?) — auth will NOT survive app restarts. Check metro.config.js.');
+  }
 } catch {
+  // Already initialized (Fast Refresh re-evaluation)
   firebaseAuth = getAuth(firebaseApp);
   console.log('✅ Firebase Auth already initialized — reusing instance');
 }
