@@ -422,6 +422,7 @@ export default function MapScreen() {
         team: 'solo',
         fitness_tracked: false,
         route_points: JSON.stringify(sessionRoute.map(p => [p.lat, p.lon])),
+        motion_log: JSON.stringify(MotionDetector.getSessionEvents()),
       } as any);
 
       const updatedStats = await db.getCleanupStats();

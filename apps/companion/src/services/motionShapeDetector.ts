@@ -19,9 +19,13 @@ class MotionShapeDetector {
   private recordingProfile: MotionProfile | null = null;
   private isRecording = false;
   private minMotionDuration = 500; // ms - lowered from 800 to catch quicker pickups
-  private maxMotionDuration = 2500; // ms - ground truth shows actual pickups 1.2-2.2s, force-eval at 2.5s to avoid post-motion noise
+  private maxMotionDuration = 2500; // ms - backstop only; settle check below should close windows sooner
   private readonly ACCEL_THRESHOLD = 0.8; // g - lowered from 1.1 to catch gentler picks
-  private readonly ACCEL_SETTLE_THRESHOLD = 0.7; // g - lowered from 0.9
+  // GRAVITY FIX (June 10): a phone at rest reads 1.0g, not 0g — the old
+  // settle threshold (accel < 0.7g) could NEVER fire, so every window ran
+  // the full 2.5s and spree pickups merged into one detection.
+  // "Settled" now means accel within ±SETTLE_BAND of 1.0g (resting gravity).
+  private readonly SETTLE_BAND = 0.12; // g around 1.0 = "at rest"
   private readonly SETTLING_TIME = 300; // ms - must stay settled this long
 
   startRecording(timestamp: number) {
@@ -136,12 +140,15 @@ class MotionShapeDetector {
       return false;
     }
 
-    // If accel has settled below threshold, we can finalize
-    if (currentAccel < this.ACCEL_SETTLE_THRESHOLD) {
-      // Check if last few samples show sustained settling
+    // If accel has settled back to resting gravity (~1.0g), finalize early.
+    // This is what lets back-to-back spree pickups each get their own window.
+    const isResting = (a: number) => Math.abs(a - 1.0) <= this.SETTLE_BAND;
+    if (isResting(currentAccel)) {
+      // Sustained: current + last 3 samples (~300ms at 100ms cadence) all at rest
       const recentSamples = this.recordingProfile.samples.slice(-3);
-      const allSettled = recentSamples.every((s) => s.accel < this.ACCEL_SETTLE_THRESHOLD);
+      const allSettled = recentSamples.length >= 3 && recentSamples.every((s) => isResting(s.accel));
       if (allSettled) {
+        console.log(`✅ Settled naturally after ${duration}ms (accel ~1.0g)`);
         return true;
       }
     }

@@ -44,6 +44,7 @@ export interface Cleanup {
   fitness_tracked: boolean;
   notes?: string;
   route_points?: string; // JSON array of [lat, lon] pairs
+  motion_log?: string; // JSON flight-recorder events (tuning data, ~100B/event)
   synced?: boolean;
 }
 

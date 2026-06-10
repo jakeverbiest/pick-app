@@ -89,6 +89,7 @@ export default function ActivityScreen() {
           lon: cleanup.location_lon,
         },
         route_points: cleanup.route_points ? JSON.parse(cleanup.route_points) : [],
+        motion_log: cleanup.motion_log ? JSON.parse(cleanup.motion_log) : 'not recorded (pre-flight-recorder walk)',
         notes: cleanup.notes || 'N/A',
       };
 
