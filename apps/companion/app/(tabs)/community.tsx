@@ -3,7 +3,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useState, useEffect, useCallback } from 'react';
 import { useFocusEffect } from '@react-navigation/native';
 import { getDatabase } from '../../src/services/firebaseDatabase';
-import { getAuthService } from '../../src/services/simpleAuthService';
+import { getAuthService } from '../../src/services/authService';
 import { COLORS, SPACING, RADIUS } from '../../src/constants/colors';
 
 interface Challenge {

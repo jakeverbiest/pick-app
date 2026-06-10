@@ -3,7 +3,8 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useState, useEffect, useCallback } from 'react';
 import { useFocusEffect } from '@react-navigation/native';
 import { getDatabase } from '../../src/services/firebaseDatabase';
-import { getAuthService } from '../../src/services/simpleAuthService';
+import { getAuthService } from '../../src/services/authService';
+import { weightToBags, formatBags } from '../../src/services/impactMetrics';
 import { COLORS, SPACING, RADIUS } from '../../src/constants/colors';
 
 type SortMetric = 'pickups' | 'weight' | 'days';
@@ -67,7 +68,7 @@ export default function LeaderboardScreen() {
       case 'pickups':
         return entry.total_pickups.toString();
       case 'weight':
-        return (entry.total_weight as number).toFixed(1) + ' lb';
+        return formatBags(weightToBags(entry.total_weight as number));
       case 'days':
         return entry.total_days.toString();
       default:
@@ -77,7 +78,7 @@ export default function LeaderboardScreen() {
 
   const metricLabel = {
     pickups: 'Pickups',
-    weight: 'Weight',
+    weight: 'Bags',
     days: 'Active Days',
   };
 

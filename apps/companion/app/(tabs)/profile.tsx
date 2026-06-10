@@ -2,8 +2,9 @@ import { View, Text, StyleSheet, ScrollView } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useState, useEffect } from 'react';
 import { getDatabase } from '../../src/services/database';
-import { getAuthService } from '../../src/services/simpleAuthService';
+import { getAuthService } from '../../src/services/authService';
 import { getBadgeService } from '../../src/services/badgeService';
+import { weightToBags, formatBags } from '../../src/services/impactMetrics';
 import { COLORS, SPACING, RADIUS } from '../../src/constants/colors';
 
 export default function ProfileScreen() {
@@ -65,8 +66,8 @@ export default function ProfileScreen() {
             <Text style={styles.statLabel}>Cleanups</Text>
           </View>
           <View style={styles.statCard}>
-            <Text style={styles.statValue}>{((stats?.total_weight || 0) as number).toFixed(1)}</Text>
-            <Text style={styles.statLabel}>lb Collected</Text>
+            <Text style={styles.statValue}>{formatBags(weightToBags((stats?.total_weight || 0) as number)).replace(' bags', '')}</Text>
+            <Text style={styles.statLabel}>Bags Collected</Text>
           </View>
           <View style={styles.statCard}>
             <Text style={styles.statValue}>{badges.length}</Text>
@@ -77,6 +78,12 @@ export default function ProfileScreen() {
         {/* Detailed Stats */}
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>📊 Statistics</Text>
+          <View style={styles.statRow}>
+            <Text style={styles.statRowLabel}>Total Weight</Text>
+            <Text style={styles.statRowValue}>
+              {((stats?.total_weight || 0) as number).toFixed(1)} lb ≈ {formatBags(weightToBags((stats?.total_weight || 0) as number))}
+            </Text>
+          </View>
           <View style={styles.statRow}>
             <Text style={styles.statRowLabel}>Average Weight</Text>
             <Text style={styles.statRowValue}>

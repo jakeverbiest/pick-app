@@ -2,7 +2,7 @@ import { View, Text, StyleSheet, TouchableOpacity, TextInput, Alert, ActivityInd
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useState } from 'react';
 import { useRouter } from 'expo-router';
-import { getAuthService } from '../../src/services/simpleAuthService';
+import { getAuthService } from '../../src/services/authService';
 import { COLORS, SPACING, RADIUS } from '../../src/constants/colors';
 
 export default function SignupScreen() {

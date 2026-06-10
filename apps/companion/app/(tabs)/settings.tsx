@@ -3,7 +3,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useState, useEffect } from 'react';
 import { useRouter } from 'expo-router';
 import { getDatabase } from '../../src/services/database';
-import { getAuthService } from '../../src/services/simpleAuthService';
+import { getAuthService } from '../../src/services/authService';
 import { getFitnessService, FITNESS_APPS, RECOMMENDED_CONFIGS } from '../../src/services/fitnessService';
 import weightCalibration, { CalibrationState, DEFAULT_LB_PER_PICKUP } from '../../src/services/weightCalibration';
 import { PRIVACY_POLICY_TEXT, TERMS_OF_SERVICE_TEXT } from '../../src/constants/legal';

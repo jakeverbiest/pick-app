@@ -10,7 +10,7 @@ import weightCalibration, { DEFAULT_LB_PER_PICKUP } from '../../src/services/wei
 import { weightToBags, formatBags } from '../../src/services/impactMetrics';
 import { getCoverage, markRouteCleaned } from '../../src/services/streetSegments';
 import { getDatabase } from '../../src/services/database';
-import { getAuthService } from '../../src/services/simpleAuthService';
+import { getAuthService } from '../../src/services/authService';
 import { getBadgeService } from '../../src/services/badgeService';
 import { COLORS, SPACING, RADIUS, TYPOGRAPHY } from '../../src/constants/colors';
 

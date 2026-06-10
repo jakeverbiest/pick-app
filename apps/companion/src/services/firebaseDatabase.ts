@@ -16,7 +16,9 @@ import {
   getDoc,
   doc,
   updateDoc,
+  setDoc,
   deleteDoc,
+  writeBatch,
   Timestamp,
 } from 'firebase/firestore';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -337,7 +339,8 @@ class FirebaseDatabase {
     };
 
     try {
-      await updateDoc(doc(db, 'users', userId), { ...newSettings });
+      // setDoc with merge — updateDoc fails when the doc doesn't exist yet
+      await setDoc(doc(db, 'users', userId), { ...newSettings }, { merge: true });
       console.log(`✅ User settings initialized for ${userId}`);
       return newSettings;
     } catch (error) {
@@ -376,6 +379,52 @@ class FirebaseDatabase {
       console.error('Failed to get badges:', error);
       return [];
     }
+  }
+
+  /**
+   * Re-key all data from a legacy local-auth uid to a Firebase uid.
+   * Used once during the simpleAuth → Firebase Auth migration.
+   * Returns the number of records migrated.
+   */
+  async migrateUserData(oldUid: string, newUid: string): Promise<number> {
+    let migrated = 0;
+    try {
+      // Cleanups
+      const cleanupsSnap = await getDocs(
+        query(collection(db, 'cleanups'), where('userId', '==', oldUid))
+      );
+      // Badges
+      const badgesSnap = await getDocs(
+        query(collection(db, 'badges'), where('userId', '==', oldUid))
+      );
+
+      const batch = writeBatch(db);
+      cleanupsSnap.forEach((d) => {
+        batch.update(d.ref, { userId: newUid });
+        migrated++;
+      });
+      badgesSnap.forEach((d) => {
+        batch.update(d.ref, { userId: newUid });
+        migrated++;
+      });
+
+      // User settings doc: copy old → new (merge keeps any new-account fields)
+      const oldSettings = await getDoc(doc(db, 'users', oldUid));
+      if (oldSettings.exists()) {
+        batch.set(doc(db, 'users', newUid), { ...oldSettings.data(), userId: newUid }, { merge: true });
+        migrated++;
+      }
+
+      await batch.commit();
+
+      // Point this database instance at the new uid
+      this.currentUserId = newUid;
+      console.log(`✅ Migrated ${migrated} records from ${oldUid} to ${newUid}`);
+    } catch (error) {
+      console.error('Migration failed:', error);
+      throw error;
+    }
+    return migrated;
   }
 
   /** Number of badges of a given type the user has (0 = not yet earned). */

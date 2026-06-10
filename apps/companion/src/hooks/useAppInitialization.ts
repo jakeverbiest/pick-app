@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { getAuthService } from '../services/simpleAuthService';
+import { getAuthService } from '../services/authService';
 import { getDatabase } from '../services/database';
 
 export interface AuthUser {

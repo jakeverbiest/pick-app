@@ -1,6 +1,6 @@
 import { useEffect } from 'react';
 import { useRouter } from 'expo-router';
-import { getAuthService } from '../src/services/simpleAuthService';
+import { getAuthService } from '../src/services/authService';
 
 export default function RootIndexScreen() {
   const router = useRouter();
