@@ -77,3 +77,47 @@ export function evaluatePickupProfile(p: EvalProfile): EvalResult {
 export function isPickup(p: EvalProfile): boolean {
   return evaluatePickupProfile(p).confidence > THRESHOLDS.confidenceThreshold;
 }
+
+/**
+ * Count distinct acceleration peaks in a motion window.
+ *
+ * Purpose: during a "picking spree" (standing still, grabber, pick-pick-pick)
+ * several pickups land inside one ~2.5s recording window but only score one
+ * detection. Counting separate spikes tells us how many picks the window
+ * really contained.
+ *
+ * CAUTION — measurement only for now: a single pickup can produce two spikes
+ * (bend + straighten), so this is recorded by the flight recorder but NOT yet
+ * used to multiply the count. Field data decides the multiplier rule.
+ *
+ * A "distinct peak" = local max ≥ peakMin, separated from the previous peak
+ * by ≥ minSeparationMs AND a dip below valleyMax.
+ */
+export function countDistinctPeaks(
+  samples: Array<{ accel: number; timestamp: number }>,
+  peakMin = 1.15,
+  valleyMax = 1.0,
+  minSeparationMs = 400
+): number {
+  if (!samples || samples.length < 3) return samples?.some((s) => s.accel >= peakMin) ? 1 : 0;
+
+  let peaks = 0;
+  let lastPeakTime = -Infinity;
+  let dippedSinceLastPeak = true; // window starts "armed"
+
+  for (let i = 1; i < samples.length - 1; i++) {
+    const prev = samples[i - 1].accel;
+    const cur = samples[i].accel;
+    const next = samples[i + 1].accel;
+
+    if (cur < valleyMax) dippedSinceLastPeak = true;
+
+    const isLocalMax = cur >= prev && cur >= next && cur >= peakMin;
+    if (isLocalMax && dippedSinceLastPeak && samples[i].timestamp - lastPeakTime >= minSeparationMs) {
+      peaks++;
+      lastPeakTime = samples[i].timestamp;
+      dippedSinceLastPeak = false;
+    }
+  }
+  return Math.max(peaks, 1);
+}

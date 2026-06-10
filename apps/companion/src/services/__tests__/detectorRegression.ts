@@ -12,7 +12,7 @@
  * recall below 19/21, you've reintroduced the bug that cost 60% of pickups.
  */
 
-import { evaluatePickupProfile, isPickup, THRESHOLDS, EvalProfile } from '../motionEvaluation';
+import { evaluatePickupProfile, isPickup, countDistinctPeaks, THRESHOLDS, EvalProfile } from '../motionEvaluation';
 
 // Every motion event from the June 10 log. peakAccelTime was only logged for
 // the timing rejection (2395ms); others use 800ms (mid-window, uncontroversial).
@@ -85,6 +85,29 @@ console.log('\n=== Garbage rejection ===');
 for (const g of GARBAGE) {
   check(`rejects ${g.name}`, isPickup(g.profile), false);
 }
+
+console.log('\n=== Peak counter (spree analysis) ===');
+// Build sample streams at 100ms cadence
+const stream = (accels: number[]) => accels.map((a, i) => ({ accel: a, timestamp: i * 100 }));
+// One clean pickup: rise, peak, settle
+const onePeak = stream([0.9, 1.1, 1.4, 1.2, 0.95, 0.8, 0.7]);
+check('single pickup counts 1 peak', countDistinctPeaks(onePeak) === 1, true);
+// Bend+straighten double spike WITHOUT dipping below 1.0 between → still 1
+const bendStand = stream([0.9, 1.3, 1.1, 1.35, 1.05, 0.8]);
+check('bend+straighten (no valley) counts 1', countDistinctPeaks(bendStand) === 1, true);
+// Spree: three picks ~0.9s apart (realistic grabber cadence) with valleys between
+const spree = stream([
+  0.9, 1.4, 0.8, 0.7, 0.75, 0.7, 0.8, 0.7, 0.75, // pick 1 @ t=100
+  1.5, 0.8, 0.7, 0.75, 0.7, 0.8, 0.7, 0.75, 0.7, // pick 2 @ t=900
+  1.45, 0.8, 0.7,                                  // pick 3 @ t=1800
+]);
+check('3-pick spree counts 3 peaks', countDistinctPeaks(spree) === 3, true);
+// Two picks 300ms apart (faster than humanly possible) → merged to avoid double-count
+const tooFast = stream([0.9, 1.4, 0.8, 1.5, 0.8, 0.7]);
+check('implausibly fast double-spike merges to 1', countDistinctPeaks(tooFast) === 1, true);
+// Rapid jitter above 1.15 without valleys → 1
+const jitter = stream([1.2, 1.25, 1.18, 1.22, 1.19, 1.21]);
+check('sustained jitter counts 1', countDistinctPeaks(jitter) === 1, true);
 
 console.log('\n=== Threshold sanity ===');
 check('confidence threshold unchanged at 30', THRESHOLDS.confidenceThreshold === 30, true);

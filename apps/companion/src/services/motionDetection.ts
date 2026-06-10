@@ -9,7 +9,7 @@ import * as Location from 'expo-location';
 import PickupAggregator from './pickupAggregator';
 import GroundTruthCapture from './groundTruthCapture';
 import MotionShapeDetector from './motionShapeDetector';
-import { evaluatePickupProfile } from './motionEvaluation';
+import { evaluatePickupProfile, countDistinctPeaks } from './motionEvaluation';
 
 interface PickupEvent {
   timestamp: number;
@@ -40,6 +40,7 @@ export interface MotionEventRecord {
   confidence: number;
   accepted: boolean;
   reason: string; // 'ok' or rejection reason
+  peaks: number; // distinct accel spikes in the window (spree analysis — measurement only)
 }
 
 class MotionDetector {
@@ -179,6 +180,7 @@ class MotionDetector {
             confidence: finalConfidence,
             accepted,
             reason: result.reason,
+            peaks: countDistinctPeaks(profile.samples),
           });
 
           console.log(`⏸️ Motion stopped. Duration: ${profile.duration}ms, Peak: ${profile.peakAccel.toFixed(2)}g, Gyro: ${profile.peakGyro.toFixed(2)}, Confidence: ${finalConfidence}%`);
