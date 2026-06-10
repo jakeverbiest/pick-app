@@ -94,21 +94,21 @@ class BadgeService {
 
       if (totalWeight >= 500 && !(await db.getBadgeCount(userId, 'king_queen'))) {
         await db.addBadge({
-          user_id: userId,
+          userId,
           badge_type: 'king_queen',
           unlocked_at: Date.now(),
         });
         newBadges.push('king_queen');
       } else if (totalWeight >= 50 && !(await db.getBadgeCount(userId, 'heavy_lifter'))) {
         await db.addBadge({
-          user_id: userId,
+          userId,
           badge_type: 'heavy_lifter',
           unlocked_at: Date.now(),
         });
         newBadges.push('heavy_lifter');
       } else if (totalWeight >= 10 && !(await db.getBadgeCount(userId, 'collector'))) {
         await db.addBadge({
-          user_id: userId,
+          userId,
           badge_type: 'collector',
           unlocked_at: Date.now(),
         });
@@ -119,7 +119,7 @@ class BadgeService {
       const totalCleanups = (stats?.total_cleanups as number) || 0;
       if (totalCleanups >= 1 && !(await db.getBadgeCount(userId, 'first_steps'))) {
         await db.addBadge({
-          user_id: userId,
+          userId,
           badge_type: 'first_steps',
           unlocked_at: Date.now(),
         });
@@ -130,21 +130,21 @@ class BadgeService {
       const streak = this.calculateCurrentStreak(cleanups);
       if (streak >= 90 && !(await db.getBadgeCount(userId, 'unstoppable'))) {
         await db.addBadge({
-          user_id: userId,
+          userId,
           badge_type: 'unstoppable',
           unlocked_at: Date.now(),
         });
         newBadges.push('unstoppable');
       } else if (streak >= 30 && !(await db.getBadgeCount(userId, 'dedicated'))) {
         await db.addBadge({
-          user_id: userId,
+          userId,
           badge_type: 'dedicated',
           unlocked_at: Date.now(),
         });
         newBadges.push('dedicated');
       } else if (streak >= 7 && !(await db.getBadgeCount(userId, 'consistent'))) {
         await db.addBadge({
-          user_id: userId,
+          userId,
           badge_type: 'consistent',
           unlocked_at: Date.now(),
         });

@@ -9,6 +9,7 @@ import * as Location from 'expo-location';
 import PickupAggregator from './pickupAggregator';
 import GroundTruthCapture from './groundTruthCapture';
 import MotionShapeDetector from './motionShapeDetector';
+import { evaluatePickupProfile } from './motionEvaluation';
 
 interface PickupEvent {
   timestamp: number;
@@ -156,52 +157,19 @@ class MotionDetector {
   }
 
   private evaluateProfile(profile: any): number {
-    // Re-evaluate using detector's logic (now more lenient)
-    const duration = profile.duration;
-
-    // Duration check: relaxed to 500-5000ms
-    if (duration < 500 || duration > 5000) {
-      console.log(`❌ DURATION: ${duration}ms (need 500-5000)`);
-      return 0;
+    // Pure scoring lives in motionEvaluation.ts (single source of truth for
+    // thresholds; regression-tested against the June 10 field log).
+    const result = evaluatePickupProfile({
+      duration: profile.duration,
+      peakAccel: profile.peakAccel,
+      peakAccelTime: profile.peakAccelTime,
+      peakGyro: profile.peakGyro,
+      lastAccel: profile.samples[profile.samples.length - 1].accel,
+    });
+    if (result.confidence === 0) {
+      console.log(`❌ ${result.reason}`);
     }
-
-    // Peak acceleration check: widened to 0.9-3.5g (June 10 street test:
-    // 9 of 15 real pickups peaked 1.68-3.09g and were wrongly rejected by the old 1.6g cap).
-    // High peaks now get a confidence penalty instead of a hard reject.
-    if (profile.peakAccel < 0.9 || profile.peakAccel > 3.5) {
-      console.log(`❌ PEAK ACCEL: ${profile.peakAccel.toFixed(2)}g (need 0.9-3.5)`);
-      return 0;
-    }
-
-    // Peak timing check: allow the full recording window (was 2000ms while
-    // recordings force-finalize at ~2500ms — rejected real pickups peaking late)
-    if (profile.peakAccelTime < 0 || profile.peakAccelTime > 2500) {
-      console.log(`❌ PEAK TIMING: ${profile.peakAccelTime}ms (need 0-2500)`);
-      return 0;
-    }
-
-    const lastAccel = profile.samples[profile.samples.length - 1].accel;
-    const settlingDrop = profile.peakAccel - lastAccel;
-
-    // Relaxed settling threshold to 0.02g for street environments (ambient vibration prevents full settling)
-    if (settlingDrop < 0.02) {
-      console.log(`❌ SETTLING DROP: ${settlingDrop.toFixed(3)}g (need >0.02). Peak=${profile.peakAccel.toFixed(2)}, Last=${lastAccel.toFixed(2)}`);
-      return 0;
-    }
-
-    let confidence = 40; // Lowered base confidence from 50 to 40
-    if (settlingDrop > 0.2) confidence += 15;
-
-    const targetDuration = 1600; // Lowered target from 1900ms
-    const durationDeviation = Math.abs(duration - targetDuration);
-    if (durationDeviation < 800) confidence += 10; // Widened range from 500 to 800
-
-    if (profile.peakAccel >= 1.0 && profile.peakAccel <= 1.8) confidence += 10; // Sweet spot widened (real pickups routinely hit 1.7g)
-    if (profile.peakAccel > 2.5) confidence -= 10; // Vigorous spikes are plausible but less certain (jog steps, phone bumps)
-    if (profile.peakGyro > 0.6) confidence += 5; // Lowered from 0.8
-
-    const finalScore = Math.min(100, confidence);
-    return finalScore;
+    return result.confidence;
   }
 
   private detectPickupFromShape(timestamp: number, profile: any, confidence: number) {

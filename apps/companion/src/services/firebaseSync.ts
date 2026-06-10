@@ -10,7 +10,7 @@ import PickupAggregator, { AggregatedPickup } from './pickupAggregator';
 // import { getFirestore, collection, addDoc } from 'firebase/firestore';
 
 class FirebaseSync {
-  private syncInterval: NodeJS.Timeout | null = null;
+  private syncInterval: ReturnType<typeof setInterval> | null = null;
   private isOnline: boolean = true;
 
   /**

@@ -155,9 +155,20 @@ class SimpleAuthService {
   }
 
   /**
+   * Password reset — not available with local beta accounts.
+   * (Will be real once the app switches to Firebase Auth.)
+   */
+  async sendPasswordReset(email: string): Promise<void> {
+    console.log(`⚠️ Password reset requested for ${email} — not supported with local accounts`);
+    throw new Error(
+      'Password reset is not available in the beta. Contact jlverbie@gmail.com to recover your account.'
+    );
+  }
+
+  /**
    * Get stored users from AsyncStorage
    */
-  private async getStoredUsers() {
+  private async getStoredUsers(): Promise<Array<AuthUser & { password: string }>> {
     try {
       const stored = await AsyncStorage.getItem(USERS_KEY);
       return stored ? JSON.parse(stored) : [];

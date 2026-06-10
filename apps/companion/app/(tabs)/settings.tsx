@@ -1,4 +1,4 @@
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert, TextInput } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert, TextInput, Modal } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useState, useEffect } from 'react';
 import { useRouter } from 'expo-router';
@@ -6,6 +6,7 @@ import { getDatabase } from '../../src/services/database';
 import { getAuthService } from '../../src/services/simpleAuthService';
 import { getFitnessService, FITNESS_APPS, RECOMMENDED_CONFIGS } from '../../src/services/fitnessService';
 import weightCalibration, { CalibrationState, DEFAULT_LB_PER_PICKUP } from '../../src/services/weightCalibration';
+import { PRIVACY_POLICY_TEXT, TERMS_OF_SERVICE_TEXT } from '../../src/constants/legal';
 import { FitnessApp } from '../../src/types';
 import { COLORS, SPACING, RADIUS } from '../../src/constants/colors';
 
@@ -23,6 +24,7 @@ export default function SettingsScreen() {
   const [loading, setLoading] = useState(true);
   const [devMode, setDevMode] = useState(false);
   const [calibration, setCalibration] = useState<CalibrationState | null>(null);
+  const [legalDoc, setLegalDoc] = useState<'privacy' | 'terms' | null>(null);
 
   useEffect(() => {
     loadSettings();
@@ -409,7 +411,7 @@ export default function SettingsScreen() {
             <View>
               <Text style={styles.toggleLabel}>Battery Saver Mode</Text>
               <Text style={styles.toggleSubtext}>
-                {batterySaver ? '30s GPS interval • Low Power accuracy' : '15s GPS interval • Balanced accuracy'}
+                {batterySaver ? '10s GPS during cleanup • Low Power accuracy' : '5s GPS during cleanup • Balanced accuracy'}
               </Text>
             </View>
             <TouchableOpacity
@@ -546,11 +548,40 @@ export default function SettingsScreen() {
             <Text style={styles.valueBeta}>Beta</Text>
           </View>
 
+          <TouchableOpacity style={styles.settingRow} onPress={() => setLegalDoc('privacy')}>
+            <Text style={styles.label}>Privacy Policy</Text>
+            <Text style={styles.legalLink}>View →</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity style={styles.settingRow} onPress={() => setLegalDoc('terms')}>
+            <Text style={styles.label}>Terms of Service</Text>
+            <Text style={styles.legalLink}>View →</Text>
+          </TouchableOpacity>
+
           <Text style={styles.aboutText}>
             Pick is a motion detection app for tracking trash pickups autonomously. Data is stored
             locally on your device and synced to fitness apps when enabled.
           </Text>
         </View>
+
+        {/* Legal Document Viewer */}
+        <Modal visible={legalDoc !== null} animationType="slide">
+          <SafeAreaView style={styles.container}>
+            <View style={styles.legalHeader}>
+              <Text style={styles.legalTitle}>
+                {legalDoc === 'privacy' ? 'Privacy Policy' : 'Terms of Service'}
+              </Text>
+              <TouchableOpacity onPress={() => setLegalDoc(null)}>
+                <Text style={styles.legalClose}>✕</Text>
+              </TouchableOpacity>
+            </View>
+            <ScrollView contentContainerStyle={styles.legalContent}>
+              <Text style={styles.legalText}>
+                {legalDoc === 'privacy' ? PRIVACY_POLICY_TEXT : TERMS_OF_SERVICE_TEXT}
+              </Text>
+            </ScrollView>
+          </SafeAreaView>
+        </Modal>
 
         {/* Action Buttons */}
         {isEditing && (
@@ -922,6 +953,39 @@ const styles = StyleSheet.create({
   },
   toggleThumbActive: {
     backgroundColor: COLORS.white,
+  },
+  legalLink: {
+    fontSize: 14,
+    color: '#007AFF',
+    fontWeight: '600',
+  },
+  legalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#eee',
+  },
+  legalTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: COLORS.darkSage,
+  },
+  legalClose: {
+    fontSize: 20,
+    color: '#666',
+    paddingHorizontal: 8,
+  },
+  legalContent: {
+    padding: 16,
+    paddingBottom: 40,
+  },
+  legalText: {
+    fontSize: 13,
+    lineHeight: 20,
+    color: '#444',
   },
   calibrationBox: {
     backgroundColor: COLORS.white,

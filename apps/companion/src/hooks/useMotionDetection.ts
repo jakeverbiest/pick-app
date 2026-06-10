@@ -34,7 +34,7 @@ export function useMotionDetection(): UseMotionDetectionReturn {
   const [lastPickups, setLastPickups] = useState<PickupEvent[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [manualPickupCount, setManualPickupCount] = useState(0);
-  const updateIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const updateIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   /**
    * Start motion detection

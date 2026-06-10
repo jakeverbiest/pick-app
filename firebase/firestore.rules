@@ -1,0 +1,92 @@
+rules_version = '2';
+
+// PICK Firestore Security Rules
+//
+// ⚠️ DEPLOYMENT DEPENDENCY: the app currently signs in via simpleAuthService
+// (local AsyncStorage), NOT Firebase Auth — so request.auth is null on every
+// request and the PRODUCTION rules below would block the app entirely.
+//
+// Path to production:
+//   1. Switch the app to Firebase Auth (authService.ts already exists)
+//   2. Deploy these rules:  firebase deploy --only firestore:rules
+//
+// Until then the project is in test mode (open). Do not ship to app stores
+// in test mode — anyone with the API key can read/write everything.
+//
+// Deploy: firebase deploy --only firestore:rules  (from repo root, needs firebase.json)
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return signedIn() && request.auth.uid == userId;
+    }
+
+    // --- Cleanups: anyone signed-in can read (shared maps/leaderboards);
+    //     only the owner can write, and writes must be sane ---
+    match /cleanups/{cleanupId} {
+      allow read: if signedIn();
+      allow create: if isOwner(request.resource.data.userId)
+        && request.resource.data.items_count is number
+        && request.resource.data.items_count >= 0
+        && request.resource.data.items_count < 5000
+        && request.resource.data.weight_lb is number
+        && request.resource.data.weight_lb >= 0
+        && request.resource.data.weight_lb < 1000;
+      allow update, delete: if isOwner(resource.data.userId);
+    }
+
+    // --- User settings: private to the owner ---
+    match /users/{userId} {
+      allow read, write: if isOwner(userId);
+    }
+
+    // --- Badges: readable by all signed-in (profiles), writable by owner ---
+    match /badges/{badgeId} {
+      allow read: if signedIn();
+      allow create: if isOwner(request.resource.data.userId);
+      allow update, delete: if isOwner(resource.data.userId);
+    }
+
+    // --- Challenges: shared. Anyone signed-in reads; creator manages;
+    //     participants may add themselves ---
+    match /challenges/{challengeId} {
+      allow read: if signedIn();
+      allow create: if isOwner(request.resource.data.created_by);
+      allow update: if signedIn() && (
+        resource.data.created_by == request.auth.uid
+        // joining: only the participants array may change
+        || request.resource.data.diff(resource.data).affectedKeys()
+             .hasOnly(['participants', 'updated_at'])
+      );
+      allow delete: if signedIn() && resource.data.created_by == request.auth.uid;
+    }
+
+    // --- Street segment status: the shared coverage layer.
+    //     Anyone signed-in can read and stamp segments cleaned, but only
+    //     with a plausible payload (no backdating, no spoofing others) ---
+    match /segment_status/{segmentId} {
+      allow read: if signedIn();
+      allow write: if signedIn()
+        && request.resource.data.last_user == request.auth.uid
+        && request.resource.data.last_cleaned is number
+        && request.resource.data.last_cleaned <= request.time.toMillis() + 60000
+        && request.resource.data.last_cleaned > request.time.toMillis() - 86400000;
+    }
+
+    // --- Analytics: write-only from clients ---
+    match /analytics/{docId} {
+      allow create: if signedIn();
+      allow read, update, delete: if false;
+    }
+
+    // Everything else: denied
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

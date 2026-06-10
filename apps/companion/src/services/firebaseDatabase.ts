@@ -337,7 +337,7 @@ class FirebaseDatabase {
     };
 
     try {
-      await updateDoc(doc(db, 'users', userId), newSettings);
+      await updateDoc(doc(db, 'users', userId), { ...newSettings });
       console.log(`✅ User settings initialized for ${userId}`);
       return newSettings;
     } catch (error) {
@@ -369,12 +369,28 @@ class FirebaseDatabase {
       const q = query(collection(db, 'badges'), where('userId', '==', userId));
       const snapshot = await getDocs(q);
       return snapshot.docs.map((doc) => ({
-        id: doc.id,
         ...(doc.data() as Badge),
+        id: doc.id,
       }));
     } catch (error) {
       console.error('Failed to get badges:', error);
       return [];
+    }
+  }
+
+  /** Number of badges of a given type the user has (0 = not yet earned). */
+  async getBadgeCount(userId: string, badgeType: string): Promise<number> {
+    try {
+      const q = query(
+        collection(db, 'badges'),
+        where('userId', '==', userId),
+        where('badge_type', '==', badgeType)
+      );
+      const snapshot = await getDocs(q);
+      return snapshot.size;
+    } catch (error) {
+      console.error('Failed to get badge count:', error);
+      return 0;
     }
   }
 

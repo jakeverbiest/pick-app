@@ -266,7 +266,7 @@ class AggregationFlowTest {
   /**
    * Print summary
    */
-  printSummary(): void {
+  printSummary(): { passed: number; total: number; results: TestResult[] } {
     console.log('\n' + '='.repeat(60));
     console.log('AGGREGATION FLOW TEST SUMMARY');
     console.log('='.repeat(60));

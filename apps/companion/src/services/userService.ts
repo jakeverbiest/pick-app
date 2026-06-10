@@ -25,9 +25,10 @@ class UserService {
       const storedUser = await AsyncStorage.getItem(CURRENT_USER_KEY);
 
       if (storedUser) {
-        this.currentUser = JSON.parse(storedUser);
-        console.log(`✅ Loaded existing user: ${this.currentUser.displayName}`);
-        return this.currentUser;
+        const parsed: CurrentUser = JSON.parse(storedUser);
+        this.currentUser = parsed;
+        console.log(`✅ Loaded existing user: ${parsed.displayName}`);
+        return parsed;
       }
 
       // Create new user

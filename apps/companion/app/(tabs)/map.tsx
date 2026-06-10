@@ -105,11 +105,13 @@ export default function MapScreen() {
         setElapsedSeconds((s) => s + 1);
       }, 1000);
 
-      // Start with 20s base interval, will adapt based on activity
+      // Dense GPS during active cleanup: 20s gaps (~25m walking) skip street
+      // segments when snapping routes. 5s normal / 10s battery saver.
+      const activeInterval = batterySaver ? 10000 : 5000;
       trackLocation(); // Get initial location immediately
       locationRef.current = setInterval(() => {
         trackLocation();
-      }, 20000);
+      }, activeInterval);
     } else {
       if (timerRef.current) clearInterval(timerRef.current);
       if (locationRef.current) clearInterval(locationRef.current);

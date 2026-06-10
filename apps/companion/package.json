@@ -8,7 +8,8 @@
     "android": "expo start --android",
     "ios": "expo start --ios",
     "web": "expo start --web",
-    "lint": "expo lint"
+    "lint": "expo lint",
+    "test:detector": "npx -y tsx src/services/__tests__/detectorRegression.ts"
   },
   "dependencies": {
     "@expo/vector-icons": "^15.0.3",
