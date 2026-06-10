@@ -39,7 +39,8 @@ export interface MotionEventRecord {
   gyro: number; // peak gyro during motion
   confidence: number;
   accepted: boolean;
-  reason: string; // 'ok' or rejection reason
+  counted: boolean; // accepted AND survived the cooldown (what the user sees)
+  reason: string; // 'ok', rejection reason, or 'cooldown'
   peaks: number; // distinct accel spikes in the window (spree analysis — measurement only)
 }
 
@@ -145,6 +146,12 @@ class MotionDetector {
     // Feed into ground truth capture if active
     GroundTruthCapture.addSample(x, y, z, this.lastGyro.x, this.lastGyro.y, this.lastGyro.z);
 
+    // Arm delay: ignore the first seconds of a session — putting the phone
+    // in a pocket reads exactly like a pickup.
+    if (Date.now() - this.sessionStartTime < 5000) {
+      return;
+    }
+
     // Shape detector: feed samples
     // Start recording at 1.2g to filter street noise (ground truth shows pickups peak at 1.09-1.35g)
     if (!MotionShapeDetector.isCurrentlyRecording() && magnitude > 1.2) {
@@ -170,7 +177,13 @@ class MotionDetector {
           const finalConfidence = result.confidence;
           const accepted = finalConfidence > 30;
 
-          // Flight recorder: every event, accepted or not (export-friendly)
+          let counted = false;
+          if (accepted) {
+            // Confidence threshold: lowered from 40 to 30 to catch more pickups
+            counted = this.detectPickupFromShape(now, profile, finalConfidence);
+          }
+
+          // Flight recorder: every event — rejected, cooldown-suppressed, or counted
           this.sessionEvents.push({
             t: Math.round((Date.now() - this.sessionStartTime) / 1000),
             peak: Math.round(profile.peakAccel * 100) / 100,
@@ -179,16 +192,14 @@ class MotionDetector {
             gyro: Math.round(profile.peakGyro * 100) / 100,
             confidence: finalConfidence,
             accepted,
-            reason: result.reason,
+            counted,
+            reason: !accepted ? result.reason : counted ? 'ok' : 'cooldown',
             peaks: countDistinctPeaks(profile.samples),
           });
 
-          console.log(`⏸️ Motion stopped. Duration: ${profile.duration}ms, Peak: ${profile.peakAccel.toFixed(2)}g, Gyro: ${profile.peakGyro.toFixed(2)}, Confidence: ${finalConfidence}%`);
+          console.log(`⏸️ Motion stopped. Duration: ${profile.duration}ms, Peak: ${profile.peakAccel.toFixed(2)}g, Gyro: ${profile.peakGyro.toFixed(2)}, Confidence: ${finalConfidence}%${accepted && !counted ? ' (cooldown — not counted)' : ''}`);
 
-          if (accepted) {
-            // Confidence threshold: lowered from 40 to 30 to catch more pickups
-            this.detectPickupFromShape(now, profile, finalConfidence);
-          } else {
+          if (!accepted) {
             console.log(`⛔ Rejected: ${result.reason} (confidence ${finalConfidence}%)`);
           }
         }
@@ -201,11 +212,12 @@ class MotionDetector {
     return [...this.sessionEvents];
   }
 
-  private detectPickupFromShape(timestamp: number, profile: any, confidence: number) {
+  /** Returns true if the pickup was counted (false = cooldown-suppressed). */
+  private detectPickupFromShape(timestamp: number, profile: any, confidence: number): boolean {
     const now = Date.now();
 
     if (now - this.lastPickupTime < this.tuning.cooldownMs) {
-      return;
+      return false;
     }
 
     this.lastPickupTime = now;
@@ -241,6 +253,23 @@ class MotionDetector {
     }
 
     this.onPickupCallback?.(event);
+    return true;
+  }
+
+  /**
+   * Drop pickups detected in the final moments of a session (pulling the
+   * phone out of a pocket to tap Stop reads exactly like a pickup).
+   * Returns the corrected count.
+   */
+  trimRecentPickups(windowMs: number = 3500): number {
+    const cutoff = Date.now() - windowMs;
+    const before = this.pickupEvents.length;
+    this.pickupEvents = this.pickupEvents.filter((e) => e.timestamp < cutoff);
+    const trimmed = before - this.pickupEvents.length;
+    if (trimmed > 0) {
+      console.log(`✂️ Trimmed ${trimmed} pickup(s) from the last ${windowMs / 1000}s (pocket-removal guard)`);
+    }
+    return this.pickupEvents.length;
   }
 
 

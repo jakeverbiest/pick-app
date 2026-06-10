@@ -359,6 +359,9 @@ export default function MapScreen() {
 
   const stopCleanup = () => {
     MotionDetector.stopListening();
+    // Pocket-removal guard: pulling the phone out to tap Stop looks like a pickup
+    const correctedCount = MotionDetector.trimRecentPickups(3500);
+    setPickupCount(correctedCount);
     setIsListening(false);
     setShowSummary(true);
     setSelfReportedWeight('');
@@ -526,7 +529,7 @@ ${pickupLocations.length > 15 ? `  ... and ${pickupLocations.length - 15} more d
 
 t(s) | peak(g) | dur(ms) | peakT(ms) | gyro | peaks | conf | result
 ${MotionDetector.getSessionEvents().map((e) =>
-  `${String(e.t).padStart(4)} | ${e.peak.toFixed(2).padStart(7)} | ${String(e.duration).padStart(7)} | ${String(e.peakTime).padStart(9)} | ${e.gyro.toFixed(2).padStart(4)} | ${String(e.peaks).padStart(5)} | ${String(e.confidence).padStart(4)} | ${e.accepted ? '✅' : '⛔ ' + e.reason}`
+  `${String(e.t).padStart(4)} | ${e.peak.toFixed(2).padStart(7)} | ${String(e.duration).padStart(7)} | ${String(e.peakTime).padStart(9)} | ${e.gyro.toFixed(2).padStart(4)} | ${String(e.peaks).padStart(5)} | ${String(e.confidence).padStart(4)} | ${e.counted ? '✅ counted' : e.accepted ? '🔁 cooldown' : '⛔ ' + e.reason}`
 ).join('\n') || '  (no motion events recorded)'}
 
 ═══════════════════════════════════════════════════════════
