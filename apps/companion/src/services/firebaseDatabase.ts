@@ -212,9 +212,9 @@ class FirebaseDatabase {
 
         const snapshot = await getDocs(q);
         const cleanups: Cleanup[] = snapshot.docs.map((doc) => ({
-          id: doc.id,
           userId: this.currentUserId!,
           ...(doc.data() as any),
+          id: doc.id, // real doc id LAST so a stored 'id' field (old mock data) can't override it
           timestamp: doc.data().timestamp.toMillis ? doc.data().timestamp.toMillis() / 1000 : doc.data().timestamp,
           synced: true,
         }));
@@ -242,6 +242,29 @@ class FirebaseDatabase {
   }
 
   /**
+   * Delete a cleanup (used to remove mock/dev data and bad sessions).
+   * Removes from Firestore and the offline cache.
+   */
+  async deleteCleanup(cleanupId: string): Promise<boolean> {
+    try {
+      await deleteDoc(doc(db, 'cleanups', cleanupId));
+      // Scrub from offline cache too (match doc id OR legacy stored id field)
+      try {
+        const cached = await AsyncStorage.getItem(CLEANUPS_CACHE_KEY);
+        if (cached) {
+          const list = JSON.parse(cached).filter((c: any) => c.id !== cleanupId);
+          await AsyncStorage.setItem(CLEANUPS_CACHE_KEY, JSON.stringify(list));
+        }
+      } catch {}
+      console.log(`🗑️ Cleanup deleted: ${cleanupId}`);
+      return true;
+    } catch (error) {
+      console.error('Failed to delete cleanup:', error);
+      return false;
+    }
+  }
+
+  /**
    * Get cleanups by team
    */
   async getCleanupsByTeam(team: string, limitCount: number = 50) {
@@ -254,9 +277,9 @@ class FirebaseDatabase {
 
       const snapshot = await getDocs(q);
       const cleanups: Cleanup[] = snapshot.docs.map((doc) => ({
-        id: doc.id,
         userId: doc.data().userId,
         ...(doc.data() as any),
+        id: doc.id, // real doc id LAST so a stored 'id' field can't override it
         timestamp: doc.data().timestamp.toMillis ? doc.data().timestamp.toMillis() / 1000 : doc.data().timestamp,
         synced: true,
       }));

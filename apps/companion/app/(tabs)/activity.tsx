@@ -103,6 +103,33 @@ export default function ActivityScreen() {
     }
   };
 
+  const deleteCleanup = (cleanup: any) => {
+    Alert.alert(
+      'Delete this cleanup?',
+      `${formatDate(cleanup.timestamp)} · ${cleanup.items_count} items. This removes it from your stats and the community map. Cannot be undone.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              const db = await getDatabase();
+              const ok = await db.deleteCleanup(cleanup.id);
+              if (ok) {
+                loadActivity();
+              } else {
+                Alert.alert('❌ Error', 'Failed to delete cleanup');
+              }
+            } catch (error) {
+              Alert.alert('❌ Error', 'Failed to delete cleanup');
+            }
+          },
+        },
+      ]
+    );
+  };
+
   if (loading) {
     return (
       <SafeAreaView style={styles.container}>
@@ -207,6 +234,12 @@ export default function ActivityScreen() {
                       onPress={() => exportCleanup(cleanup)}
                     >
                       <Text style={styles.exportButtonText}>📤</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={styles.exportButton}
+                      onPress={() => deleteCleanup(cleanup)}
+                    >
+                      <Text style={styles.exportButtonText}>🗑️</Text>
                     </TouchableOpacity>
                   </View>
                 </View>
