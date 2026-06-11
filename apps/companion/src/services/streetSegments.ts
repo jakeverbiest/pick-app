@@ -273,8 +273,9 @@ export async function getCoverage(lat: number, lon: number): Promise<RenderSegme
     const status = statuses.get(seg.id);
     return {
       id: seg.id,
-      coords: seg.coords,
-      daysOld: status ? (now - status.last_cleaned) / (1000 * 60 * 60 * 24) : null,
+      // 5 decimals ≈ 1m — full OSM precision tripled the WebView payload
+      coords: seg.coords.map(([la, lo]) => [Math.round(la * 1e5) / 1e5, Math.round(lo * 1e5) / 1e5]) as [number, number][],
+      daysOld: status ? Math.round(((now - status.last_cleaned) / 86400000) * 10) / 10 : null,
     };
   });
 }

@@ -302,17 +302,26 @@ export default function MapScreen() {
     return `${ageInDays} days ago (Not counted - needs re-cleaning)`;
   };
 
-  // Old walks were saved with raw GPS points — simplify before rendering so
-  // every layer draws clean bars
+  // Map layers only need timestamp + route + location. Passing whole cleanup
+  // objects (incl. motion_log flight data) serialized huge JS strings into the
+  // WebView — a memory kill on June 11. Slim + simplify before injecting.
   const simplifyCleanupRoutes = (cleanups: any[]) =>
     cleanups.map((c) => {
+      let route_points = null;
       try {
         const pts = c.route_points ? JSON.parse(c.route_points) : null;
-        if (Array.isArray(pts) && pts.length > 2) {
-          return { ...c, route_points: JSON.stringify(simplifyCoordPairs(pts)) };
+        if (Array.isArray(pts) && pts.length > 1) {
+          const slim = (pts.length > 2 ? simplifyCoordPairs(pts) : pts)
+            .map(([la, lo]: [number, number]) => [Math.round(la * 1e5) / 1e5, Math.round(lo * 1e5) / 1e5]);
+          route_points = JSON.stringify(slim);
         }
       } catch {}
-      return c;
+      return {
+        timestamp: c.timestamp,
+        location_lat: c.location_lat,
+        location_lon: c.location_lon,
+        route_points,
+      };
     });
 
   const loadHistoricalCleanups = async () => {
