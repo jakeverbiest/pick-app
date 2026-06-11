@@ -13,6 +13,7 @@
  */
 
 import { evaluatePickupProfile, isPickup, countDistinctPeaks, THRESHOLDS, EvalProfile } from '../motionEvaluation';
+import { simplifyRoute } from '../routeUtils';
 
 // Every motion event from the June 10 log. peakAccelTime was only logged for
 // the timing rejection (2395ms); others use 800ms (mid-window, uncontroversial).
@@ -120,6 +121,26 @@ check('bend+straighten pick (peaks 2, 1196ms) accepted', isPickup({ ...ev(1.52, 
 check('3-peak SHORT window (1.5s spree) accepted', isPickup({ ...ev(1.5, 1500, 400), peaks: 3 }), true);
 // Legacy fixtures without peaks data unaffected
 check('no peaks data → no rhythmic rejection', isPickup(ev(1.49, 2594)), true);
+
+console.log('\n=== Route simplification ===');
+// Straight block walk with GPS jitter: 21 wobbly points → should collapse to ~2-3
+const jittery = Array.from({ length: 21 }, (_, i) => ({
+  lat: 40.6784 + (i % 2 === 0 ? 0.00003 : -0.00003), // ±3m wobble
+  lon: -73.9951 + i * 0.0001, // walking east ~8.4m per point
+}));
+const straight = simplifyRoute(jittery);
+check(`straight jittery walk 21 pts → ${straight.length} (expect ≤4)`, straight.length <= 4, true);
+// An L-shaped walk must KEEP its corner
+const lShape = [
+  { lat: 40.6784, lon: -73.9951 },
+  { lat: 40.6784, lon: -73.9941 }, // 84m east — the corner
+  { lat: 40.6792, lon: -73.9941 }, // 88m north
+];
+const corner = simplifyRoute(lShape);
+check('L-shaped walk keeps its corner (3 pts)', corner.length === 3, true);
+// Endpoints always survive
+check('first point preserved', corner[0].lat === lShape[0].lat, true);
+check('last point preserved', corner[2].lon === lShape[2].lon, true);
 
 console.log('\n=== Threshold sanity ===');
 check('confidence threshold unchanged at 30', THRESHOLDS.confidenceThreshold === 30, true);
