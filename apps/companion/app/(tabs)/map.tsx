@@ -11,6 +11,8 @@ import { weightToBags, formatBags } from '../../src/services/impactMetrics';
 import { getCoverage, markRouteCleaned } from '../../src/services/streetSegments';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import { startBackgroundSession, stopBackgroundSession } from '../../src/services/backgroundSession';
+import { syncWorkoutToHealth, isHealthSyncEnabled } from '../../src/services/healthService';
+import { getFitnessService } from '../../src/services/fitnessService';
 import { getDatabase } from '../../src/services/database';
 import { getAuthService } from '../../src/services/authService';
 import { getBadgeService } from '../../src/services/badgeService';
@@ -492,6 +494,19 @@ export default function MapScreen() {
         if (marked > 0) {
           loadStreetCoverage(centerLat, centerLon); // refresh the layer
         }
+      }
+
+      // Apple Health: log the cleanup as a walking workout (fitness credit)
+      if (await isHealthSyncEnabled()) {
+        const workout = getFitnessService().createWorkout(pickupCount, finalWeight, elapsedSeconds);
+        const gpsKm = parseFloat(String(calculateCoverage().distance)) || 0;
+        syncWorkoutToHealth({
+          startMs: Date.now() - elapsedSeconds * 1000,
+          endMs: Date.now(),
+          distanceKm: gpsKm > 0 ? gpsKm : workout.distance_km,
+          calories: workout.calories_burned,
+          itemsCollected: pickupCount,
+        });
       }
     } catch (error) {
       console.error('Failed to save cleanup:', error);

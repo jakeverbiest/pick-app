@@ -8,6 +8,7 @@ import { getFitnessService, FITNESS_APPS, RECOMMENDED_CONFIGS } from '../../src/
 import weightCalibration, { CalibrationState, DEFAULT_LB_PER_PICKUP } from '../../src/services/weightCalibration';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { POCKET_CARRY_KEY } from '../../src/services/motionDetection';
+import { HEALTH_SYNC_KEY, setHealthSyncEnabled } from '../../src/services/healthService';
 import { PRIVACY_POLICY_TEXT, TERMS_OF_SERVICE_TEXT } from '../../src/constants/legal';
 import { FitnessApp } from '../../src/types';
 import { COLORS, SPACING, RADIUS } from '../../src/constants/colors';
@@ -30,12 +31,22 @@ export default function SettingsScreen() {
   const [manualItems, setManualItems] = useState('');
   const [manualWeight, setManualWeight] = useState('');
   const [pocketCarry, setPocketCarry] = useState(true);
+  const [healthSync, setHealthSync] = useState(true);
 
   useEffect(() => {
     AsyncStorage.getItem(POCKET_CARRY_KEY).then((v) => {
       if (v !== null) setPocketCarry(v === 'true');
     });
+    AsyncStorage.getItem(HEALTH_SYNC_KEY).then((v) => {
+      if (v !== null) setHealthSync(v === 'true');
+    });
   }, []);
+
+  const toggleHealthSync = async () => {
+    const next = !healthSync;
+    setHealthSync(next);
+    await setHealthSyncEnabled(next);
+  };
 
   const togglePocketCarry = async () => {
     const next = !pocketCarry;
@@ -487,8 +498,25 @@ export default function SettingsScreen() {
           </View>
         </View>
 
-        {/* Battery saver removed June 11: GPS is now a single consolidated
-            Balanced/5s stream regardless — the toggle controlled nothing real */}
+        {/* Apple Health Section */}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Apple Health</Text>
+
+          <View style={styles.toggleRow}>
+            <View style={{ flex: 1, paddingRight: 12 }}>
+              <Text style={styles.toggleLabel}>Log cleanups as workouts</Text>
+              <Text style={styles.toggleSubtext}>
+                Each cleanup becomes a walking workout — counts toward your rings and exercise minutes. (adidas Running closed its API in 2025, so Health is where the credit lives.)
+              </Text>
+            </View>
+            <TouchableOpacity
+              style={[styles.toggleButton, healthSync && styles.toggleButtonActive]}
+              onPress={toggleHealthSync}
+            >
+              <View style={[styles.toggleThumb, healthSync && styles.toggleThumbActive]} />
+            </TouchableOpacity>
+          </View>
+        </View>
 
         {/* Team/Events Section */}
         <View style={styles.section}>

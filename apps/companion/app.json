@@ -15,6 +15,8 @@
         "NSLocationWhenInUseUsageDescription": "PICK maps your cleanup route and marks which streets you've cleaned. Location is only tracked during an active cleanup session.",
         "NSLocationAlwaysAndWhenInUseUsageDescription": "Allowing background location lets PICK keep tracking your cleanup with the phone in your pocket and the screen off. Location is only used during active cleanup sessions.",
         "NSMotionUsageDescription": "PICK uses motion sensors to automatically detect when you pick up trash, so you never have to press a button mid-cleanup.",
+        "NSHealthShareUsageDescription": "PICK reads nothing from Health — this permission accompanies workout writing.",
+        "NSHealthUpdateUsageDescription": "PICK logs each cleanup as a walking workout so your trash pickup counts toward your activity rings and exercise minutes.",
         "UIBackgroundModes": ["location"]
       }
     },
@@ -53,6 +55,7 @@
           }
         }
       ],
+      "@kingstinct/react-native-healthkit",
       [
         "expo-location",
         {
