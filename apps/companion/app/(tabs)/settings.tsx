@@ -6,6 +6,8 @@ import { getDatabase } from '../../src/services/database';
 import { getAuthService } from '../../src/services/authService';
 import { getFitnessService, FITNESS_APPS, RECOMMENDED_CONFIGS } from '../../src/services/fitnessService';
 import weightCalibration, { CalibrationState, DEFAULT_LB_PER_PICKUP } from '../../src/services/weightCalibration';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { POCKET_CARRY_KEY } from '../../src/services/motionDetection';
 import { PRIVACY_POLICY_TEXT, TERMS_OF_SERVICE_TEXT } from '../../src/constants/legal';
 import { FitnessApp } from '../../src/types';
 import { COLORS, SPACING, RADIUS } from '../../src/constants/colors';
@@ -27,6 +29,19 @@ export default function SettingsScreen() {
   const [legalDoc, setLegalDoc] = useState<'privacy' | 'terms' | null>(null);
   const [manualItems, setManualItems] = useState('');
   const [manualWeight, setManualWeight] = useState('');
+  const [pocketCarry, setPocketCarry] = useState(true);
+
+  useEffect(() => {
+    AsyncStorage.getItem(POCKET_CARRY_KEY).then((v) => {
+      if (v !== null) setPocketCarry(v === 'true');
+    });
+  }, []);
+
+  const togglePocketCarry = async () => {
+    const next = !pocketCarry;
+    setPocketCarry(next);
+    await AsyncStorage.setItem(POCKET_CARRY_KEY, String(next));
+  };
 
   const addManualWeighIn = async () => {
     const items = parseInt(manualItems, 10);
@@ -448,6 +463,30 @@ export default function SettingsScreen() {
               </TouchableOpacity>
             </View>
           )}
+        </View>
+
+        {/* Carry Mode Section */}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>👖 Carry Mode</Text>
+
+          <View style={styles.toggleRow}>
+            <View style={{ flex: 1, paddingRight: 12 }}>
+              <Text style={styles.toggleLabel}>
+                {pocketCarry ? 'Pocket (recommended)' : 'In hand'}
+              </Text>
+              <Text style={styles.toggleSubtext}>
+                {pocketCarry
+                  ? 'Phone rides in your pocket during cleanup — stronger detection, filters out phone-handling motions'
+                  : 'Phone stays in your hand — rotation filter off (gentler signals expected)'}
+              </Text>
+            </View>
+            <TouchableOpacity
+              style={[styles.toggleButton, pocketCarry && styles.toggleButtonActive]}
+              onPress={togglePocketCarry}
+            >
+              <View style={[styles.toggleThumb, pocketCarry && styles.toggleThumbActive]} />
+            </TouchableOpacity>
+          </View>
         </View>
 
         {/* Battery Saver Section */}

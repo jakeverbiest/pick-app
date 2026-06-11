@@ -69,13 +69,16 @@ export default function MapScreen() {
     };
   }, [isListening]);
 
-  // Pocket mode exits on triple-tap within 1.2s
+  // Pocket mode exits on triple-tap within 1.2s. Exiting also trims the
+  // last few seconds of "pickups" — that motion was you pulling the phone out.
   const handlePocketTap = () => {
     const now = Date.now();
     pocketTapsRef.current = [...pocketTapsRef.current.filter((t) => now - t < 1200), now];
     if (pocketTapsRef.current.length >= 3) {
       pocketTapsRef.current = [];
       setPocketMode(false);
+      const corrected = MotionDetector.trimRecentPickups(4000);
+      setPickupCount(corrected);
     }
   };
 
@@ -399,7 +402,8 @@ export default function MapScreen() {
     stopBackgroundSession();
     MotionDetector.stopListening();
     // Pocket-removal guard: pulling the phone out to tap Stop looks like a pickup
-    const correctedCount = MotionDetector.trimRecentPickups(3500);
+    // (June 11: 3.5s missed a removal — people take a beat before tapping Stop)
+    const correctedCount = MotionDetector.trimRecentPickups(6000);
     setPickupCount(correctedCount);
     setIsListening(false);
     setShowSummary(true);
@@ -566,9 +570,9 @@ ${pickupLocations.length > 15 ? `  ... and ${pickupLocations.length - 15} more d
   MOTION EVENT LOG (flight recorder — every event, incl. rejected)
 ═══════════════════════════════════════════════════════════
 
-t(s) | peak(g) | dur(ms) | peakT(ms) | gyro | peaks | conf | result
+t(s) | peak(g) | dur(ms) | peakT(ms) | gyro | peaks | m/s | conf | result
 ${MotionDetector.getSessionEvents().map((e) =>
-  `${String(e.t).padStart(4)} | ${e.peak.toFixed(2).padStart(7)} | ${String(e.duration).padStart(7)} | ${String(e.peakTime).padStart(9)} | ${e.gyro.toFixed(2).padStart(4)} | ${String(e.peaks).padStart(5)} | ${String(e.confidence).padStart(4)} | ${e.counted ? '✅ counted' : e.accepted ? '🔁 cooldown' : '⛔ ' + e.reason}`
+  `${String(e.t).padStart(4)} | ${e.peak.toFixed(2).padStart(7)} | ${String(e.duration).padStart(7)} | ${String(e.peakTime).padStart(9)} | ${e.gyro.toFixed(2).padStart(4)} | ${String(e.peaks).padStart(5)} | ${(e.speed >= 0 ? e.speed.toFixed(1) : ' ? ').padStart(3)} | ${String(e.confidence).padStart(4)} | ${e.counted ? '✅ counted' : e.accepted ? '🔁 cooldown' : '⛔ ' + e.reason}`
 ).join('\n') || '  (no motion events recorded)'}
 
 ═══════════════════════════════════════════════════════════

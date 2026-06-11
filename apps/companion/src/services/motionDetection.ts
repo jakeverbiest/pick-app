@@ -6,6 +6,7 @@
 
 import { Accelerometer, Gyroscope } from 'expo-sensors';
 import * as Location from 'expo-location';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import PickupAggregator from './pickupAggregator';
 import GroundTruthCapture from './groundTruthCapture';
 import MotionShapeDetector from './motionShapeDetector';
@@ -42,7 +43,11 @@ export interface MotionEventRecord {
   counted: boolean; // accepted AND survived the cooldown (what the user sees)
   reason: string; // 'ok', rejection reason, or 'cooldown'
   peaks: number; // distinct accel spikes in the window (spree analysis — measurement only)
+  speed: number; // GPS speed (m/s) at event time, -1 if unknown — walking-filter data
 }
+
+export const POCKET_CARRY_KEY = '@pick_pocket_carry';
+const POCKET_MIN_GYRO = 1.5; // pocket picks observed at 2.9-7.4; handling/insertion at 0.48
 
 class MotionDetector {
   private pickupEvents: PickupEvent[] = [];
@@ -55,7 +60,8 @@ class MotionDetector {
   private locationSubscription: any = null;
   private lastAccel = { x: 0, y: 0, z: 0 };
   private lastGyro = { x: 0, y: 0, z: 0 };
-  private lastLocation: { latitude: number; longitude: number; accuracy: number } | null = null;
+  private lastLocation: { latitude: number; longitude: number; accuracy: number; speed: number } | null = null;
+  private pocketCarry = true; // default: pocket mode filters active (Settings toggle)
 
   private tuning: TuningParams = {
     accelThreshold: 0.85,
@@ -82,6 +88,15 @@ class MotionDetector {
       this.sessionEvents = [];
       this.sessionStartTime = Date.now();
 
+      // Carry mode: pocket (default) enables the low-rotation handling filter
+      try {
+        const stored = await AsyncStorage.getItem(POCKET_CARRY_KEY);
+        this.pocketCarry = stored === null ? true : stored === 'true';
+        console.log(`👖 Carry mode: ${this.pocketCarry ? 'pocket (rotation filter ON)' : 'hand (rotation filter OFF)'}`);
+      } catch {
+        this.pocketCarry = true;
+      }
+
       // Request location permissions
       const { status } = await Location.requestForegroundPermissionsAsync();
       if (status !== 'granted') {
@@ -99,6 +114,7 @@ class MotionDetector {
               latitude: location.coords.latitude,
               longitude: location.coords.longitude,
               accuracy: location.coords.accuracy || 0,
+              speed: location.coords.speed ?? -1,
             };
           }
         );
@@ -167,13 +183,22 @@ class MotionDetector {
       if (MotionShapeDetector.shouldFinalize(magnitude, now)) {
         const profile = MotionShapeDetector.finalizeProfile();
         if (profile) {
-          const result = evaluatePickupProfile({
+          const peaks = countDistinctPeaks(profile.samples);
+          let result = evaluatePickupProfile({
             duration: profile.duration,
             peakAccel: profile.peakAccel,
             peakAccelTime: profile.peakAccelTime,
             peakGyro: profile.peakGyro,
             lastAccel: profile.samples[profile.samples.length - 1].accel,
+            peaks,
           });
+
+          // Pocket carry: a pickup means bending — big rotation. Low-gyro events
+          // are phone handling (observed insertion: gyro 0.48 vs picks 2.9-7.4).
+          if (result.confidence > 0 && this.pocketCarry && profile.peakGyro < POCKET_MIN_GYRO) {
+            result = { confidence: 0, reason: `low rotation: gyro ${profile.peakGyro.toFixed(2)} < ${POCKET_MIN_GYRO} (handling?)` };
+          }
+
           const finalConfidence = result.confidence;
           const accepted = finalConfidence > 30;
 
@@ -194,7 +219,8 @@ class MotionDetector {
             accepted,
             counted,
             reason: !accepted ? result.reason : counted ? 'ok' : 'cooldown',
-            peaks: countDistinctPeaks(profile.samples),
+            peaks,
+            speed: this.lastLocation?.speed ?? -1,
           });
 
           console.log(`⏸️ Motion stopped. Duration: ${profile.duration}ms, Peak: ${profile.peakAccel.toFixed(2)}g, Gyro: ${profile.peakGyro.toFixed(2)}, Confidence: ${finalConfidence}%${accepted && !counted ? ' (cooldown — not counted)' : ''}`);

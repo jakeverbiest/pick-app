@@ -109,6 +109,18 @@ check('implausibly fast double-spike merges to 1', countDistinctPeaks(tooFast) =
 const jitter = stream([1.2, 1.25, 1.18, 1.22, 1.19, 1.21]);
 check('sustained jitter counts 1', countDistinctPeaks(jitter) === 1, true);
 
+console.log('\n=== Walking cadence filter (June 11 pocket session) ===');
+// Real walking bursts from Jake's June 11 indoor test
+check('walking burst (peaks 5, 2593ms) rejected', isPickup({ ...ev(2.49, 2593, 1895), peaks: 5 }), false);
+check('walking burst (peaks 4, 2594ms) rejected', isPickup({ ...ev(1.72, 2594, 1896), peaks: 4 }), false);
+// Real picks from the same session must still pass
+check('real pocket pick (peaks 1, 1197ms) accepted', isPickup({ ...ev(1.42, 1197, 499), peaks: 1 }), true);
+check('bend+straighten pick (peaks 2, 1196ms) accepted', isPickup({ ...ev(1.52, 1196, 598), peaks: 2 }), true);
+// Short multi-peak (true rapid spree in one window) still allowed
+check('3-peak SHORT window (1.5s spree) accepted', isPickup({ ...ev(1.5, 1500, 400), peaks: 3 }), true);
+// Legacy fixtures without peaks data unaffected
+check('no peaks data → no rhythmic rejection', isPickup(ev(1.49, 2594)), true);
+
 console.log('\n=== Threshold sanity ===');
 check('confidence threshold unchanged at 30', THRESHOLDS.confidenceThreshold === 30, true);
 check('peak window is 0.9-3.5g', THRESHOLDS.peakAccelMin === 0.9 && THRESHOLDS.peakAccelMax === 3.5, true);

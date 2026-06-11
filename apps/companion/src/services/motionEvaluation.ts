@@ -18,6 +18,7 @@ export interface EvalProfile {
   peakAccelTime: number; // ms from recording start
   peakGyro: number;
   lastAccel: number; // final sample, for settling check
+  peaks?: number; // distinct accel spikes (from countDistinctPeaks)
 }
 
 export interface EvalResult {
@@ -49,6 +50,13 @@ export const THRESHOLDS = {
 
 export function evaluatePickupProfile(p: EvalProfile): EvalResult {
   const T = THRESHOLDS;
+
+  // Rhythmic walking filter (June 11 pocket session): walking strides fill a
+  // long window with step-cadence spikes (observed: peaks 4-5 over ~2.6s).
+  // Real pickups finalize in <1.5s with 1-2 peaks now that settling works.
+  if ((p.peaks ?? 1) >= 3 && p.duration >= 2000) {
+    return { confidence: 0, reason: `rhythmic motion: ${p.peaks} peaks over ${p.duration}ms (walking?)` };
+  }
 
   if (p.duration < T.durationMin || p.duration > T.durationMax) {
     return { confidence: 0, reason: `duration ${p.duration}ms (need ${T.durationMin}-${T.durationMax})` };
