@@ -27,20 +27,38 @@ function distM(a: RoutePoint, b: RoutePoint): number {
 }
 
 /**
- * Outlier rejection: drop points that "teleport" further than a walker can
- * move between fixes. If several consecutive points agree on the new spot,
- * accept it (real relocation, e.g. stepping out of a building).
+ * Spike rejection: a GPS glitch teleports away AND comes back; real movement
+ * goes and stays. When a point jumps > maxJumpM, look ahead — if the track
+ * returns near the last good point within a few fixes, the excursion was
+ * multipath noise (drop it); if not, it's genuine movement (keep it).
+ * This preserves legit sparse routes (old 20s-interval walks) while erasing
+ * the indoor 40-50m zigzags.
  */
 export function dropOutliers(points: RoutePoint[], maxJumpM: number = MAX_JUMP_M): RoutePoint[] {
   if (!points || points.length <= 2) return points ?? [];
   const out: RoutePoint[] = [points[0]];
-  let skipped = 0;
-  for (let i = 1; i < points.length; i++) {
-    if (distM(out[out.length - 1], points[i]) <= maxJumpM || skipped >= OUTLIER_ESCAPE) {
+  let i = 1;
+  while (i < points.length) {
+    const last = out[out.length - 1];
+    if (distM(last, points[i]) <= maxJumpM) {
       out.push(points[i]);
-      skipped = 0;
+      i++;
+      continue;
+    }
+    // Excursion: does the track return near `last` within the lookahead window?
+    let returnedAt = -1;
+    const windowEnd = Math.min(i + OUTLIER_ESCAPE, points.length - 1);
+    for (let j = i + 1; j <= windowEnd; j++) {
+      if (distM(last, points[j]) <= maxJumpM) {
+        returnedAt = j;
+        break;
+      }
+    }
+    if (returnedAt >= 0) {
+      i = returnedAt; // spike — skip the excursion, resume at the return
     } else {
-      skipped++;
+      out.push(points[i]); // genuine move — keep it
+      i++;
     }
   }
   return out;
