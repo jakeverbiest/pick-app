@@ -134,7 +134,6 @@ export default function ActivityScreen() {
     return (
       <SafeAreaView style={styles.container}>
         <View style={styles.centerContent}>
-          <Text style={styles.title}>📊 Activity</Text>
           <Text style={styles.subtitle}>Loading...</Text>
         </View>
       </SafeAreaView>
@@ -148,12 +147,6 @@ export default function ActivityScreen() {
   return (
     <SafeAreaView style={styles.container}>
       <ScrollView contentContainerStyle={styles.scrollContent}>
-        {/* Header */}
-        <View style={styles.header}>
-          <Text style={styles.title}>📊 Activity</Text>
-          {user && <Text style={styles.userName}>{user.displayName}</Text>}
-        </View>
-
         {/* Stats Overview */}
         <View style={styles.statsBox}>
           <Text style={styles.statsLabel}>Your Impact</Text>
@@ -213,46 +206,32 @@ export default function ActivityScreen() {
 
         {/* Recent Cleanups */}
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>📝 Recent Cleanups</Text>
+          <Text style={styles.sectionTitle}>Recent Cleanups</Text>
 
           {cleanups && cleanups.length > 0 ? (
             cleanups.map((cleanup, index) => (
               <View key={index} style={styles.cleanupCard}>
-                <View style={styles.cleanupHeader}>
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.cleanupDate}>
-                      {formatDate(cleanup.timestamp)}
-                    </Text>
-                    <Text style={styles.cleanupTeam}>👥 {cleanup.team}</Text>
-                  </View>
-                  <View style={styles.cleanupStats}>
-                    <Text style={styles.cleanupWeight}>
-                      {cleanup.weight_lb.toFixed(1)} lb
-                    </Text>
-                    <TouchableOpacity
-                      style={styles.exportButton}
-                      onPress={() => exportCleanup(cleanup)}
-                    >
-                      <Text style={styles.exportButtonText}>📤</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                      style={styles.exportButton}
-                      onPress={() => deleteCleanup(cleanup)}
-                    >
-                      <Text style={styles.exportButtonText}>🗑️</Text>
-                    </TouchableOpacity>
-                  </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.cleanupDate}>
+                    {formatDate(cleanup.timestamp)}
+                  </Text>
+                  <Text style={styles.detailText}>
+                    {cleanup.items_count} items · {formatTime(cleanup.duration_seconds)} · {cleanup.weight_lb.toFixed(1)} lb
+                  </Text>
                 </View>
-                <View style={styles.cleanupDetails}>
-                  <Text style={styles.detailText}>
-                    🧹 {cleanup.items_count} items
-                  </Text>
-                  <Text style={styles.detailText}>
-                    ⏱️ {formatTime(cleanup.duration_seconds)}
-                  </Text>
-                  {cleanup.fitness_tracked && (
-                    <Text style={styles.detailText}>📱 Fitness synced</Text>
-                  )}
+                <View style={styles.cleanupActions}>
+                  <TouchableOpacity
+                    style={styles.exportButton}
+                    onPress={() => exportCleanup(cleanup)}
+                  >
+                    <Text style={styles.exportButtonText}>📤</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.exportButton}
+                    onPress={() => deleteCleanup(cleanup)}
+                  >
+                    <Text style={styles.exportButtonText}>🗑️</Text>
+                  </TouchableOpacity>
                 </View>
               </View>
             ))
@@ -301,7 +280,8 @@ const styles = StyleSheet.create({
   statsBox: {
     backgroundColor: COLORS.white,
     borderRadius: 12,
-    padding: 16,
+    paddingHorizontal: 16,
+    paddingVertical: 28,
     marginBottom: 24,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 1 },
@@ -323,15 +303,15 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   statValue: {
-    fontSize: 24,
-    fontWeight: '700',
+    fontSize: 38,
+    fontWeight: '800',
     color: '#34C759',
     marginBottom: 4,
   },
   statLabel: {
-    fontSize: 12,
+    fontSize: 13,
     color: COLORS.mutedSage,
-    fontWeight: '500',
+    fontWeight: '600',
   },
   progressContainer: {
     marginTop: 16,
@@ -397,12 +377,20 @@ const styles = StyleSheet.create({
   cleanupCard: {
     backgroundColor: COLORS.white,
     borderRadius: 10,
-    padding: 12,
-    marginBottom: 12,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    marginBottom: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 1 },
     shadowOpacity: 0.05,
     shadowRadius: 2,
+  },
+  cleanupActions: {
+    flexDirection: 'row',
+    gap: 8,
+    alignItems: 'center',
   },
   cleanupHeader: {
     flexDirection: 'row',
@@ -445,10 +433,9 @@ const styles = StyleSheet.create({
     fontStyle: 'italic',
   },
   exportButton: {
-    marginTop: 6,
-    paddingVertical: 4,
-    paddingHorizontal: 8,
-    backgroundColor: COLORS.accent,
+    paddingVertical: 6,
+    paddingHorizontal: 9,
+    backgroundColor: COLORS.light,
     borderRadius: 6,
   },
   exportButtonText: {
