@@ -303,7 +303,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   statValue: {
-    fontSize: 38,
+    fontSize: 52,
     fontWeight: '800',
     color: '#34C759',
     marginBottom: 4,
