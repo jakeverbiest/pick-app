@@ -38,6 +38,8 @@ Since the May 31 detector validation, the app gained (June 3–10 sessions):
 
 **Dev build LIVE + pocket session #2 (June 11):** PICK now runs as its own app (Xcode dev build; CocoaPods via Homebrew; expo-file-system was 2 majors stale — `expo install --fix` resolved). Background location session works (`🌙 Background session active`). OSM segment fetch verified on-device (1,198 segments, LES). Settle fix confirmed in field: windows close naturally 600–1300ms. Session: 5 real picks → 10 counted; flight recorder identified all 5 extras: pocket insertion (gyro 0.48 vs picks' 2.9–7.4), 2 walking bursts (peaks 4–5 over ~2.6s), removal (1.3s before Stop, outside old 3.5s trim). **Filters shipped:** rhythmic-walking rejection (peaks≥3 & duration≥2s), pocket-carry low-rotation rejection (gyro<1.5, Settings toggle 👖 Carry Mode, default pocket), pocket-mode-exit trim (4s), stop trim widened to 6s, GPS speed now recorded per event (m/s column). Replaying June 11 log against new filters: 10 counted → 6 (5 real + 1 borderline walking single-peak). Next refinement candidate if needed: speed-gating using the new m/s column.
 
+**Data cleanup (June 11):** per-cleanup 🗑️ delete shipped (Activity tab) + fixed stored-id-field override bug. Jake purged the 5 settings-mocks and the pre-June-5 legacy migration leftovers — community map now shows real walks only.
+
 **Known issues / open items:**
 1. **False positives** — Jake reports "a huge amount" in real walks (e.g., 256 items in 22 min). Re-measure after the June 10 threshold fix; consider gyro discrimination next.
 1b. **Segment system untested in field** — verify Overpass fetch on phone, snap quality with 20s GPS intervals (may need denser GPS during cleanup), and Firestore write volume.
