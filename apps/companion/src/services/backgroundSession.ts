@@ -24,7 +24,7 @@ const LOCATION_TASK = 'pick-cleanup-location-task';
 let lastBackgroundLocation: { lat: number; lon: number; timestamp: number } | null = null;
 
 // Must be defined in module scope so it survives app relaunches
-TaskManager.defineTask(LOCATION_TASK, ({ data, error }) => {
+TaskManager.defineTask(LOCATION_TASK, async ({ data, error }) => {
   if (error) {
     console.error('Background location task error:', error.message);
     return;
