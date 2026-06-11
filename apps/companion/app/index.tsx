@@ -1,22 +1,35 @@
 import { useEffect } from 'react';
 import { useRouter } from 'expo-router';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { getAuthService } from '../src/services/authService';
+import { SAFETY_ACK_KEY } from './safety';
 
 export default function RootIndexScreen() {
   const router = useRouter();
 
   useEffect(() => {
-    const authService = getAuthService();
-    const user = authService.getCurrentUser();
+    const route = async () => {
+      const authService = getAuthService();
+      const user = authService.getCurrentUser();
 
-    // Navigate based on auth state
-    if (user) {
+      if (!user) {
+        console.log('📱 No user, routing to login');
+        router.replace('/auth/login');
+        return;
+      }
+
+      // First-run safety acknowledgement gate
+      const ack = await AsyncStorage.getItem(SAFETY_ACK_KEY);
+      if (!ack) {
+        console.log('🦺 First run — routing to safety briefing');
+        router.replace('/safety');
+        return;
+      }
+
       console.log('✅ User logged in, routing to map');
       router.replace('/(tabs)/map');
-    } else {
-      console.log('📱 No user, routing to login');
-      router.replace('/auth/login');
-    }
+    };
+    route();
   }, []);
 
   return null;

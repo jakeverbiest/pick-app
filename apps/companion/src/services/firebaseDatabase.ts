@@ -163,11 +163,14 @@ class FirebaseDatabase {
       return null;
     }
 
+    const tsSeconds = this.toSeconds((cleanup as any).timestamp);
+    this.invalidateCleanupsMemo();
+
     try {
       const docRef = await addDoc(collection(db, 'cleanups'), {
         ...cleanup,
         userId: this.currentUserId,
-        timestamp: Timestamp.now(),
+        timestamp: Timestamp.fromMillis(tsSeconds * 1000),
         synced: true,
       });
 
@@ -175,6 +178,7 @@ class FirebaseDatabase {
         ...cleanup,
         id: docRef.id,
         userId: this.currentUserId,
+        timestamp: tsSeconds,
         synced: true,
       };
 
@@ -184,12 +188,12 @@ class FirebaseDatabase {
       console.log(`✅ Cleanup saved to Firestore: ${docRef.id}`);
       return cleanupWithId;
     } catch (error) {
-      console.error('❌ Failed to add cleanup:', error);
-      // Still save to cache for offline support
+      console.error('📴 Cloud save failed — walk saved LOCALLY and will sync automatically:', error);
       const offlineCleanup: Cleanup = {
         ...cleanup,
         id: `offline_${Date.now()}`,
         userId: this.currentUserId,
+        timestamp: tsSeconds,
         synced: false,
       };
       await this.updateCleanupCache(offlineCleanup);
@@ -197,10 +201,37 @@ class FirebaseDatabase {
     }
   }
 
+  // Short-lived memo: every tab refetches on focus, firing the same query
+  // 4-6x per app open (visible in session logs). 15s TTL + in-flight dedup.
+  private cleanupsMemo = new Map<number, { at: number; data: Cleanup[] }>();
+  private cleanupsInflight = new Map<number, Promise<Cleanup[]>>();
+
+  private invalidateCleanupsMemo() {
+    this.cleanupsMemo.clear();
+    this.cleanupsInflight.clear();
+  }
+
   /**
    * Get cleanups for current user
    */
-  async getCleanups(limitCount: number = 50) {
+  async getCleanups(limitCount: number = 50): Promise<Cleanup[]> {
+    const memo = this.cleanupsMemo.get(limitCount);
+    if (memo && Date.now() - memo.at < 15000) {
+      return memo.data;
+    }
+    const inflight = this.cleanupsInflight.get(limitCount);
+    if (inflight) return inflight;
+
+    const promise = this.fetchCleanups(limitCount).finally(() => {
+      this.cleanupsInflight.delete(limitCount);
+    });
+    this.cleanupsInflight.set(limitCount, promise);
+    const data = await promise;
+    this.cleanupsMemo.set(limitCount, { at: Date.now(), data });
+    return data;
+  }
+
+  private async fetchCleanups(limitCount: number): Promise<Cleanup[]> {
     // Try Firestore first if user is initialized
     if (this.currentUserId) {
       try {
@@ -228,8 +259,15 @@ class FirebaseDatabase {
           // Update cache with Firestore data
           await this.updateCleanupCache(...sorted);
 
-          console.log(`✅ Loaded ${sorted.length} cleanups from Firestore`);
-          return sorted;
+          // Include not-yet-synced local walks so a dead-zone session
+          // appears in Activity/maps immediately
+          const unsynced = (await this.getCleanupCache()).filter((c) => !c.synced);
+          const combined = unsynced.length > 0
+            ? [...unsynced, ...sorted].sort((a, b) => b.timestamp - a.timestamp)
+            : sorted;
+
+          console.log(`✅ Loaded ${sorted.length} cleanups from Firestore${unsynced.length ? ` (+${unsynced.length} local pending sync)` : ''}`);
+          return combined;
         }
       } catch (error) {
         console.error('❌ Failed to get cleanups from Firestore:', error);
@@ -247,7 +285,10 @@ class FirebaseDatabase {
    */
   async deleteCleanup(cleanupId: string): Promise<boolean> {
     try {
-      await deleteDoc(doc(db, 'cleanups', cleanupId));
+      this.invalidateCleanupsMemo();
+      if (!cleanupId.startsWith('offline_')) {
+        await deleteDoc(doc(db, 'cleanups', cleanupId));
+      }
       // Scrub from offline cache too (match doc id OR legacy stored id field)
       try {
         const cached = await AsyncStorage.getItem(CLEANUPS_CACHE_KEY);
@@ -731,34 +772,52 @@ class FirebaseDatabase {
     }
   }
 
+  /** Normalize any timestamp (ms or seconds) to SECONDS — the cache/display unit. */
+  private toSeconds(ts: any): number {
+    if (typeof ts !== 'number' || !isFinite(ts)) return Math.floor(Date.now() / 1000);
+    return ts > 1e12 ? Math.floor(ts / 1000) : Math.floor(ts);
+  }
+
+  private syncStarted = false;
+
   private async syncCleanups() {
-    // Periodic sync to ensure offline changes are uploaded
-    setInterval(async () => {
+    if (this.syncStarted) return; // initialize() runs multiple times — one loop only
+    this.syncStarted = true;
+
+    const flush = async () => {
       try {
         const cached = await this.getCleanupCache();
         const offline = cached.filter((c) => !c.synced);
+        if (offline.length === 0) return;
 
+        console.log(`🔄 Syncing ${offline.length} offline walk(s) to the cloud...`);
+        let remaining = cached;
         for (const cleanup of offline) {
           try {
-            const { id, userId, synced, ...data } = cleanup;
-            await addDoc(collection(db, 'cleanups'), {
+            const { id, userId, synced, ...data } = cleanup as any;
+            const tsSeconds = this.toSeconds(data.timestamp);
+            const docRef = await addDoc(collection(db, 'cleanups'), {
               ...data,
               userId: this.currentUserId,
+              timestamp: Timestamp.fromMillis(tsSeconds * 1000), // preserve the walk's real time
+              synced: true,
             });
-            cleanup.synced = true;
+            // Replace the local copy with the cloud copy (no duplicates)
+            remaining = remaining.filter((c) => c.id !== id);
+            remaining.unshift({ ...cleanup, id: docRef.id, timestamp: tsSeconds, synced: true });
+            console.log(`✅ Offline walk synced: ${id} → ${docRef.id}`);
           } catch (error) {
-            console.error('Failed to sync cleanup:', error);
+            console.log('📴 Still offline — walk stays saved locally, will retry');
           }
         }
-
-        if (offline.length > 0) {
-          await this.updateCleanupCache(...cached);
-          console.log(`✅ Synced ${offline.length} offline cleanups`);
-        }
+        await AsyncStorage.setItem(CLEANUPS_CACHE_KEY, JSON.stringify(remaining));
       } catch (error) {
         console.error('Sync failed:', error);
       }
-    }, 60000); // Sync every 60 seconds
+    };
+
+    flush(); // immediately on startup — don't make a dead-zone walk wait a minute
+    setInterval(flush, 60000);
   }
 }
 

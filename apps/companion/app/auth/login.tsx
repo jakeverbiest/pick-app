@@ -1,4 +1,4 @@
-import { View, Text, StyleSheet, TouchableOpacity, TextInput, Alert, ActivityIndicator } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, TextInput, Alert, ActivityIndicator, Image } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useState } from 'react';
 import { useRouter } from 'expo-router';
@@ -55,8 +55,8 @@ export default function LoginScreen() {
       <View style={styles.content}>
         {/* Header */}
         <View style={styles.header}>
-          <Text style={styles.logo}>🚮</Text>
-          <Text style={styles.title}>Pick</Text>
+          <Image source={require('../../assets/images/logo-mark.png')} style={{ width: 96, height: 96, marginBottom: 4 }} />
+          <Text style={styles.title}>PICK</Text>
           <Text style={styles.subtitle}>Track neighborhood cleanups</Text>
         </View>
 

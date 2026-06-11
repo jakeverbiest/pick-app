@@ -40,6 +40,8 @@ Since the May 31 detector validation, the app gained (June 3–10 sessions):
 
 **Data cleanup (June 11):** per-cleanup 🗑️ delete shipped (Activity tab) + fixed stored-id-field override bug. Jake purged the 5 settings-mocks and the pre-June-5 legacy migration leftovers — community map now shows real walks only.
 
+**Hardening pass (June 11, evening):** (1) Offline-safe walks — sync loop fixed: timestamps normalized to seconds (was mixing ms/sec → year-56000 dates on synced walks), local copy replaced after sync (no dupes), single sync loop (was spawning one per initialize), immediate flush on startup, unsynced walks now appear in Activity instantly with 📴 logging. (2) getCleanups memoized (15s TTL + in-flight dedup — was firing 4-6 identical Firestore reads per app open). (3) Branding: logo-mark.png (transparent) on login/signup replacing 🚮 emoji; title "PICK". (4) Safety briefing screen (app/safety.tsx) gates first run after login — 6 tips + acknowledge, stored in AsyncStorage, satisfies Terms reference + app review expectations.
+
 **Known issues / open items:**
 1. **False positives** — Jake reports "a huge amount" in real walks (e.g., 256 items in 22 min). Re-measure after the June 10 threshold fix; consider gyro discrimination next.
 1b. **Segment system untested in field** — verify Overpass fetch on phone, snap quality with 20s GPS intervals (may need denser GPS during cleanup), and Firestore write volume.
