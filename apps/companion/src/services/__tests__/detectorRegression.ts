@@ -13,7 +13,7 @@
  */
 
 import { evaluatePickupProfile, isPickup, countDistinctPeaks, THRESHOLDS, EvalProfile } from '../motionEvaluation';
-import { simplifyRoute } from '../routeUtils';
+import { simplifyRoute, dropOutliers } from '../routeUtils';
 
 // Every motion event from the June 10 log. peakAccelTime was only logged for
 // the timing rejection (2395ms); others use 800ms (mid-window, uncontroversial).
@@ -141,6 +141,25 @@ check('L-shaped walk keeps its corner (3 pts)', corner.length === 3, true);
 // Endpoints always survive
 check('first point preserved', corner[0].lat === lShape[0].lat, true);
 check('last point preserved', corner[2].lon === lShape[2].lon, true);
+
+// Indoor GPS glitches: walker at a spot, two points teleport 45m away, then return
+const glitchy = [
+  { lat: 40.67840, lon: -73.99510 },
+  { lat: 40.67842, lon: -73.99508 },
+  { lat: 40.67880, lon: -73.99470 }, // ~55m teleport — multipath glitch
+  { lat: 40.67878, lon: -73.99472 }, // still out there
+  { lat: 40.67843, lon: -73.99507 }, // back to reality
+  { lat: 40.67845, lon: -73.99505 },
+];
+const cleaned = dropOutliers(glitchy);
+check(`teleport glitches dropped (${glitchy.length} → ${cleaned.length}, expect 4)`, cleaned.length === 4, true);
+// But a REAL relocation (sustained) gets accepted via the escape hatch
+const relocated = [
+  { lat: 40.67840, lon: -73.99510 },
+  ...Array.from({ length: 6 }, (_, i) => ({ lat: 40.67900 + i * 0.0001, lon: -73.99400 })), // genuinely moved + keeps moving
+];
+const kept = dropOutliers(relocated);
+check('sustained relocation eventually accepted', kept.length >= 3, true);
 
 console.log('\n=== Threshold sanity ===');
 check('confidence threshold unchanged at 30', THRESHOLDS.confidenceThreshold === 30, true);

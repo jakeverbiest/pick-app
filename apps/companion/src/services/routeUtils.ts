@@ -15,6 +15,36 @@ export interface RoutePoint {
 }
 
 export const ROUTE_TOLERANCE_M = 10;
+// Max plausible distance between consecutive ~5s GPS fixes while walking.
+// Bigger jumps are multipath glitches (indoor GPS bounces 30-50m off walls).
+export const MAX_JUMP_M = 25;
+const OUTLIER_ESCAPE = 4; // N consecutive "outliers" = GPS genuinely relocated — accept
+
+function distM(a: RoutePoint, b: RoutePoint): number {
+  const x = (b.lon - a.lon) * 111320 * Math.cos(((a.lat + b.lat) / 2) * (Math.PI / 180));
+  const y = (b.lat - a.lat) * 110540;
+  return Math.sqrt(x * x + y * y);
+}
+
+/**
+ * Outlier rejection: drop points that "teleport" further than a walker can
+ * move between fixes. If several consecutive points agree on the new spot,
+ * accept it (real relocation, e.g. stepping out of a building).
+ */
+export function dropOutliers(points: RoutePoint[], maxJumpM: number = MAX_JUMP_M): RoutePoint[] {
+  if (!points || points.length <= 2) return points ?? [];
+  const out: RoutePoint[] = [points[0]];
+  let skipped = 0;
+  for (let i = 1; i < points.length; i++) {
+    if (distM(out[out.length - 1], points[i]) <= maxJumpM || skipped >= OUTLIER_ESCAPE) {
+      out.push(points[i]);
+      skipped = 0;
+    } else {
+      skipped++;
+    }
+  }
+  return out;
+}
 
 /** Perpendicular distance (meters) from point p to the line a-b. */
 function perpDistanceM(p: RoutePoint, a: RoutePoint, b: RoutePoint): number {
@@ -40,7 +70,8 @@ function perpDistanceM(p: RoutePoint, a: RoutePoint, b: RoutePoint): number {
 /**
  * Douglas-Peucker simplification. Always keeps first and last points.
  */
-export function simplifyRoute(points: RoutePoint[], toleranceM: number = ROUTE_TOLERANCE_M): RoutePoint[] {
+export function simplifyRoute(rawPoints: RoutePoint[], toleranceM: number = ROUTE_TOLERANCE_M): RoutePoint[] {
+  const points = dropOutliers(rawPoints);
   if (!points || points.length <= 2) return points ?? [];
 
   const keep = new Array<boolean>(points.length).fill(false);
