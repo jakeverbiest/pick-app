@@ -1,17 +1,25 @@
 {
   "expo": {
-    "name": "companion",
-    "slug": "companion",
+    "name": "PICK",
+    "slug": "pick-app",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
-    "scheme": "companion",
+    "scheme": "pickapp",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": false,
+      "bundleIdentifier": "com.jakeverbiest.pickapp",
+      "infoPlist": {
+        "NSLocationWhenInUseUsageDescription": "PICK maps your cleanup route and marks which streets you've cleaned. Location is only tracked during an active cleanup session.",
+        "NSLocationAlwaysAndWhenInUseUsageDescription": "Allowing background location lets PICK keep tracking your cleanup with the phone in your pocket and the screen off. Location is only used during active cleanup sessions.",
+        "NSMotionUsageDescription": "PICK uses motion sensors to automatically detect when you pick up trash, so you never have to press a button mid-cleanup.",
+        "UIBackgroundModes": ["location"]
+      }
     },
     "android": {
+      "package": "com.jakeverbiest.pickapp",
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
@@ -19,7 +27,13 @@
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
       },
       "edgeToEdgeEnabled": true,
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "permissions": [
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.ACCESS_BACKGROUND_LOCATION",
+        "android.permission.FOREGROUND_SERVICE",
+        "android.permission.FOREGROUND_SERVICE_LOCATION"
+      ]
     },
     "web": {
       "output": "static",
@@ -37,6 +51,15 @@
           "dark": {
             "backgroundColor": "#000000"
           }
+        }
+      ],
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "PICK maps your cleanup route and marks which streets you've cleaned.",
+          "locationAlwaysAndWhenInUsePermission": "Background location lets PICK keep tracking your cleanup with the screen off.",
+          "isAndroidBackgroundLocationEnabled": true,
+          "isAndroidForegroundServiceEnabled": true
         }
       ]
     ],

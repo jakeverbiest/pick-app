@@ -10,6 +10,7 @@ import weightCalibration, { DEFAULT_LB_PER_PICKUP } from '../../src/services/wei
 import { weightToBags, formatBags } from '../../src/services/impactMetrics';
 import { getCoverage, markRouteCleaned } from '../../src/services/streetSegments';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
+import { startBackgroundSession, stopBackgroundSession } from '../../src/services/backgroundSession';
 import { getDatabase } from '../../src/services/database';
 import { getAuthService } from '../../src/services/authService';
 import { getBadgeService } from '../../src/services/badgeService';
@@ -382,9 +383,18 @@ export default function MapScreen() {
       (error) => console.error(error)
     );
     setIsListening(true);
+
+    // Real builds: register background location so the session survives
+    // screen-off. Expo Go: falls back to foreground (keep screen on).
+    startBackgroundSession().then((mode) => {
+      if (mode === 'foreground') {
+        console.log('💡 Screen-off not available in this build — Pocket Mode (🌙) keeps the session safe');
+      }
+    });
   };
 
   const stopCleanup = () => {
+    stopBackgroundSession();
     MotionDetector.stopListening();
     // Pocket-removal guard: pulling the phone out to tap Stop looks like a pickup
     const correctedCount = MotionDetector.trimRecentPickups(3500);
