@@ -175,13 +175,24 @@ export default function MapScreen() {
 
   const trackLocation = async () => {
     try {
-      // Battery saver: Low Power, Normal: Balanced
-      const accuracy = batterySaver ? Location.Accuracy.Low : Location.Accuracy.Balanced;
-      const location = await Location.getCurrentPositionAsync({
-        accuracy,
-      });
-
-      const { latitude, longitude } = location.coords;
+      // During a session, reuse the motion detector's GPS watcher instead of
+      // requesting our own fixes — one radio stream instead of three.
+      let latitude: number | undefined;
+      let longitude: number | undefined;
+      if (MotionDetector.isActive()) {
+        const last = MotionDetector.getLastLocation();
+        if (last) {
+          latitude = last.latitude;
+          longitude = last.longitude;
+        }
+      }
+      if (latitude === undefined || longitude === undefined) {
+        // Idle path (map centering before a session): one-off fix
+        const accuracy = batterySaver ? Location.Accuracy.Low : Location.Accuracy.Balanced;
+        const location = await Location.getCurrentPositionAsync({ accuracy });
+        latitude = location.coords.latitude;
+        longitude = location.coords.longitude;
+      }
       setCurrentLocation({ lat: latitude, lon: longitude });
 
       setSessionRoute((prev) => {
@@ -351,15 +362,15 @@ export default function MapScreen() {
         highFrequencyEndRef.current = Date.now() + 30000; // 30s of high frequency
         console.log('🎯 Pickup detected - HIGH FREQUENCY GPS for 30s');
 
-        // Record pickup location (every pickup for now, can optimize later)
-        if (true) { // Changed from % 3 === 0 for dev/testing
+        // Record pickup location from the detector's existing GPS watcher —
+        // requesting a fresh fix per pickup was up to ~90 radio hits per walk
+        {
           try {
-            const accuracy = batterySaver ? Location.Accuracy.Low : Location.Accuracy.Balanced;
-            const location = await Location.getCurrentPositionAsync({ accuracy });
-
+            const last = MotionDetector.getLastLocation();
+            if (!last) throw new Error('no fix yet');
             const pickupLoc = {
-              lat: location.coords.latitude,
-              lon: location.coords.longitude,
+              lat: last.latitude,
+              lon: last.longitude,
               timestamp: Date.now(),
             };
 
@@ -370,16 +381,17 @@ export default function MapScreen() {
               webviewRef.current.injectJavaScript(`
                 try {
                   if (window.addPickup) {
-                    window.addPickup(${location.coords.latitude}, ${location.coords.longitude});
+                    window.addPickup(${last.latitude}, ${last.longitude});
                   }
                 } catch(e) {
                   console.error('Pickup marker error:', e);
                 }
+                true;
               `);
             }
 
             const db = await getDatabase();
-            await db.addPickupLocation(location.coords.latitude, location.coords.longitude);
+            await db.addPickupLocation(last.latitude, last.longitude);
           } catch (error) {
             console.error('Pickup location error:', error);
           }

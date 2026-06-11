@@ -103,11 +103,13 @@ class MotionDetector {
         console.warn('Location permission denied');
       } else {
         // Start location tracking
+        // Balanced/5s: High@1s was the app's single biggest battery cost.
+        // Segment snapping tolerates 25m; pickup pins don't need sub-meter.
         this.locationSubscription = await Location.watchPositionAsync(
           {
-            accuracy: Location.Accuracy.High,
-            timeInterval: 1000,
-            distanceInterval: 0,
+            accuracy: Location.Accuracy.Balanced,
+            timeInterval: 5000,
+            distanceInterval: 3,
           },
           (location) => {
             this.lastLocation = {
@@ -236,6 +238,12 @@ class MotionDetector {
   /** Flight recorder: all motion events from the current/last session. */
   getSessionEvents(): MotionEventRecord[] {
     return [...this.sessionEvents];
+  }
+
+  /** Latest GPS fix from this service's watcher — lets the map screen reuse
+   *  it instead of requesting its own fixes (one GPS stream, not three). */
+  getLastLocation() {
+    return this.lastLocation;
   }
 
   /** Returns true if the pickup was counted (false = cooldown-suppressed). */
