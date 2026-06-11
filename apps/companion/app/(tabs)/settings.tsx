@@ -214,7 +214,7 @@ export default function SettingsScreen() {
     return (
       <SafeAreaView style={styles.container}>
         <View style={styles.centerContent}>
-          <Text style={styles.title}>⚙️ Settings</Text>
+          <Text style={styles.title}>Settings</Text>
           <Text style={styles.subtitle}>Loading...</Text>
         </View>
       </SafeAreaView>
@@ -226,7 +226,7 @@ export default function SettingsScreen() {
       <ScrollView contentContainerStyle={styles.scrollContent}>
         {/* Header */}
         <View style={styles.header}>
-          <Text style={styles.title}>⚙️ Settings</Text>
+          <Text style={styles.title}>Settings</Text>
           {!isEditing && (
             <TouchableOpacity onPress={() => setIsEditing(true)}>
               <Text style={styles.editButton}>Edit</Text>
@@ -236,8 +236,6 @@ export default function SettingsScreen() {
 
         {/* Profile Section */}
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>👤 Profile</Text>
-
           <View style={styles.settingRow}>
             <Text style={styles.label}>Display Name</Text>
             {isEditing ? (
@@ -274,7 +272,7 @@ export default function SettingsScreen() {
 
         {/* Units Section */}
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>📏 Units</Text>
+          <Text style={styles.sectionTitle}>Units</Text>
 
           <View style={styles.unitsGrid}>
             {/* Row 1: Weight Units */}
@@ -351,7 +349,7 @@ export default function SettingsScreen() {
 
         {/* Weight Calibration Section */}
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>⚖️ Weight Calibration</Text>
+          <Text style={styles.sectionTitle}>Weight Calibration</Text>
           <Text style={styles.sectionSubtext}>
             Weigh your haul on a scale after a cleanup and enter it in the session summary — each weigh-in tunes the weight estimate
           </Text>
@@ -489,37 +487,8 @@ export default function SettingsScreen() {
           </View>
         </View>
 
-        {/* Battery Saver Section */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>🔋 Battery Settings</Text>
-
-          <View style={styles.toggleRow}>
-            <View>
-              <Text style={styles.toggleLabel}>Battery Saver Mode</Text>
-              <Text style={styles.toggleSubtext}>
-                {batterySaver ? '10s GPS during cleanup • Low Power accuracy' : '5s GPS during cleanup • Balanced accuracy'}
-              </Text>
-            </View>
-            <TouchableOpacity
-              style={[styles.toggleButton, batterySaver && styles.toggleButtonActive]}
-              onPress={() => setBatterySaver(!batterySaver)}
-            >
-              <View
-                style={[
-                  styles.toggleThumb,
-                  batterySaver && styles.toggleThumbActive,
-                ]}
-              />
-            </TouchableOpacity>
-          </View>
-
-          <View style={styles.batteryInfoBox}>
-            <Text style={styles.batteryInfoLabel}>💡 Est. Battery Usage</Text>
-            <Text style={styles.batteryInfoText}>
-              {batterySaver ? '~2-3% per 20 min session' : '~5-7% per 20 min session'}
-            </Text>
-          </View>
-        </View>
+        {/* Battery saver removed June 11: GPS is now a single consolidated
+            Balanced/5s stream regardless — the toggle controlled nothing real */}
 
         {/* Team/Events Section */}
         <View style={styles.section}>
@@ -894,15 +863,13 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   unitGridButton: {
-    flex: 1,
-    minWidth: '45%',
-    paddingVertical: 4,
-    paddingHorizontal: 6,
-    borderRadius: 4,
+    paddingVertical: 5,
+    paddingHorizontal: 18,
+    borderRadius: 6,
     backgroundColor: COLORS.light,
     alignItems: 'center',
     justifyContent: 'center',
-    borderWidth: 2,
+    borderWidth: 1,
     borderColor: COLORS.border,
   },
   appsGrid: {
