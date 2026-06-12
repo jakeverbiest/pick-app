@@ -87,6 +87,23 @@ export function isPickup(p: EvalProfile): boolean {
 }
 
 /**
+ * Carry-mode classification from gyro baselines.
+ *
+ * Field data (June 11): phone IN POCKET, every motion event — picks, walking,
+ * everything — shows peak gyro 1.7-8.1 because the pocket rides the body.
+ * Phone IN HAND, the hand damps rotation: all events 0.5-1.6.
+ * The median over a few events separates the two cleanly, which lets the
+ * low-rotation "handling" filter switch itself on (pocket) or off (hand)
+ * instead of trusting a toggle the user forgot to flip.
+ */
+export function classifyCarryMode(eventGyros: number[]): 'pocket' | 'hand' | 'unknown' {
+  if (!eventGyros || eventGyros.length < 3) return 'unknown';
+  const sorted = [...eventGyros].sort((a, b) => a - b);
+  const median = sorted[Math.floor(sorted.length / 2)];
+  return median >= 2.0 ? 'pocket' : 'hand';
+}
+
+/**
  * Count distinct acceleration peaks in a motion window.
  *
  * Purpose: during a "picking spree" (standing still, grabber, pick-pick-pick)

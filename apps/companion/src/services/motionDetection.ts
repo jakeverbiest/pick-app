@@ -10,7 +10,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import PickupAggregator from './pickupAggregator';
 import GroundTruthCapture from './groundTruthCapture';
 import MotionShapeDetector from './motionShapeDetector';
-import { evaluatePickupProfile, countDistinctPeaks } from './motionEvaluation';
+import { evaluatePickupProfile, countDistinctPeaks, classifyCarryMode } from './motionEvaluation';
 
 interface PickupEvent {
   timestamp: number;
@@ -46,8 +46,10 @@ export interface MotionEventRecord {
   speed: number; // GPS speed (m/s) at event time, -1 if unknown — walking-filter data
 }
 
-export const POCKET_CARRY_KEY = '@pick_pocket_carry';
+export const CARRY_MODE_KEY = '@pick_carry_mode_v2'; // 'auto' | 'pocket' | 'hand'
+export type CarryMode = 'auto' | 'pocket' | 'hand';
 const POCKET_MIN_GYRO = 1.5; // pocket picks observed at 2.9-7.4; handling/insertion at 0.48
+const GYRO_BASELINE_WINDOW = 8; // recent events used for auto carry classification
 
 class MotionDetector {
   private pickupEvents: PickupEvent[] = [];
@@ -61,7 +63,9 @@ class MotionDetector {
   private lastAccel = { x: 0, y: 0, z: 0 };
   private lastGyro = { x: 0, y: 0, z: 0 };
   private lastLocation: { latitude: number; longitude: number; accuracy: number; speed: number } | null = null;
-  private pocketCarry = true; // default: pocket mode filters active (Settings toggle)
+  private carryMode: CarryMode = 'auto';
+  private recentGyros: number[] = []; // rolling gyro baseline for auto carry detection
+  private lastAutoCarry: 'pocket' | 'hand' | 'unknown' = 'unknown';
 
   private tuning: TuningParams = {
     accelThreshold: 0.85,
@@ -88,14 +92,17 @@ class MotionDetector {
       this.sessionEvents = [];
       this.sessionStartTime = Date.now();
 
-      // Carry mode: pocket (default) enables the low-rotation handling filter
+      // Carry mode: auto (default) classifies pocket-vs-hand from the gyro
+      // baseline as the session runs; manual override available in Settings
       try {
-        const stored = await AsyncStorage.getItem(POCKET_CARRY_KEY);
-        this.pocketCarry = stored === null ? true : stored === 'true';
-        console.log(`👖 Carry mode: ${this.pocketCarry ? 'pocket (rotation filter ON)' : 'hand (rotation filter OFF)'}`);
+        const stored = await AsyncStorage.getItem(CARRY_MODE_KEY);
+        this.carryMode = stored === 'pocket' || stored === 'hand' ? stored : 'auto';
       } catch {
-        this.pocketCarry = true;
+        this.carryMode = 'auto';
       }
+      this.recentGyros = [];
+      this.lastAutoCarry = 'unknown';
+      console.log(`👖 Carry mode: ${this.carryMode}${this.carryMode === 'auto' ? ' (classifying from gyro baseline)' : ''}`);
 
       // Request location permissions
       const { status } = await Location.requestForegroundPermissionsAsync();
@@ -195,9 +202,25 @@ class MotionDetector {
             peaks,
           });
 
-          // Pocket carry: a pickup means bending — big rotation. Low-gyro events
-          // are phone handling (observed insertion: gyro 0.48 vs picks 2.9-7.4).
-          if (result.confidence > 0 && this.pocketCarry && profile.peakGyro < POCKET_MIN_GYRO) {
+          // Update the gyro baseline + auto carry classification
+          this.recentGyros.push(profile.peakGyro);
+          if (this.recentGyros.length > GYRO_BASELINE_WINDOW) this.recentGyros.shift();
+          if (this.carryMode === 'auto') {
+            const detected = classifyCarryMode(this.recentGyros);
+            if (detected !== this.lastAutoCarry && detected !== 'unknown') {
+              console.log(`👖 Auto-detected carry: ${detected} (median gyro baseline)`);
+              this.lastAutoCarry = detected;
+            }
+          }
+
+          // Low-rotation "handling" filter only applies when the phone rides
+          // in a pocket (a pocket pickup = bending = big rotation; in-hand
+          // pickups are legitimately low-rotation — June 11 in-hand test lost
+          // 26/27 real picks to this filter before auto mode existed)
+          const pocketActive =
+            this.carryMode === 'pocket' ||
+            (this.carryMode === 'auto' && this.lastAutoCarry === 'pocket');
+          if (result.confidence > 0 && pocketActive && profile.peakGyro < POCKET_MIN_GYRO) {
             result = { confidence: 0, reason: `low rotation: gyro ${profile.peakGyro.toFixed(2)} < ${POCKET_MIN_GYRO} (handling?)` };
           }
 

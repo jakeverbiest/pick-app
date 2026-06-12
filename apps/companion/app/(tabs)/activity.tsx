@@ -5,6 +5,8 @@ import { useFocusEffect } from '@react-navigation/native';
 import { getDatabase } from '../../src/services/database';
 import { getAuthService } from '../../src/services/authService';
 import { getBadgeService } from '../../src/services/badgeService';
+import * as Location from 'expo-location';
+import { getCoverageStats } from '../../src/services/streetSegments';
 import { COLORS, SPACING, RADIUS } from '../../src/constants/colors';
 
 export default function ActivityScreen() {
@@ -13,10 +15,24 @@ export default function ActivityScreen() {
   const [badges, setBadges] = useState<any[]>([]);
   const [user, setUser] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+  const [coverage, setCoverage] = useState<{ freshPct: number; everCleanedPct: number; totalSegments: number } | null>(null);
 
   useEffect(() => {
     loadActivity();
+    loadCoverage();
   }, []);
+
+  const loadCoverage = async () => {
+    try {
+      // Last known fix — no GPS radio spin-up just for a stats card
+      const pos = await Location.getLastKnownPositionAsync();
+      if (!pos) return;
+      const stats = await getCoverageStats(pos.coords.latitude, pos.coords.longitude);
+      if (stats.totalSegments > 0) setCoverage(stats);
+    } catch (error) {
+      console.log('Coverage stats unavailable:', error);
+    }
+  };
 
   // Reload activity whenever this tab comes into focus
   useFocusEffect(
@@ -184,6 +200,37 @@ export default function ActivityScreen() {
           </View>
         </View>
 
+        {/* Neighborhood Coverage */}
+        {coverage && (
+          <View style={styles.statsBox}>
+            <Text style={styles.statsLabel}>Neighborhood Streets</Text>
+
+            <View style={styles.statsGrid}>
+              <View style={styles.statItem}>
+                <Text style={styles.coverageValue}>{coverage.freshPct}%</Text>
+                <Text style={styles.statLabel}>Fresh (5 days)</Text>
+              </View>
+              <View style={styles.statItem}>
+                <Text style={styles.coverageValue}>{coverage.everCleanedPct}%</Text>
+                <Text style={styles.statLabel}>Ever cleaned</Text>
+              </View>
+              <View style={styles.statItem}>
+                <Text style={styles.coverageValue}>{coverage.totalSegments}</Text>
+                <Text style={styles.statLabel}>Street blocks</Text>
+              </View>
+            </View>
+
+            <View style={styles.progressContainer}>
+              <View style={styles.progressBar}>
+                <View style={[styles.progressFill, { width: `${Math.max(1, coverage.everCleanedPct)}%` }]} />
+              </View>
+              <Text style={styles.progressText}>
+                {coverage.everCleanedPct}% of your neighborhood touched so far
+              </Text>
+            </View>
+          </View>
+        )}
+
         {/* Badges Section */}
         {badges && badges.length > 0 && (
           <View style={styles.section}>
@@ -312,6 +359,12 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: COLORS.mutedSage,
     fontWeight: '600',
+  },
+  coverageValue: {
+    fontSize: 28,
+    fontWeight: '800',
+    color: COLORS.sage,
+    marginBottom: 4,
   },
   progressContainer: {
     marginTop: 16,

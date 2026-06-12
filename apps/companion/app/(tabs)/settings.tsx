@@ -7,7 +7,7 @@ import { getAuthService } from '../../src/services/authService';
 import { getFitnessService, FITNESS_APPS, RECOMMENDED_CONFIGS } from '../../src/services/fitnessService';
 import weightCalibration, { CalibrationState, DEFAULT_LB_PER_PICKUP } from '../../src/services/weightCalibration';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { POCKET_CARRY_KEY } from '../../src/services/motionDetection';
+import { CARRY_MODE_KEY, CarryMode } from '../../src/services/motionDetection';
 import { HEALTH_SYNC_KEY, setHealthSyncEnabled } from '../../src/services/healthService';
 import { PRIVACY_POLICY_TEXT, TERMS_OF_SERVICE_TEXT } from '../../src/constants/legal';
 import { FitnessApp } from '../../src/types';
@@ -30,12 +30,12 @@ export default function SettingsScreen() {
   const [legalDoc, setLegalDoc] = useState<'privacy' | 'terms' | null>(null);
   const [manualItems, setManualItems] = useState('');
   const [manualWeight, setManualWeight] = useState('');
-  const [pocketCarry, setPocketCarry] = useState(true);
+  const [carryMode, setCarryMode] = useState<CarryMode>('auto');
   const [healthSync, setHealthSync] = useState(true);
 
   useEffect(() => {
-    AsyncStorage.getItem(POCKET_CARRY_KEY).then((v) => {
-      if (v !== null) setPocketCarry(v === 'true');
+    AsyncStorage.getItem(CARRY_MODE_KEY).then((v) => {
+      if (v === 'pocket' || v === 'hand' || v === 'auto') setCarryMode(v);
     });
     AsyncStorage.getItem(HEALTH_SYNC_KEY).then((v) => {
       if (v !== null) setHealthSync(v === 'true');
@@ -48,10 +48,9 @@ export default function SettingsScreen() {
     await setHealthSyncEnabled(next);
   };
 
-  const togglePocketCarry = async () => {
-    const next = !pocketCarry;
-    setPocketCarry(next);
-    await AsyncStorage.setItem(POCKET_CARRY_KEY, String(next));
+  const selectCarryMode = async (mode: CarryMode) => {
+    setCarryMode(mode);
+    await AsyncStorage.setItem(CARRY_MODE_KEY, mode);
   };
 
   const addManualWeighIn = async () => {
@@ -476,25 +475,23 @@ export default function SettingsScreen() {
 
         {/* Carry Mode Section */}
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>👖 Carry Mode</Text>
+          <Text style={styles.sectionTitle}>Carry Mode</Text>
+          <Text style={styles.sectionSubtext}>
+            Where the phone rides during cleanup. Auto figures it out from how the phone moves.
+          </Text>
 
-          <View style={styles.toggleRow}>
-            <View style={{ flex: 1, paddingRight: 12 }}>
-              <Text style={styles.toggleLabel}>
-                {pocketCarry ? 'Pocket (recommended)' : 'In hand'}
-              </Text>
-              <Text style={styles.toggleSubtext}>
-                {pocketCarry
-                  ? 'Phone rides in your pocket during cleanup — stronger detection, filters out phone-handling motions'
-                  : 'Phone stays in your hand — rotation filter off (gentler signals expected)'}
-              </Text>
-            </View>
-            <TouchableOpacity
-              style={[styles.toggleButton, pocketCarry && styles.toggleButtonActive]}
-              onPress={togglePocketCarry}
-            >
-              <View style={[styles.toggleThumb, pocketCarry && styles.toggleThumbActive]} />
-            </TouchableOpacity>
+          <View style={styles.unitsGrid}>
+            {(['auto', 'pocket', 'hand'] as CarryMode[]).map((mode) => (
+              <TouchableOpacity
+                key={mode}
+                style={[styles.unitGridButton, carryMode === mode && styles.unitButtonActive]}
+                onPress={() => selectCarryMode(mode)}
+              >
+                <Text style={[styles.unitButtonText, carryMode === mode && styles.unitButtonTextActive]}>
+                  {mode === 'auto' ? 'Auto' : mode === 'pocket' ? 'Pocket' : 'In hand'}
+                </Text>
+              </TouchableOpacity>
+            ))}
           </View>
         </View>
 
@@ -520,7 +517,7 @@ export default function SettingsScreen() {
 
         {/* Team/Events Section */}
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>👥 Team & Events</Text>
+          <Text style={styles.sectionTitle}>Team & Events</Text>
           <Text style={styles.sectionSubtext}>
             Join a cleanup challenge or team (school, work, volunteer group)
           </Text>
@@ -567,7 +564,7 @@ export default function SettingsScreen() {
 
         {/* Fitness Apps Section */}
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>📱 Fitness Apps</Text>
+          <Text style={styles.sectionTitle}>Fitness Apps</Text>
           <Text style={styles.sectionSubtext}>
             Track cleanups as exercise in your favorite fitness apps
           </Text>
@@ -614,7 +611,7 @@ export default function SettingsScreen() {
 
         {/* About Section */}
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>ℹ️ About</Text>
+          <Text style={styles.sectionTitle}>About</Text>
 
           <View style={styles.settingRow}>
             <Text style={styles.label}>App Version</Text>
@@ -680,7 +677,7 @@ export default function SettingsScreen() {
 
         {/* Dev Mode */}
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>🔧 Developer Mode</Text>
+          <Text style={styles.sectionTitle}>Developer Mode</Text>
           <Text style={styles.sectionSubtext}>
             For testing neighborhood view without multiple cleanup sessions
           </Text>
@@ -708,7 +705,7 @@ export default function SettingsScreen() {
         {/* Danger Zone */}
         <View style={styles.section}>
           <Text style={[styles.sectionTitle, { color: '#FF3B30' }]}>
-            ⚠️ Danger Zone
+            Danger Zone
           </Text>
 
           <TouchableOpacity
@@ -737,7 +734,35 @@ export default function SettingsScreen() {
               );
             }}
           >
-            <Text style={styles.dangerButtonText}>🗑️ Clear All Data</Text>
+            <Text style={styles.dangerButtonText}>Clear All Data</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[styles.dangerButton, { marginBottom: 12 }]}
+            onPress={() => {
+              Alert.alert(
+                'Delete Account?',
+                'This permanently deletes your account AND all your data — cleanups, stats, badges. There is no undo.',
+                [
+                  { text: 'Cancel', style: 'cancel' },
+                  {
+                    text: 'Delete Forever',
+                    style: 'destructive',
+                    onPress: async () => {
+                      try {
+                        const authService = getAuthService();
+                        await authService.deleteAccount();
+                        router.replace('/auth/signup');
+                      } catch (error: any) {
+                        Alert.alert('❌ Could not delete account', error.message);
+                      }
+                    },
+                  },
+                ]
+              );
+            }}
+          >
+            <Text style={styles.dangerButtonText}>Delete Account</Text>
           </TouchableOpacity>
 
           <TouchableOpacity

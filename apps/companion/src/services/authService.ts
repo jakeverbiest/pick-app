@@ -23,6 +23,7 @@ import {
   sendPasswordResetEmail,
   onAuthStateChanged,
   updateProfile,
+  deleteUser,
 } from 'firebase/auth';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { auth } from './firebaseConfig';
@@ -134,6 +135,31 @@ class AuthService {
     this.currentUser = null;
     this.notifyListeners();
     console.log('✅ Logout successful');
+  }
+
+  /**
+   * Permanently delete the account: all cloud data, then the auth user.
+   * (App Store requires in-app account deletion for apps with sign-in.)
+   */
+  async deleteAccount(): Promise<void> {
+    const user = auth.currentUser;
+    if (!user) throw new Error('Not signed in.');
+
+    const db = await getDatabase();
+    await (db as any).clearAllData();
+
+    try {
+      await deleteUser(user);
+    } catch (error: any) {
+      if (error?.code === 'auth/requires-recent-login') {
+        throw new Error('For security, log out, log back in, then delete your account.');
+      }
+      throw error;
+    }
+
+    this.currentUser = null;
+    this.notifyListeners();
+    console.log('🗑️ Account deleted');
   }
 
   async sendPasswordReset(email: string): Promise<void> {

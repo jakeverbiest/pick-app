@@ -12,7 +12,7 @@
  * recall below 19/21, you've reintroduced the bug that cost 60% of pickups.
  */
 
-import { evaluatePickupProfile, isPickup, countDistinctPeaks, THRESHOLDS, EvalProfile } from '../motionEvaluation';
+import { evaluatePickupProfile, isPickup, countDistinctPeaks, classifyCarryMode, THRESHOLDS, EvalProfile } from '../motionEvaluation';
 import { simplifyRoute, dropOutliers } from '../routeUtils';
 
 // Every motion event from the June 10 log. peakAccelTime was only logged for
@@ -160,6 +160,17 @@ const relocated = [
 ];
 const kept = dropOutliers(relocated);
 check('sustained relocation eventually accepted', kept.length >= 3, true);
+
+console.log('\n=== Carry-mode auto-classification ===');
+// June 11 evening: in-hand test — gyros from the actual session log
+const inHandGyros = [1.16, 1.26, 1.0, 0.65, 1.26, 0.94, 0.94, 0.5];
+check('June 11 in-hand session → hand', classifyCarryMode(inHandGyros) === 'hand', true);
+// June 11 afternoon: pocket session — gyros from the actual flight log
+const pocketGyros = [4.42, 7.42, 3.83, 2.93, 3.15, 4.1, 4.49, 3.4];
+check('June 11 pocket session → pocket', classifyCarryMode(pocketGyros) === 'pocket', true);
+check('too few events → unknown (filter stays off)', classifyCarryMode([3.0, 4.0]) === 'unknown', true);
+// One outlier doesn't flip the classification (median, not mean)
+check('hand baseline survives one high-gyro event', classifyCarryMode([0.8, 1.1, 0.9, 7.0, 1.2]) === 'hand', true);
 
 console.log('\n=== Threshold sanity ===');
 check('confidence threshold unchanged at 30', THRESHOLDS.confidenceThreshold === 30, true);
