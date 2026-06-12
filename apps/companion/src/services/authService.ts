@@ -30,6 +30,7 @@ import { auth } from './firebaseConfig';
 import { getDatabase } from './database';
 
 const LEGACY_AUTH_KEY = 'pick_auth_user'; // simpleAuthService's storage key
+const LEGACY_USERS_KEY = 'pick_users'; // simpleAuthService stored PLAINTEXT passwords here — purge on sight
 const MIGRATION_DONE_KEY = 'pick_auth_migrated_v1';
 
 export interface AuthUser {
@@ -50,6 +51,10 @@ class AuthService {
    */
   initialize(): Promise<void> {
     if (this.firstEmission) return this.firstEmission;
+
+    // Security hygiene: the pre-Firebase local auth stored plaintext
+    // passwords on-device. Remove that key permanently, every launch.
+    AsyncStorage.removeItem(LEGACY_USERS_KEY).catch(() => {});
 
     this.firstEmission = new Promise<void>((resolve) => {
       let resolved = false;

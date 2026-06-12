@@ -13,7 +13,7 @@
  */
 
 import { evaluatePickupProfile, isPickup, countDistinctPeaks, classifyCarryMode, THRESHOLDS, EvalProfile } from '../motionEvaluation';
-import { simplifyRoute, dropOutliers } from '../routeUtils';
+import { simplifyRoute, dropOutliers, privacyTrimRoute } from '../routeUtils';
 
 // Every motion event from the June 10 log. peakAccelTime was only logged for
 // the timing rejection (2395ms); others use 800ms (mid-window, uncontroversial).
@@ -160,6 +160,20 @@ const relocated = [
 ];
 const kept = dropOutliers(relocated);
 check('sustained relocation eventually accepted', kept.length >= 3, true);
+
+console.log('\n=== Privacy trim ===');
+// 500m straight walk in ~8.4m steps — trimming 100m from each end
+const longWalk = Array.from({ length: 60 }, (_, i) => ({ lat: 40.6784, lon: -73.9951 + i * 0.0001 }));
+const trimmed = privacyTrimRoute(longWalk, 100);
+const firstMoved = trimmed[0].lon !== longWalk[0].lon;
+const lastMoved = trimmed[trimmed.length - 1].lon !== longWalk[longWalk.length - 1].lon;
+check('route start (home) removed', firstMoved, true);
+check('route end (home) removed', lastMoved, true);
+check(`middle preserved (${trimmed.length} of 60 points)`, trimmed.length >= 30, true);
+// A tiny walk (shorter than 2x trim) collapses to its midpoint, not nothing
+const tinyWalk = Array.from({ length: 10 }, (_, i) => ({ lat: 40.6784, lon: -73.9951 + i * 0.0001 }));
+const tinyTrimmed = privacyTrimRoute(tinyWalk, 100);
+check('short walk yields midpoint, not empty', tinyTrimmed.length >= 1 && tinyTrimmed.length <= 3, true);
 
 console.log('\n=== Carry-mode auto-classification ===');
 // June 11 evening: in-hand test — gyros from the actual session log

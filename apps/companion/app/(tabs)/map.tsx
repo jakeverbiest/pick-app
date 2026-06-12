@@ -12,7 +12,7 @@ import { getCoverage, markRouteCleaned } from '../../src/services/streetSegments
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import { startBackgroundSession, stopBackgroundSession } from '../../src/services/backgroundSession';
 import { syncWorkoutToHealth, isHealthSyncEnabled } from '../../src/services/healthService';
-import { simplifyRoute, simplifyCoordPairs } from '../../src/services/routeUtils';
+import { simplifyRoute, simplifyCoordPairs, privacyTrimRoute } from '../../src/services/routeUtils';
 import { getFitnessService } from '../../src/services/fitnessService';
 import { getDatabase } from '../../src/services/database';
 import { getAuthService } from '../../src/services/authService';
@@ -506,7 +506,7 @@ export default function MapScreen() {
         duration_seconds: elapsedSeconds,
         team: 'solo',
         fitness_tracked: false,
-        route_points: JSON.stringify(simplifyRoute(sessionRoute).map(p => [p.lat, p.lon])),
+        route_points: JSON.stringify(simplifyRoute(privacyTrimRoute(sessionRoute)).map(p => [p.lat, p.lon])),
         motion_log: JSON.stringify(MotionDetector.getSessionEvents()),
       } as any);
 

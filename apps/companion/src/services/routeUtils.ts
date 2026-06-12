@@ -117,6 +117,39 @@ export function simplifyRoute(rawPoints: RoutePoint[], toleranceM: number = ROUT
   return points.filter((_, i) => keep[i]);
 }
 
+/**
+ * Privacy trim (Strava-style): remove the first and last ~trimM meters of a
+ * route before it's stored. Walks start and end at someone's front door —
+ * the trimmed route shows the cleanup without revealing the home.
+ * Keeps at least 2 points so short walks still render.
+ */
+export function privacyTrimRoute(points: RoutePoint[], trimM: number = 100): RoutePoint[] {
+  if (!points || points.length <= 2) return points ?? [];
+
+  let startIdx = 0;
+  let acc = 0;
+  for (let i = 1; i < points.length; i++) {
+    acc += perpDistanceM(points[i], points[i - 1], points[i - 1]); // point-to-point distance
+    if (acc >= trimM) { startIdx = i; break; }
+    startIdx = i;
+  }
+
+  let endIdx = points.length - 1;
+  acc = 0;
+  for (let i = points.length - 2; i >= 0; i--) {
+    acc += perpDistanceM(points[i], points[i + 1], points[i + 1]);
+    if (acc >= trimM) { endIdx = i; break; }
+    endIdx = i;
+  }
+
+  if (endIdx - startIdx < 1) {
+    // Walk shorter than 2x trim — store just the midpoint area (2 central points)
+    const mid = Math.floor(points.length / 2);
+    return points.slice(Math.max(0, mid - 1), mid + 1);
+  }
+  return points.slice(startIdx, endIdx + 1);
+}
+
 /** Convenience for the [lat, lon] pair arrays stored in route_points. */
 export function simplifyCoordPairs(pairs: Array<[number, number]>, toleranceM: number = ROUTE_TOLERANCE_M): Array<[number, number]> {
   const simplified = simplifyRoute(pairs.map(([lat, lon]) => ({ lat, lon })), toleranceM);

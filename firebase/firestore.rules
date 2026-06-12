@@ -26,10 +26,12 @@ service cloud.firestore {
       return signedIn() && request.auth.uid == userId;
     }
 
-    // --- Cleanups: anyone signed-in can read (shared maps/leaderboards);
-    //     only the owner can write, and writes must be sane ---
+    // --- Cleanups: OWNER-ONLY reads (routes reveal home locations even
+    //     trimmed; the shared community map uses segment_status, which has
+    //     no routes). Team leaderboards will need a Cloud Function aggregate
+    //     before they work cross-user again — acceptable until then. ---
     match /cleanups/{cleanupId} {
-      allow read: if signedIn();
+      allow read: if isOwner(resource.data.userId);
       allow create: if isOwner(request.resource.data.userId)
         && request.resource.data.items_count is number
         && request.resource.data.items_count >= 0
