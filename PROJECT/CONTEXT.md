@@ -32,7 +32,7 @@ Autonomous trash-pickup tracking. Phone in pocket, motion sensors detect each pi
 
 **Sessions:** background location keeps detection alive screen-off (real builds; `backgroundSession.ts`); keep-awake + 🌙 pocket-mode black overlay as Expo Go/no-Always fallback; ONE GPS stream (Balanced/5s) shared by detector, map, and pickup tagging (was 3 streams + per-pickup fixes — major battery fix). Battery saver toggle removed (became a no-op).
 
-**Fitness:** each saved cleanup writes a walking workout to **Apple Health** (real GPS distance, calorie model, items in metadata; Settings toggle, default on). adidas API closed to third parties June 30 2025 — direct integration impossible; adidas only writes to Health, never reads.
+**Fitness:** ✅ VERIFIED WORKING (June 11) — each saved cleanup writes a walking workout to **Apple Health** (real GPS distance, calorie model, items in metadata; Settings toggle, default on). Gotcha that cost three rebuilds: `react-native-nitro-modules` is a peer dep of the healthkit package and MUST be declared explicitly in package.json or autolinking skips it (now declared). adidas API closed to third parties June 30 2025 — direct integration impossible; adidas only writes to Health, never reads.
 
 **Branding:** cream "pumpkin trash bag with sage P" logo — iOS icon, Android adaptive set, sage splash, logo on auth screens. Assets in `assets/images/`, regenerate via the SVG paths in git history (commit `0628b00`).
 
