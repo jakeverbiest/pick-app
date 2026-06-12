@@ -34,9 +34,12 @@ const db = getFirestore(app);
 
 const OVERPASS_URL = 'https://overpass-api.de/api/interpreter';
 const SEGMENT_LENGTH_M = 50;
-const SNAP_DISTANCE_M = 25;
+// Sidewalk-level snapping: tight enough not to credit the OPPOSITE side of
+// the street (~18m away in NYC), loose enough for Balanced GPS (~10m error)
+const SNAP_DISTANCE_M = 15;
 const FETCH_RADIUS_M = 600;
-const GEOMETRY_CACHE_PREFIX = '@pick_streets_';
+const GEOMETRY_CACHE_PREFIX = '@pick_sidewalks_'; // v2: sidewalks, not centerlines
+const MIN_SIDEWALK_SEGMENTS = 30; // below this, area has unmapped sidewalks → fall back to roads
 const GEOMETRY_CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 const STATUS_COLLECTION = 'segment_status';
 
@@ -103,21 +106,47 @@ function gridNeighborhood(lat: number, lon: number): string[] {
 
 // ---------- OSM fetch + segmentation ----------
 
-async function fetchStreetGeometry(lat: number, lon: number): Promise<StreetSegment[]> {
-  const overpassQuery = `
-    [out:json][timeout:25];
-    way["highway"~"^(residential|primary|secondary|tertiary|unclassified|living_street|pedestrian|footway|path)$"]
-      (around:${FETCH_RADIUS_M},${lat},${lon});
-    out geom;
-  `;
+async function runOverpass(query: string): Promise<any> {
   const res = await fetch(OVERPASS_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: `data=${encodeURIComponent(overpassQuery)}`,
+    body: `data=${encodeURIComponent(query)}`,
   });
   if (!res.ok) throw new Error(`Overpass error ${res.status}`);
-  const json = await res.json();
+  return res.json();
+}
 
+async function fetchStreetGeometry(lat: number, lon: number): Promise<StreetSegment[]> {
+  // SIDEWALKS, not road centerlines — pickers walk the sidewalk, and NYC OSM
+  // maps each side of the street as its own footway=sidewalk way.
+  const sidewalkQuery = `
+    [out:json][timeout:25];
+    (
+      way["highway"="footway"]["footway"="sidewalk"](around:${FETCH_RADIUS_M},${lat},${lon});
+      way["highway"~"^(pedestrian|path|living_street)$"](around:${FETCH_RADIUS_M},${lat},${lon});
+    );
+    out geom;
+  `;
+  let json = await runOverpass(sidewalkQuery);
+  let segments = chopWaysIntoSegments(json);
+
+  if (segments.length < MIN_SIDEWALK_SEGMENTS) {
+    // Area without mapped sidewalks (common outside big cities) — fall back
+    // to road centerlines so coverage still works
+    console.log(`🛣️ Only ${segments.length} sidewalk segments mapped here — falling back to road centerlines`);
+    const roadQuery = `
+      [out:json][timeout:25];
+      way["highway"~"^(residential|primary|secondary|tertiary|unclassified|living_street|pedestrian|footway|path)$"]
+        (around:${FETCH_RADIUS_M},${lat},${lon});
+      out geom;
+    `;
+    json = await runOverpass(roadQuery);
+    segments = chopWaysIntoSegments(json);
+  }
+  return segments;
+}
+
+function chopWaysIntoSegments(json: any): StreetSegment[] {
   const segments: StreetSegment[] = [];
   for (const way of json.elements || []) {
     if (way.type !== 'way' || !way.geometry || way.geometry.length < 2) continue;
