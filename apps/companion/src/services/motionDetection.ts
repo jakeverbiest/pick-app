@@ -234,6 +234,8 @@ class MotionDetector {
           }
 
           // Flight recorder: every event — rejected, cooldown-suppressed, or counted
+          // (capped so a multi-hour walk can't grow unbounded)
+          if (this.sessionEvents.length >= 3000) this.sessionEvents.shift();
           this.sessionEvents.push({
             t: Math.round((Date.now() - this.sessionStartTime) / 1000),
             peak: Math.round(profile.peakAccel * 100) / 100,
