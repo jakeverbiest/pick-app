@@ -1,6 +1,9 @@
 import { useEffect, useState } from 'react';
+import { AppState } from 'react-native';
 import { getAuthService } from '../services/authService';
 import { getDatabase } from '../services/database';
+import { recoverCrashedSession } from '../services/crashRecorder';
+import { stopBackgroundSession } from '../services/backgroundSession';
 
 export interface AuthUser {
   uid: string;
@@ -23,6 +26,34 @@ export function useAppInitialization() {
     const initialize = async () => {
       try {
         console.log('🚀 Initializing app...');
+
+        // Crash recovery + phantom-tracker cleanup.
+        // If the last walk didn't end cleanly (a screen-off memory crash, or a
+        // force-quit), a sentinel survives on disk and the iOS background
+        // location task is left registered — that's the "location arrow on when
+        // PICK isn't running" symptom. recoverCrashedSession() files the black-box
+        // trace as a crash report; then we stop the orphaned tracker.
+        //
+        // We only tear the tracker down when this launch is in the FOREGROUND
+        // (the user opened the app — no live walk to protect) or when we just
+        // recovered a stale crash. A genuine iOS background relaunch mid-walk
+        // (AppState 'background', fresh heartbeat) is left running.
+        try {
+          const report = await recoverCrashedSession(true);
+          if (report) {
+            console.warn(
+              `🛑 Recovered an unclean session: survived ${report.elapsedSec}s, ` +
+                `${report.routePoints} route pts, ${report.pickups} pickups, ` +
+                `${report.motionEvents} motion events (dead ${report.gapSec}s before launch).`
+            );
+          }
+          const launchedInForeground = AppState.currentState !== 'background';
+          if (report || launchedInForeground) {
+            await stopBackgroundSession();
+          }
+        } catch (recoveryError) {
+          console.error('⚠️ Crash recovery step failed:', recoveryError);
+        }
 
         // Initialize auth service (deferred initialization)
         const authService = getAuthService();

@@ -11,6 +11,7 @@ import { weightToBags, formatBags } from '../../src/services/impactMetrics';
 import { getCoverage, markRouteCleaned } from '../../src/services/streetSegments';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import { startBackgroundSession, stopBackgroundSession } from '../../src/services/backgroundSession';
+import { beginSessionTrace, heartbeat, endSessionTrace } from '../../src/services/crashRecorder';
 import { syncWorkoutToHealth, isHealthSyncEnabled } from '../../src/services/healthService';
 import { simplifyRoute, simplifyCoordPairs, privacyTrimRoute } from '../../src/services/routeUtils';
 import { getFitnessService } from '../../src/services/fitnessService';
@@ -233,6 +234,15 @@ export default function MapScreen() {
         }
         console.log(`📍 ${mode}: ${updated.length} pts`);
 
+        // Black box heartbeat: overwrite the on-disk sentinel with the latest
+        // counters + timestamp. The last surviving copy tells us how far a
+        // crashed walk got and roughly when it died. No-op when not in a session.
+        heartbeat({
+          routePoints: updated.length,
+          pickups: pickupCounterRef.current,
+          motionEvents: MotionDetector.getSessionEvents().length,
+        });
+
         // Update map in real-time — but only when someone can actually see it
         if (isListening && webviewRef.current && mapReady && mapVisible()) {
           // Simplify: clean bar following the path, not every GPS wobble
@@ -445,6 +455,10 @@ export default function MapScreen() {
     );
     setIsListening(true);
 
+    // Black box: drop a sentinel to disk so a screen-off crash leaves a trail
+    // (recovered at next launch). Cleared on a clean Stop below.
+    beginSessionTrace({ batterySaver });
+
     // Real builds: register background location so the session survives
     // screen-off. Expo Go: falls back to foreground (keep screen on).
     startBackgroundSession().then((mode) => {
@@ -456,6 +470,8 @@ export default function MapScreen() {
 
   const stopCleanup = () => {
     stopBackgroundSession();
+    // Clean stop — clear the black-box sentinel so launch sees no crash.
+    endSessionTrace();
     MotionDetector.stopListening();
     // Pocket-removal guard: pulling the phone out to tap Stop looks like a pickup
     // (June 11: 3.5s missed a removal — people take a beat before tapping Stop)

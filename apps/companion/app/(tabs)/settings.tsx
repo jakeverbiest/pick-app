@@ -1,4 +1,4 @@
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert, TextInput, Modal } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert, TextInput, Modal, Clipboard } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useState, useEffect } from 'react';
 import { useRouter } from 'expo-router';
@@ -12,6 +12,13 @@ import { HEALTH_SYNC_KEY, setHealthSyncEnabled } from '../../src/services/health
 import { PRIVACY_POLICY_TEXT, TERMS_OF_SERVICE_TEXT } from '../../src/constants/legal';
 import { FitnessApp } from '../../src/types';
 import { COLORS, SPACING, RADIUS } from '../../src/constants/colors';
+import {
+  getCrashReports,
+  clearCrashReports,
+  formatCrashReports,
+  CrashReport,
+} from '../../src/services/crashRecorder';
+import { stopBackgroundSession } from '../../src/services/backgroundSession';
 
 export default function SettingsScreen() {
   const router = useRouter();
@@ -32,6 +39,7 @@ export default function SettingsScreen() {
   const [manualWeight, setManualWeight] = useState('');
   const [carryMode, setCarryMode] = useState<CarryMode>('auto');
   const [healthSync, setHealthSync] = useState(true);
+  const [crashReports, setCrashReports] = useState<CrashReport[]>([]);
 
   useEffect(() => {
     AsyncStorage.getItem(CARRY_MODE_KEY).then((v) => {
@@ -40,7 +48,35 @@ export default function SettingsScreen() {
     AsyncStorage.getItem(HEALTH_SYNC_KEY).then((v) => {
       if (v !== null) setHealthSync(v === 'true');
     });
+    getCrashReports().then(setCrashReports);
   }, []);
+
+  const copyCrashReports = () => {
+    Clipboard.setString(formatCrashReports(crashReports));
+    Alert.alert('📋 Copied', 'Crash reports copied. Paste them to share with the developer.');
+  };
+
+  const clearReports = () => {
+    Alert.alert('Clear crash reports?', 'This permanently deletes the saved reports on this device.', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Clear',
+        style: 'destructive',
+        onPress: async () => {
+          await clearCrashReports();
+          setCrashReports([]);
+        },
+      },
+    ]);
+  };
+
+  const forceStopTracking = async () => {
+    await stopBackgroundSession();
+    Alert.alert(
+      '🛑 Tracking stopped',
+      'Any leftover background location tracking has been turned off. If the iOS location arrow was on with no active cleanup, it should clear now.'
+    );
+  };
 
   const toggleHealthSync = async () => {
     const next = !healthSync;
@@ -610,6 +646,69 @@ export default function SettingsScreen() {
         </View>
 
         {/* About Section */}
+        {/* Diagnostics — long-walk crash black box */}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Diagnostics</Text>
+          <Text style={styles.sectionSubtext}>
+            If a cleanup crashes with the screen off, PICK saves a black-box trace here showing how
+            far the walk got. Share it with the developer to help fix long-walk crashes.
+          </Text>
+
+          {crashReports.length === 0 ? (
+            <View style={styles.settingRow}>
+              <Text style={styles.label}>Crash reports</Text>
+              <Text style={styles.value}>None — clean so far 🎉</Text>
+            </View>
+          ) : (
+            <>
+              {crashReports.map((r, i) => {
+                const mins = Math.floor(r.elapsedSec / 60);
+                const secs = r.elapsedSec % 60;
+                return (
+                  <View
+                    key={r.startedAt + '-' + i}
+                    style={{
+                      backgroundColor: COLORS.cream,
+                      borderRadius: RADIUS.md,
+                      padding: SPACING.md,
+                      marginTop: SPACING.sm,
+                      borderLeftWidth: 3,
+                      borderLeftColor: '#FF3B30',
+                    }}
+                  >
+                    <Text style={{ fontWeight: '700', color: COLORS.darkSage }}>
+                      {new Date(r.startedAt).toLocaleString()}
+                    </Text>
+                    <Text style={{ color: COLORS.mutedSage, marginTop: 2 }}>
+                      Survived {mins}m {secs}s · {r.routePoints} route pts · {r.pickups} pickups ·{' '}
+                      {r.motionEvents} motion events
+                    </Text>
+                    <Text style={{ color: COLORS.mutedSage, marginTop: 2, fontSize: 12 }}>
+                      Battery saver {r.batterySaver ? 'on' : 'off'} · detected {r.gapSec}s after last
+                      heartbeat
+                    </Text>
+                  </View>
+                );
+              })}
+
+              <TouchableOpacity style={[styles.button, styles.buttonDev]} onPress={copyCrashReports}>
+                <Text style={styles.buttonText}>📋 Copy reports to share</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity style={[styles.button, styles.buttonDev]} onPress={clearReports}>
+                <Text style={styles.buttonText}>Clear crash reports</Text>
+              </TouchableOpacity>
+            </>
+          )}
+
+          <TouchableOpacity style={[styles.button, styles.buttonDev]} onPress={forceStopTracking}>
+            <Text style={styles.buttonText}>🛑 Force-stop background tracking</Text>
+          </TouchableOpacity>
+          <Text style={[styles.sectionSubtext, { marginTop: SPACING.xs }]}>
+            Use this if the iOS location arrow stays on when no cleanup is running.
+          </Text>
+        </View>
+
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>About</Text>
 
