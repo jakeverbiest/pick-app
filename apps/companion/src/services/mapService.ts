@@ -114,8 +114,8 @@ class MapService {
 
     const stats = {
       totalCleanups: zoneCleanups.length,
-      totalWeight: zoneCleanups.reduce((sum, c) => sum + c.weight_lb, 0),
-      avgWeight: zoneCleanups.length > 0 ? zoneCleanups.reduce((sum, c) => sum + c.weight_lb, 0) / zoneCleanups.length : 0,
+      totalWeight: zoneCleanups.reduce((sum, c) => sum + (c.weight_lb || 0), 0),
+      avgWeight: zoneCleanups.length > 0 ? zoneCleanups.reduce((sum, c) => sum + (c.weight_lb || 0), 0) / zoneCleanups.length : 0,
       cleanupDays: new Set(zoneCleanups.map((c) => Math.floor(c.timestamp / 86400))).size,
     };
 
@@ -130,7 +130,7 @@ class MapService {
       lastCleanup: lastCleanup
         ? {
             days: zone.lastCleanupDays,
-            weight: lastCleanup.weight_lb,
+            weight: lastCleanup.weight_lb || 0,
             timestamp: lastCleanup.timestamp,
           }
         : undefined,

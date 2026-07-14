@@ -4,7 +4,7 @@ import { useState, useEffect } from 'react';
 import { getDatabase } from '../../src/services/database';
 import { getAuthService } from '../../src/services/authService';
 import { getBadgeService } from '../../src/services/badgeService';
-import { weightToBags, formatBags } from '../../src/services/impactMetrics';
+import { formatBags, formatBagsShort } from '../../src/services/impactMetrics';
 import { COLORS, SPACING, RADIUS } from '../../src/constants/colors';
 
 export default function ProfileScreen() {
@@ -66,7 +66,7 @@ export default function ProfileScreen() {
             <Text style={styles.statLabel}>Cleanups</Text>
           </View>
           <View style={styles.statCard}>
-            <Text style={styles.statValue}>{formatBags(weightToBags((stats?.total_weight || 0) as number)).replace(' bags', '')}</Text>
+            <Text style={styles.statValue}>{formatBagsShort((stats?.total_bags || 0) as number)}</Text>
             <Text style={styles.statLabel}>Bags Collected</Text>
           </View>
           <View style={styles.statCard}>
@@ -79,15 +79,15 @@ export default function ProfileScreen() {
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>📊 Statistics</Text>
           <View style={styles.statRow}>
-            <Text style={styles.statRowLabel}>Total Weight</Text>
+            <Text style={styles.statRowLabel}>Bags Collected</Text>
             <Text style={styles.statRowValue}>
-              {((stats?.total_weight || 0) as number).toFixed(1)} lb ≈ {formatBags(weightToBags((stats?.total_weight || 0) as number))}
+              {formatBags((stats?.total_bags || 0) as number)}
             </Text>
           </View>
           <View style={styles.statRow}>
-            <Text style={styles.statRowLabel}>Average Weight</Text>
+            <Text style={styles.statRowLabel}>Total Pickups</Text>
             <Text style={styles.statRowValue}>
-              {((stats?.avg_weight || 0) as number).toFixed(2)} lb
+              {(stats?.total_pickups || 0) as number}
             </Text>
           </View>
           <View style={styles.statRow}>

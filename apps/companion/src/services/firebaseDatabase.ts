@@ -26,6 +26,7 @@ import {
 import { getStorage, ref as storageRef, uploadBytes, getDownloadURL, deleteObject } from 'firebase/storage';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { app } from './firebaseConfig';
+import { aggregateBags, itemsToBags } from './impactMetrics';
 
 const CLEANUPS_CACHE_KEY = 'pick_app_cleanups_cache';
 const USER_SETTINGS_CACHE_KEY = 'pick_app_user_settings_cache';
@@ -42,7 +43,10 @@ export interface Cleanup {
   items_count: number;
   bag_qty: number;
   bag_size: string;
-  weight_lb: number;
+  /** Bags for this session: the user's end-of-session report, else derived from items. */
+  bags_est?: number;
+  /** @deprecated legacy — weight was dropped from the product in favor of bags. */
+  weight_lb?: number;
   duration_seconds: number;
   team: string;
   fitness_tracked: boolean;
@@ -100,7 +104,8 @@ export interface TeamStats {
   team: string;
   total_cleanups: number;
   total_pickups: number;
-  total_weight: number;
+  /** Bags (derived). Server-written team_stats docs may lack this — fall back to total_pickups. */
+  total_bags?: number;
   total_days: number;
   member_count: number;
   last_cleanup: number;
@@ -126,7 +131,8 @@ export interface UserStats {
   display_name: string;
   team: string;
   total_pickups: number;
-  total_weight: number;
+  /** Bags collected (user reports win per session). Older docs may lack this. */
+  total_bags?: number;
   total_cleanups: number;
   active_days: number;
   hidden: boolean; // opted out of the public individual leaderboard
@@ -143,7 +149,7 @@ export interface TeamDir {
 export interface TeamDirWithStats extends TeamDir {
   member_count: number;
   total_pickups: number;
-  total_weight: number;
+  total_bags: number;
 }
 
 // Get Firestore instance
@@ -384,12 +390,12 @@ class FirebaseDatabase {
   }
 
   /**
-   * Edit a saved cleanup — e.g., add or correct the weight later from Activity.
+   * Edit a saved cleanup — e.g., correct the bag count later from Activity.
    * Updates Firestore + the offline cache and refreshes the leaderboard aggregate.
    */
   async updateCleanup(
     cleanupId: string,
-    fields: Partial<Pick<Cleanup, 'weight_lb' | 'items_count'>>
+    fields: Partial<Pick<Cleanup, 'bags_est' | 'items_count'>>
   ): Promise<boolean> {
     try {
       this.invalidateCleanupsMemo();
@@ -448,8 +454,8 @@ class FirebaseDatabase {
     if (!this.currentUserId) {
       return {
         total_cleanups: 0,
-        total_weight: 0,
-        avg_weight: 0,
+        total_pickups: 0,
+        total_bags: 0,
         total_time: 0,
         cleanup_days: 0,
       };
@@ -458,15 +464,15 @@ class FirebaseDatabase {
     try {
       const cleanups = await this.getCleanups(1000);
       const total = cleanups.length;
-      const totalWeight = cleanups.reduce((sum, c) => sum + c.weight_lb, 0);
-      const avgWeight = total > 0 ? totalWeight / total : 0;
+      const totalPickups = cleanups.reduce((sum, c) => sum + (c.items_count || 0), 0);
+      const totalBags = aggregateBags(cleanups);
       const totalTime = cleanups.reduce((sum, c) => sum + c.duration_seconds, 0);
       const days = new Set(cleanups.map((c) => new Date(c.timestamp * 1000).toDateString())).size;
 
       return {
         total_cleanups: total,
-        total_weight: totalWeight,
-        avg_weight: avgWeight,
+        total_pickups: totalPickups,
+        total_bags: totalBags,
         total_time: totalTime,
         cleanup_days: days,
       };
@@ -474,8 +480,8 @@ class FirebaseDatabase {
       console.error('Failed to get stats:', error);
       return {
         total_cleanups: 0,
-        total_weight: 0,
-        avg_weight: 0,
+        total_pickups: 0,
+        total_bags: 0,
         total_time: 0,
         cleanup_days: 0,
       };
@@ -580,7 +586,7 @@ class FirebaseDatabase {
           ...t,
           member_count: s?.member_count ?? 0,
           total_pickups: s?.total_pickups ?? 0,
-          total_weight: s?.total_weight ?? 0,
+          total_bags: s?.total_bags ?? itemsToBags(s?.total_pickups ?? 0),
         };
       })
       .sort((a, b) => b.member_count - a.member_count || b.total_pickups - a.total_pickups);
@@ -865,7 +871,7 @@ class FirebaseDatabase {
           team,
           total_cleanups: 0,
           total_pickups: 0,
-          total_weight: 0,
+          total_bags: 0,
           total_days: 0,
           member_count: 0,
           last_cleanup: 0,
@@ -875,7 +881,7 @@ class FirebaseDatabase {
 
       const unique_users = new Set(cleanups.map((c) => c.userId));
       const total_pickups = cleanups.reduce((sum, c) => sum + c.items_count, 0);
-      const total_weight = cleanups.reduce((sum, c) => sum + c.weight_lb, 0);
+      const total_bags = aggregateBags(cleanups);
       const unique_days = new Set(
         cleanups.map((c) => new Date(c.timestamp * 1000).toDateString())
       );
@@ -884,7 +890,7 @@ class FirebaseDatabase {
         team,
         total_cleanups: cleanups.length,
         total_pickups,
-        total_weight,
+        total_bags,
         total_days: unique_days.size,
         member_count: unique_users.size,
         last_cleanup: cleanups[0]?.timestamp || 0,
@@ -896,7 +902,7 @@ class FirebaseDatabase {
         team,
         total_cleanups: 0,
         total_pickups: 0,
-        total_weight: 0,
+        total_bags: 0,
         total_days: 0,
         member_count: 0,
         last_cleanup: 0,
@@ -972,7 +978,7 @@ class FirebaseDatabase {
         display_name: settings?.display_name || 'Picker',
         team: settings?.team_name || 'Solo',
         total_pickups: mine.reduce((s, c) => s + (c.items_count || 0), 0),
-        total_weight: mine.reduce((s, c) => s + (c.weight_lb || 0), 0),
+        total_bags: aggregateBags(mine),
         total_cleanups: mine.length,
         active_days: new Set(mine.map((c) => new Date((c.timestamp || 0) * 1000).toDateString())).size,
         hidden: !!settings?.leaderboard_hidden,
@@ -990,13 +996,17 @@ class FirebaseDatabase {
    * the chosen metric to avoid composite-index setup.
    */
   async getIndividualLeaderboard(
-    metric: 'pickups' | 'weight' | 'days' = 'pickups'
+    metric: 'pickups' | 'bags' | 'days' = 'pickups'
   ): Promise<UserStats[]> {
     try {
       const snapshot = await getDocs(query(collection(db, 'user_stats'), where('hidden', '==', false)));
       const users = snapshot.docs.map((d) => d.data() as UserStats);
-      const field = metric === 'pickups' ? 'total_pickups' : metric === 'weight' ? 'total_weight' : 'active_days';
-      users.sort((a, b) => (b[field] || 0) - (a[field] || 0));
+      // Older user_stats docs predate total_bags — derive from pickups for them.
+      const value = (u: UserStats): number =>
+        metric === 'pickups' ? u.total_pickups || 0
+        : metric === 'bags' ? (u.total_bags ?? itemsToBags(u.total_pickups || 0))
+        : u.active_days || 0;
+      users.sort((a, b) => value(b) - value(a));
       return users;
     } catch (error) {
       console.error('Failed to get individual leaderboard:', error);

@@ -89,24 +89,24 @@ class BadgeService {
 
       const newBadges: string[] = [];
 
-      // Check weight-based badges
-      const totalWeight = (stats?.total_weight as number) || 0;
+      // Check bag-based badges (formerly weight: 10/50/500 lb ≈ 1/5/50 standard bags)
+      const totalBags = (stats?.total_bags as number) || 0;
 
-      if (totalWeight >= 500 && !(await db.getBadgeCount(userId, 'king_queen'))) {
+      if (totalBags >= 50 && !(await db.getBadgeCount(userId, 'king_queen'))) {
         await db.addBadge({
           userId,
           badge_type: 'king_queen',
           unlocked_at: Date.now(),
         });
         newBadges.push('king_queen');
-      } else if (totalWeight >= 50 && !(await db.getBadgeCount(userId, 'heavy_lifter'))) {
+      } else if (totalBags >= 5 && !(await db.getBadgeCount(userId, 'heavy_lifter'))) {
         await db.addBadge({
           userId,
           badge_type: 'heavy_lifter',
           unlocked_at: Date.now(),
         });
         newBadges.push('heavy_lifter');
-      } else if (totalWeight >= 10 && !(await db.getBadgeCount(userId, 'collector'))) {
+      } else if (totalBags >= 1 && !(await db.getBadgeCount(userId, 'collector'))) {
         await db.addBadge({
           userId,
           badge_type: 'collector',
@@ -244,15 +244,15 @@ class BadgeService {
       const stats = await db.getCleanupStats();
       const cleanups = await db.getCleanups(1000);
 
-      const totalWeight = (stats?.total_weight as number) || 0;
+      const totalBags = (stats?.total_bags as number) || 0;
       const totalCleanups = (stats?.total_cleanups as number) || 0;
       const streak = this.calculateCurrentStreak(cleanups);
 
       return {
-        weight: {
-          current: totalWeight,
-          targets: [10, 50, 500],
-          labels: ['Collector (10 lb)', 'Heavy Lifter (50 lb)', 'King/Queen (500 lb)'],
+        bags: {
+          current: totalBags,
+          targets: [1, 5, 50],
+          labels: ['Collector (1 bag)', 'Heavy Lifter (5 bags)', 'King/Queen (50 bags)'],
         },
         cleanups: {
           current: totalCleanups,

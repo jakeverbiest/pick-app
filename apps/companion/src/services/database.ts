@@ -12,7 +12,7 @@ export interface LeaderboardEntry {
   user_id: string;
   display_name: string;
   cleanups_count: number;
-  total_weight_lb: number;
+  total_bags: number;
   cities_count: number;
   badges_count: number;
   updated_at: number;

@@ -8,7 +8,6 @@ import { useRouter } from 'expo-router';
 import { getDatabase } from '../../src/services/database';
 import { getAuthService } from '../../src/services/authService';
 import { getFitnessService, FITNESS_APPS, RECOMMENDED_CONFIGS } from '../../src/services/fitnessService';
-import weightCalibration, { CalibrationState, DEFAULT_LB_PER_PICKUP } from '../../src/services/weightCalibration';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { CARRY_MODE_KEY, CarryMode } from '../../src/services/motionDetection';
 import { HEALTH_SYNC_KEY, setHealthSyncEnabled } from '../../src/services/healthService';
@@ -44,7 +43,6 @@ export default function SettingsScreen() {
   const [displayName, setDisplayName] = useState('');
   const [neighborhood, setNeighborhood] = useState('');
   const [geoDebug, setGeoDebug] = useState('');
-  const [weightUnit, setWeightUnit] = useState('lb');
   const [distanceUnit, setDistanceUnit] = useState('mi');
   const [enabledFitnessApps, setEnabledFitnessApps] = useState<FitnessApp[]>([]);
   const [fitnessRecommendation, setFitnessRecommendation] = useState('');
@@ -53,10 +51,7 @@ export default function SettingsScreen() {
   const [isEditing, setIsEditing] = useState(false);
   const [loading, setLoading] = useState(true);
   const [devMode, setDevMode] = useState(false);
-  const [calibration, setCalibration] = useState<CalibrationState | null>(null);
   const [legalDoc, setLegalDoc] = useState<'privacy' | 'terms' | null>(null);
-  const [manualItems, setManualItems] = useState('');
-  const [manualWeight, setManualWeight] = useState('');
   const [carryMode, setCarryMode] = useState<CarryMode>('auto');
   const [healthSync, setHealthSync] = useState(true);
   const [crashReports, setCrashReports] = useState<CrashReport[]>([]);
@@ -158,37 +153,9 @@ export default function SettingsScreen() {
     await AsyncStorage.setItem(CARRY_MODE_KEY, mode);
   };
 
-  const addManualWeighIn = async () => {
-    const items = parseInt(manualItems, 10);
-    const weight = parseFloat(manualWeight);
-    if (!items || items <= 0 || !weight || weight <= 0) {
-      Alert.alert('Check values', 'Enter the detected pickup count and the NET trash weight (bucket subtracted).');
-      return;
-    }
-    const state = await weightCalibration.addSample(items, weight, 'manual');
-    if (state) {
-      setCalibration(state);
-      setManualItems('');
-      setManualWeight('');
-      Alert.alert('Weigh-in added', `Factor is now ${state.factor.toFixed(3)} lb/pickup (${state.sampleCount} sample${state.sampleCount === 1 ? '' : 's'})`);
-    } else {
-      Alert.alert('Rejected', 'That combination is implausible (factor outside 0.001–2.0 lb/item). Double-check the numbers.');
-    }
-  };
-
   useEffect(() => {
     loadSettings();
-    loadCalibration();
   }, []);
-
-  const loadCalibration = async () => {
-    try {
-      await weightCalibration.init();
-      setCalibration(weightCalibration.getState());
-    } catch (error) {
-      console.error('Failed to load calibration:', error);
-    }
-  };
 
   const loadSettings = async () => {
     try {
@@ -205,7 +172,6 @@ export default function SettingsScreen() {
         const userSettings = await db.getUserSettings(currentUser.uid);
 
         if (userSettings) {
-          setWeightUnit(userSettings.weight_unit || 'lb');
           setDistanceUnit(userSettings.distance_unit || 'mi');
           setTeamName(userSettings.team_name || '');
           setLeaderboardHidden(!!userSettings.leaderboard_hidden);
@@ -243,7 +209,6 @@ export default function SettingsScreen() {
       await db.updateUserSettings(currentUser.uid, {
         display_name: displayName,
         neighborhood,
-        weight_unit: weightUnit,
         distance_unit: distanceUnit,
         fitness_apps: JSON.stringify(enabledFitnessApps),
         team_name: teamName,
@@ -359,7 +324,7 @@ export default function SettingsScreen() {
           timestamp,
           duration_seconds: 600 + Math.random() * 600,
           items_count: mock.pickups,
-          weight_lb: parseFloat((mock.pickups * 0.05).toFixed(2)),
+          bags_est: parseFloat((mock.pickups / 200).toFixed(3)),
           team: 'solo',
           bag_qty: 0,
           bag_size: '30',
@@ -441,42 +406,7 @@ export default function SettingsScreen() {
           <Text style={styles.sectionTitle}>Units</Text>
 
           <View style={styles.unitsGrid}>
-            {/* Row 1: Weight Units */}
-            <TouchableOpacity
-              style={[
-                styles.unitGridButton,
-                weightUnit === 'lb' && styles.unitButtonActive,
-              ]}
-              onPress={() => setWeightUnit('lb')}
-            >
-              <Text
-                style={[
-                  styles.unitButtonText,
-                  weightUnit === 'lb' && styles.unitButtonTextActive,
-                ]}
-              >
-                lb
-              </Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={[
-                styles.unitGridButton,
-                weightUnit === 'kg' && styles.unitButtonActive,
-              ]}
-              onPress={() => setWeightUnit('kg')}
-            >
-              <Text
-                style={[
-                  styles.unitButtonText,
-                  weightUnit === 'kg' && styles.unitButtonTextActive,
-                ]}
-              >
-                kg
-              </Text>
-            </TouchableOpacity>
-
-            {/* Row 2: Distance Units */}
+            {/* Distance Units */}
             <TouchableOpacity
               style={[
                 styles.unitGridButton,
@@ -525,124 +455,9 @@ export default function SettingsScreen() {
           <Text style={styles.advancedChevron}>{advancedOpen ? '▾' : '▸'}</Text>
         </TouchableOpacity>
 
-        {/* Weight Calibration + Carry Mode (advanced) */}
+        {/* Carry Mode (advanced) */}
         {advancedOpen && (
         <>
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Weight Calibration</Text>
-          <Text style={styles.sectionSubtext}>
-            Weigh your haul on a scale after a cleanup and enter it in the session summary — each weigh-in tunes the weight estimate
-          </Text>
-
-          <View style={styles.calibrationBox}>
-            <View style={styles.calibrationRow}>
-              <View style={styles.calibrationStat}>
-                <Text style={styles.calibrationValue}>
-                  {(calibration?.factor ?? DEFAULT_LB_PER_PICKUP).toFixed(3)}
-                </Text>
-                <Text style={styles.calibrationLabel}>lb per pickup</Text>
-              </View>
-              <View style={styles.calibrationStat}>
-                <Text style={styles.calibrationValue}>{calibration?.sampleCount ?? 0}</Text>
-                <Text style={styles.calibrationLabel}>weigh-ins</Text>
-              </View>
-              <View style={styles.calibrationStat}>
-                <Text style={[styles.calibrationValue, { color: calibration?.isCalibrated ? '#34C759' : '#FF9500' }]}>
-                  {calibration?.isCalibrated ? 'Active' : 'Default'}
-                </Text>
-                <Text style={styles.calibrationLabel}>status</Text>
-              </View>
-            </View>
-
-            {calibration?.factorRange && (
-              <Text style={styles.calibrationRangeText}>
-                Sample range: {calibration.factorRange.min.toFixed(3)} – {calibration.factorRange.max.toFixed(3)} lb/pickup
-              </Text>
-            )}
-            {!calibration?.isCalibrated && (
-              <Text style={styles.calibrationRangeText}>
-                Need {2 - (calibration?.sampleCount ?? 0)} more weigh-in{(2 - (calibration?.sampleCount ?? 0)) === 1 ? '' : 's'} to replace the 0.05 default
-              </Text>
-            )}
-          </View>
-
-          {/* Manual weigh-in (e.g., logging a walk after the fact) */}
-          <View style={styles.manualWeighInBox}>
-            <Text style={styles.calibrationSamplesTitle}>Add a weigh-in manually</Text>
-            <View style={styles.manualWeighInRow}>
-              <TextInput
-                style={styles.manualWeighInInput}
-                placeholder="Pickups detected"
-                keyboardType="number-pad"
-                value={manualItems}
-                onChangeText={setManualItems}
-              />
-              <TextInput
-                style={styles.manualWeighInInput}
-                placeholder="Net trash lb"
-                keyboardType="decimal-pad"
-                value={manualWeight}
-                onChangeText={setManualWeight}
-              />
-              <TouchableOpacity style={styles.manualWeighInButton} onPress={addManualWeighIn}>
-                <Text style={styles.manualWeighInButtonText}>Add</Text>
-              </TouchableOpacity>
-            </View>
-            <Text style={styles.teamInputHint}>
-              Net weight = scale reading minus your bucket/bag
-            </Text>
-          </View>
-
-          {(calibration?.samples?.length ?? 0) > 0 && (
-            <View style={styles.calibrationSamplesBox}>
-              <Text style={styles.calibrationSamplesTitle}>Recent weigh-ins</Text>
-              {calibration!.samples.slice(-5).reverse().map((s) => (
-                <View key={s.id} style={styles.calibrationSampleRow}>
-                  <Text style={styles.calibrationSampleText}>
-                    {new Date(s.timestamp).toLocaleDateString()} · {s.items_detected} items · {s.measured_weight_lb.toFixed(1)} lb ({s.factor.toFixed(3)}/item)
-                  </Text>
-                  <TouchableOpacity
-                    onPress={() => {
-                      Alert.alert('Remove weigh-in?', 'This sample will no longer affect calibration.', [
-                        { text: 'Cancel', style: 'cancel' },
-                        {
-                          text: 'Remove',
-                          style: 'destructive',
-                          onPress: async () => {
-                            const state = await weightCalibration.removeSample(s.id);
-                            setCalibration(state);
-                          },
-                        },
-                      ]);
-                    }}
-                  >
-                    <Text style={styles.calibrationSampleDelete}>✕</Text>
-                  </TouchableOpacity>
-                </View>
-              ))}
-
-              <TouchableOpacity
-                style={styles.calibrationResetButton}
-                onPress={() => {
-                  Alert.alert('Reset calibration?', 'All weigh-ins will be deleted and the estimate returns to the 0.05 lb/pickup default.', [
-                    { text: 'Cancel', style: 'cancel' },
-                    {
-                      text: 'Reset',
-                      style: 'destructive',
-                      onPress: async () => {
-                        await weightCalibration.reset();
-                        setCalibration(weightCalibration.getState());
-                      },
-                    },
-                  ]);
-                }}
-              >
-                <Text style={styles.calibrationResetText}>Reset calibration</Text>
-              </TouchableOpacity>
-            </View>
-          )}
-        </View>
-
         {/* Carry Mode Section (advanced) */}
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Carry Mode</Text>

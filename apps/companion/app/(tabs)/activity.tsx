@@ -11,6 +11,7 @@ import { getCoverageStats } from '../../src/services/streetSegments';
 import { Icon, IconName } from '../../src/pick/Icon';
 import { C, radius, shadow } from '../../src/pick/theme';
 import { Card, ProgressBar } from '../../src/pick/ui';
+import { cleanupBags, formatBags, formatBagsShort } from '../../src/services/impactMetrics';
 
 const MILESTONE = 50;
 
@@ -53,7 +54,7 @@ export default function ActivityScreen() {
   const [stats, setStats] = useState<any>(null);
   const [cleanups, setCleanups] = useState<any[]>([]);
   const [editing, setEditing] = useState<any | null>(null);
-  const [editWeight, setEditWeight] = useState('');
+  const [editBags, setEditBags] = useState('');
   const [badges, setBadges] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [coverage, setCoverage] = useState<{ freshPct: number; everCleanedPct: number; totalSegments: number } | null>(null);
@@ -108,7 +109,7 @@ export default function ActivityScreen() {
         date: new Date(cleanup.timestamp * 1000).toISOString(),
         duration: formatTime(cleanup.duration_seconds),
         items_detected: cleanup.items_count,
-        weight_reported_lb: cleanup.weight_lb,
+        bags_est: cleanupBags(cleanup),
         team: cleanup.team,
         location: { lat: cleanup.location_lat, lon: cleanup.location_lon },
         route_points: cleanup.route_points ? JSON.parse(cleanup.route_points) : [],
@@ -125,19 +126,19 @@ export default function ActivityScreen() {
 
   const openEdit = (cleanup: any) => {
     setEditing(cleanup);
-    setEditWeight(cleanup.weight_lb ? String(cleanup.weight_lb) : '');
+    setEditBags(cleanup.bags_est ? String(cleanup.bags_est) : '');
   };
 
   const saveEdit = async () => {
     if (!editing) return;
-    const w = parseFloat(editWeight);
-    if (isNaN(w) || w < 0) {
-      Alert.alert('Enter a weight', 'Please enter the weight in pounds (e.g. 2.5).');
+    const b = parseFloat(editBags);
+    if (isNaN(b) || b < 0) {
+      Alert.alert('Enter bags', 'How many standard (13-gal) bags did you fill? e.g. 0.5 or 2');
       return;
     }
     try {
       const db = await getDatabase();
-      const ok = await db.updateCleanup(editing.id, { weight_lb: w });
+      const ok = await db.updateCleanup(editing.id, { bags_est: b });
       if (ok) {
         Keyboard.dismiss();
         setEditing(null);
@@ -184,16 +185,16 @@ export default function ActivityScreen() {
     );
   }
 
-  const totalWeight = (stats?.total_weight as number) || 0;
+  const totalBags = (stats?.total_bags as number) || 0;
+  const totalPickups = (stats?.total_pickups as number) || 0;
   const totalCleanups = (stats?.total_cleanups as number) || 0;
   const cleanupDays = (stats?.cleanup_days as number) || 0;
-  const avgWeight = (stats?.avg_weight as number) || 0;
 
-  // Weight collected in the last 7 days, computed from real cleanups.
+  // Bags collected in the last 7 days, computed from real cleanups.
   const weekAgo = Date.now() / 1000 - 7 * 24 * 3600;
   const weekDelta = cleanups
     .filter((c) => c.timestamp >= weekAgo)
-    .reduce((sum, c) => sum + (c.weight_lb || 0), 0);
+    .reduce((sum, c) => sum + cleanupBags(c), 0);
 
   const milestonePct = Math.min(1, totalCleanups / MILESTONE);
 
@@ -206,13 +207,13 @@ export default function ActivityScreen() {
         <View style={styles.hero}>
           <Text style={styles.heroLabel}>Total collected</Text>
           <View style={styles.heroRow}>
-            <Text style={styles.heroNum}>{totalWeight.toFixed(totalWeight >= 100 ? 0 : 1)}</Text>
-            <Text style={styles.heroUnit}>lb</Text>
+            <Text style={styles.heroNum}>{formatBagsShort(totalBags)}</Text>
+            <Text style={styles.heroUnit}>{formatBagsShort(totalBags) === '1' ? 'bag' : 'bags'}</Text>
           </View>
           {weekDelta > 0 && (
             <View style={styles.trendPill}>
               <Icon name="trend" size={14} color={C.accent} sw={2.2} />
-              <Text style={styles.trendText}>+{weekDelta.toFixed(1)} lb this week</Text>
+              <Text style={styles.trendText}>+{formatBags(weekDelta)} this week</Text>
             </View>
           )}
         </View>
@@ -221,7 +222,7 @@ export default function ActivityScreen() {
         <View style={styles.tiles}>
           <Tile value={String(totalCleanups)} label="CLEANUPS" />
           <Tile value={String(cleanupDays)} label="DAYS" />
-          <Tile value={avgWeight.toFixed(1)} label="AVG LB" />
+          <Tile value={String(totalPickups)} label="PICKUPS" />
         </View>
 
         {/* milestone */}
@@ -290,7 +291,7 @@ export default function ActivityScreen() {
                 <View style={{ flex: 1 }}>
                   <Text style={styles.recentPlace}>{formatDate(c.timestamp)}</Text>
                   <Text style={styles.recentSub}>
-                    {c.items_count} pieces · {formatTime(c.duration_seconds)} · {(c.weight_lb || 0).toFixed(1)} lb
+                    {c.items_count} pieces · {formatTime(c.duration_seconds)} · {formatBags(cleanupBags(c))}
                   </Text>
                 </View>
                 <Pressable style={styles.rowBtn} onPress={() => openEdit(c)} hitSlop={6}>
@@ -317,15 +318,15 @@ export default function ActivityScreen() {
         <KeyboardAvoidingView style={styles.editOverlay} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
           <TouchableOpacity style={StyleSheet.absoluteFill} activeOpacity={1} onPress={() => Keyboard.dismiss()} />
           <View style={styles.editSheet}>
-            <Text style={styles.editTitle}>Edit weight</Text>
+            <Text style={styles.editTitle}>Edit bags</Text>
             {editing && <Text style={styles.editSub}>{formatDate(editing.timestamp)} · {editing.items_count} pieces</Text>}
             <TextInput
               style={styles.editInput}
-              placeholder="Weight in lb (e.g. 2.5)"
+              placeholder="Standard 13-gal bags (e.g. 0.5 or 2)"
               placeholderTextColor={C.muted}
               keyboardType="decimal-pad"
-              value={editWeight}
-              onChangeText={setEditWeight}
+              value={editBags}
+              onChangeText={setEditBags}
               autoFocus
             />
             <View style={styles.editActions}>

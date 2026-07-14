@@ -2,6 +2,7 @@ import { View, Text, StyleSheet, ScrollView, TouchableOpacity } from 'react-nati
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useState, useEffect } from 'react';
 import { getDatabase } from '../../src/services/database';
+import { cleanupBags, formatBagsShort } from '../../src/services/impactMetrics';
 import { COLORS, SPACING, RADIUS } from '../../src/constants/colors';
 
 const teamIcons: Record<string, string> = {
@@ -117,8 +118,8 @@ export default function HistoryScreen() {
                     <Text style={styles.statLabel}>Items</Text>
                   </View>
                   <View style={styles.statCell}>
-                    <Text style={styles.statValue}>{cleanup.weight_lb.toFixed(1)}</Text>
-                    <Text style={styles.statLabel}>Weight</Text>
+                    <Text style={styles.statValue}>{formatBagsShort(cleanupBags(cleanup))}</Text>
+                    <Text style={styles.statLabel}>Bags</Text>
                   </View>
                   <View style={styles.statCell}>
                     <Text style={styles.statValue}>{formatTime(cleanup.duration_seconds)}</Text>

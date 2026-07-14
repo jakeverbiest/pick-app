@@ -22,6 +22,7 @@ import * as Clipboard from 'expo-clipboard';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Icon } from './Icon';
 import { C, PLATFORM_ACCENT, radius, shadow } from './theme';
+import { formatBags } from '../services/impactMetrics';
 
 type Platform = 'bluesky' | 'instagram' | 'facebook' | 'copy';
 
@@ -29,17 +30,17 @@ const ORDER: Platform[] = ['bluesky', 'instagram', 'facebook', 'copy'];
 const LIMITS: Record<Platform, number> = { bluesky: 300, instagram: 2200, facebook: 5000, copy: 280 };
 const NAMES: Record<Platform, string> = { bluesky: 'Bluesky', instagram: 'Instagram', facebook: 'Facebook', copy: 'Copy link' };
 
-function presets(pieces: number, lb: string, hood: string, hoodPct: number | undefined, invite: string): Record<Platform, string> {
+function presets(pieces: number, bagsText: string, hood: string, hoodPct: number | undefined, invite: string): Record<Platform, string> {
   const place = hood ? `${hood}` : 'my neighborhood';
   // Lead with the completion hook when we have it — "X% cleaned and climbing"
   // is the shareable, joinable framing; raw counts are the supporting detail.
   const hook = hoodPct != null ? `${place} is ${hoodPct}% cleaned and climbing` : `Another stretch of ${place}, litter-free`;
   const join = `Join me on Pick: ${invite}`;
   return {
-    bluesky: `${hook} — ${pieces} pieces and ${lb} lb off our streets today with Pick. Who's in for the next block? ${join} #KeepItClean`,
-    instagram: `${hook}.\n\n${pieces} pieces and ${lb} lb collected on today's walk with Pick. Small actions, real impact — come help finish the neighborhood.\n\n${join}\n\n#KeepItClean #PickUp #CommunityCleanup #CleanStreets #LitterFree`,
-    facebook: `${hook} — ${pieces} pieces of litter and ${lb} lb of trash off our streets with Pick today.\n\nIf you're local, come help complete the neighborhood. Every pair of hands makes a difference.\n\n${join}\n\n#KeepItClean`,
-    copy: `${hook} — ${pieces} pieces and ${lb} lb off our streets with Pick. ${join}`,
+    bluesky: `${hook} — ${pieces} pieces of litter (${bagsText}) off our streets today with Pick. Who's in for the next block? ${join} #KeepItClean`,
+    instagram: `${hook}.\n\n${pieces} pieces of litter — ${bagsText} — collected on today's walk with Pick. Small actions, real impact — come help finish the neighborhood.\n\n${join}\n\n#KeepItClean #PickUp #CommunityCleanup #CleanStreets #LitterFree`,
+    facebook: `${hook} — ${pieces} pieces of litter (${bagsText}) off our streets with Pick today.\n\nIf you're local, come help complete the neighborhood. Every pair of hands makes a difference.\n\n${join}\n\n#KeepItClean`,
+    copy: `${hook} — ${pieces} pieces (${bagsText}) off our streets with Pick. ${join}`,
   };
 }
 
@@ -47,7 +48,7 @@ export function ShareComposer({
   visible,
   onClose,
   pieces,
-  weightLb,
+  bags,
   distanceMi,
   photoUri,
   fullName,
@@ -60,7 +61,7 @@ export function ShareComposer({
   visible: boolean;
   onClose: () => void;
   pieces: number;
-  weightLb: number;
+  bags: number;
   distanceMi: number;
   photoUri: string | null;
   fullName: string;
@@ -71,8 +72,8 @@ export function ShareComposer({
   inviteUrl: string;
 }) {
   const insets = useSafeAreaInsets();
-  const lb = weightLb.toFixed(1);
-  const base = useMemo(() => presets(pieces, lb, hood, hoodPct, inviteUrl), [pieces, lb, hood, hoodPct, inviteUrl]);
+  const bagsText = formatBags(bags);
+  const base = useMemo(() => presets(pieces, bagsText, hood, hoodPct, inviteUrl), [pieces, bagsText, hood, hoodPct, inviteUrl]);
 
   // Frictionless network growth: one tap shares just the invite link via the OS
   // sheet (texts, WhatsApp, DMs — wherever their people are).
@@ -86,7 +87,7 @@ export function ShareComposer({
 
   const [platform, setPlatform] = useState<Platform>('bluesky');
   const [captions, setCaptions] = useState<Partial<Record<Platform, string>>>({});
-  const [includeStats, setIncludeStats] = useState({ pieces: true, weight: true, distance: true });
+  const [includeStats, setIncludeStats] = useState({ pieces: true, bags: true, distance: true });
 
   const caption = captions[platform] ?? base[platform];
   const limit = LIMITS[platform];
@@ -94,9 +95,9 @@ export function ShareComposer({
   const over = remaining < 0;
   const counterColor = over ? C.danger : remaining <= 25 ? C.warning : C.muted;
 
-  const chips: { key: 'pieces' | 'weight' | 'distance'; text: string }[] = [
+  const chips: { key: 'pieces' | 'bags' | 'distance'; text: string }[] = [
     { key: 'pieces', text: `${pieces} pieces` },
-    { key: 'weight', text: `${lb} lb` },
+    { key: 'bags', text: bagsText },
     { key: 'distance', text: `${distanceMi.toFixed(1)} mi` },
   ];
   const activeChips = chips.filter((c) => includeStats[c.key]);

@@ -7,13 +7,13 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { getAuthService } from '../../src/services/authService';
 import { getDatabase } from '../../src/services/firebaseDatabase';
 import type { UserStats, Challenge } from '../../src/services/firebaseDatabase';
-import { formatBags, weightToBags } from '../../src/services/impactMetrics';
+import { formatBags, itemsToBags, aggregateBags } from '../../src/services/impactMetrics';
 import { Icon, IconName } from '../../src/pick/Icon';
 import { C, radius, shadow } from '../../src/pick/theme';
 import { ProgressBar } from '../../src/pick/ui';
 
 type Board = 'you' | 'teams' | 'challenges';
-type SortMetric = 'pickups' | 'weight' | 'days';
+type SortMetric = 'pickups' | 'bags' | 'days';
 
 const BOARDS: { key: Board; label: string }[] = [
   { key: 'you', label: 'You' },
@@ -23,7 +23,7 @@ const BOARDS: { key: Board; label: string }[] = [
 
 const METRICS: { key: SortMetric; label: string; unit: string }[] = [
   { key: 'pickups', label: 'Pickups', unit: 'pickups' },
-  { key: 'weight', label: 'Weight', unit: 'bags' },
+  { key: 'bags', label: 'Bags', unit: 'bags' },
   { key: 'days', label: 'Active days', unit: 'days' },
 ];
 
@@ -34,7 +34,7 @@ const GOAL_ICON: Record<string, IconName> = {
   days: 'clock',
 };
 
-type Personal = { pickups: number; weight: number; days: number; cleanups: number };
+type Personal = { pickups: number; bags: number; days: number; cleanups: number };
 
 export default function LeaderboardScreen() {
   const [board, setBoard] = useState<Board>('you');
@@ -44,7 +44,7 @@ export default function LeaderboardScreen() {
   const [challenges, setChallenges] = useState<Challenge[]>([]);
   const [userTeam, setUserTeam] = useState<string>('solo');
   const [me, setMe] = useState<{ uid: string; hidden: boolean } | null>(null);
-  const [personal, setPersonal] = useState<Personal>({ pickups: 0, weight: 0, days: 0, cleanups: 0 });
+  const [personal, setPersonal] = useState<Personal>({ pickups: 0, bags: 0, days: 0, cleanups: 0 });
   const [loading, setLoading] = useState(true);
   const router = useRouter();
 
@@ -65,7 +65,7 @@ export default function LeaderboardScreen() {
       const mine = await db.getCleanups(1000);
       setPersonal({
         pickups: mine.reduce((s, c) => s + (c.items_count || 0), 0),
-        weight: mine.reduce((s, c) => s + (c.weight_lb || 0), 0),
+        bags: aggregateBags(mine),
         days: new Set(mine.map((c) => new Date((c.timestamp || 0) * 1000).toDateString())).size,
         cleanups: mine.length,
       });
@@ -112,10 +112,14 @@ export default function LeaderboardScreen() {
   const unit = METRICS.find((m) => m.key === metric)!.unit;
 
   const userValue = (u: UserStats): number =>
-    metric === 'pickups' ? u.total_pickups || 0 : metric === 'weight' ? u.total_weight || 0 : u.active_days || 0;
+    metric === 'pickups' ? u.total_pickups || 0
+    : metric === 'bags' ? (u.total_bags ?? itemsToBags(u.total_pickups || 0))
+    : u.active_days || 0;
   const teamValue = (t: any): number =>
-    metric === 'pickups' ? t.total_pickups || 0 : metric === 'weight' ? t.total_weight || 0 : t.total_days || 0;
-  const show = (v: number): string => (metric === 'weight' ? formatBags(weightToBags(v)) : String(v));
+    metric === 'pickups' ? t.total_pickups || 0
+    : metric === 'bags' ? (t.total_bags ?? itemsToBags(t.total_pickups || 0))
+    : t.total_days || 0;
+  const show = (v: number): string => (metric === 'bags' ? formatBags(v) : String(v));
 
   const indivRanked = [...individuals].sort((a, b) => userValue(b) - userValue(a));
   const myIndex = me && !me.hidden ? indivRanked.findIndex((u) => u.uid === me.uid) : -1;
@@ -129,7 +133,7 @@ export default function LeaderboardScreen() {
   const teamRank = teamIndex >= 0 ? teamIndex + 1 : null;
   const teamGap = teamIndex > 0 ? teamValue(teamRanked[teamIndex - 1]) - teamValue(teamRanked[teamIndex]) : 0;
 
-  const personalShown = metric === 'weight' ? formatBags(weightToBags(personal.weight)) : metric === 'days' ? String(personal.days) : String(personal.pickups);
+  const personalShown = metric === 'bags' ? formatBags(personal.bags) : metric === 'days' ? String(personal.days) : String(personal.pickups);
 
   if (loading) {
     return (

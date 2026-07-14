@@ -16,7 +16,7 @@ export interface UserSettings {
   id: string;
   display_name: string;
   neighborhood: string;
-  weight_unit: string; // 'lb' or 'kg'
+  weight_unit?: string; // legacy — weight was removed from the product
   fitness_apps: string; // JSON array
   created_at: number;
   updated_at: number;
@@ -31,7 +31,10 @@ export interface Cleanup {
   items_count: number;
   bag_qty: number;
   bag_size: string; // '13', '30', '39', '55'
-  weight_lb: number;
+  /** Bags for this session: user's end-of-session report, else derived from items. */
+  bags_est?: number;
+  /** @deprecated legacy — weight was dropped in favor of bags. */
+  weight_lb?: number;
   duration_seconds: number;
   team: string; // 'solo', 'neighborhood', 'challenge'
   fitness_tracked: boolean;
@@ -41,8 +44,8 @@ export interface Cleanup {
 
 export interface CleanupStats {
   total_cleanups: number;
-  total_weight: number;
-  avg_weight: number;
+  total_pickups: number;
+  total_bags: number;
   total_time: number;
   cleanup_days: number;
 }
@@ -52,9 +55,9 @@ export type BadgeType =
   | 'pioneer' // First to clean in new location
   | 'explorer' // 3+ neighborhoods
   | 'city_mapper' // 5+ cities
-  | 'collector' // 10+ lbs
-  | 'heavy_lifter' // 50+ lbs
-  | 'king_queen' // 500+ lbs
+  | 'collector' // 1+ bags
+  | 'heavy_lifter' // 5+ bags
+  | 'king_queen' // 50+ bags
   | 'consistent' // 7-day streak
   | 'dedicated' // 30-day streak
   | 'unstoppable'; // 90-day streak
@@ -78,13 +81,13 @@ export interface BadgeDefinition {
 }
 
 // Leaderboard
-export type LeaderboardMetric = 'cleanups' | 'weight' | 'badges';
+export type LeaderboardMetric = 'cleanups' | 'bags' | 'badges';
 
 export interface LeaderboardEntry {
   user_id: string;
   display_name: string;
   cleanups_count: number;
-  total_weight_lb: number;
+  total_bags: number;
   cities_count: number;
   badges_count: number;
   updated_at: number;

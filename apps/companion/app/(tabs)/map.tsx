@@ -8,8 +8,7 @@ import * as Location from 'expo-location';
 import { WebView } from 'react-native-webview';
 import MotionDetector from '../../src/services/motionDetection';
 import PickupAggregator from '../../src/services/pickupAggregator';
-import weightCalibration, { DEFAULT_LB_PER_PICKUP } from '../../src/services/weightCalibration';
-import { weightToBags, formatBags } from '../../src/services/impactMetrics';
+import { itemsToBags, reportedBags, formatBags, formatBagsShort } from '../../src/services/impactMetrics';
 import { getCoverage, markRouteCleaned, getParkCoverage, markParksCleaned, getTileStats, tileId, getCoverageForRing, routeCoverageFraction } from '../../src/services/streetSegments';
 import { osmNeighborhood, getNycHoodsInBounds, polygonStats, HoodShape } from '../../src/services/neighborhoods';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -76,10 +75,10 @@ export default function MapScreen() {
       { text: 'Cancel', style: 'cancel' },
     ]);
   };
-  const [selfReportedWeight, setSelfReportedWeight] = useState('');
-  const [weightInputMode, setWeightInputMode] = useState<'weight' | 'bag'>('weight');
-  const [bagSize, setBagSize] = useState<'small' | 'medium' | 'large' | 'xl'>('large');
+  const [bagSize, setBagSize] = useState<'small' | 'medium' | 'large' | 'xl'>('small');
   const [bagFullness, setBagFullness] = useState(50);
+  // True once the user touches the bag report — their report then wins over the estimate.
+  const [bagReported, setBagReported] = useState(false);
   const [stats, setStats] = useState<any>(null);
   const [user, setUser] = useState<any>(null);
   const [userTeam, setUserTeam] = useState<string>('');
@@ -105,8 +104,6 @@ export default function MapScreen() {
   // Past-cleanup coverage (street shading + dimmed routes) stays visible during
   // an active walk so the cleaned area reads as "cared for"; toggle to declutter.
   const [coverageVisible, setCoverageVisible] = useState(true);
-  const [calFactor, setCalFactor] = useState(DEFAULT_LB_PER_PICKUP);
-  const [calSampleCount, setCalSampleCount] = useState(0);
   const [coverageStats, setCoverageStats] = useState<{ freshPct: number; totalSegments: number; toGo: number } | null>(null);
   // Tap-to-focus neighborhood + a running city rollup across hoods checked.
   const [selectedHood, setSelectedHood] = useState<{ name: string; freshPct: number; toGo: number; total: number } | null>(null);
@@ -191,21 +188,9 @@ export default function MapScreen() {
     loadUserStats();
     loadHistoricalCleanups();
     requestLocationPermission();
-    loadCalibration();
     // Get initial location on mount
     trackLocation();
   }, []);
-
-  const loadCalibration = async () => {
-    try {
-      await weightCalibration.init();
-      const state = weightCalibration.getState();
-      setCalFactor(state.factor);
-      setCalSampleCount(state.sampleCount);
-    } catch (error) {
-      console.error('Calibration load error:', error);
-    }
-  };
 
   // Street-segment coverage: load when map + location are ready. Only lock the
   // "loaded" flag on SUCCESS — a new neighborhood whose first Overpass fetch is
@@ -642,7 +627,6 @@ export default function MapScreen() {
 
   const calculateSuperlative = (stats: any) => {
     const cleanups = stats?.total_cleanups || 0;
-    const weight = stats?.total_weight || 0;
     const days = stats?.cleanup_days || 0;
 
     if (cleanups >= 50) return 'Champion';
@@ -651,18 +635,6 @@ export default function MapScreen() {
     if (cleanups >= 5) return 'Growing';
     if (cleanups >= 1) return 'Getting Started';
     return '';
-  };
-
-  const calculateBagWeight = (size: string, fullness: number) => {
-    const bagWeights: { [key: string]: { min: number; max: number } } = {
-      small: { min: 0.5, max: 1.5 },
-      medium: { min: 1.5, max: 3 },
-      large: { min: 3, max: 5 },
-      xl: { min: 5, max: 8 },
-    };
-    const weights = bagWeights[size] || bagWeights.large;
-    const avgWeight = (weights.min + weights.max) / 2;
-    return (avgWeight * fullness) / 100;
   };
 
   // NYC SCALE - aggressive, high-maintenance model
@@ -924,7 +896,9 @@ export default function MapScreen() {
     setPickupCount(correctedCount);
     setIsListening(false);
     setShowSummary(true);
-    setSelfReportedWeight('');
+    setBagReported(false);
+    setBagSize('small');
+    setBagFullness(50);
 
     // Debug logging
     console.log('Session stopped');
@@ -941,23 +915,10 @@ export default function MapScreen() {
     setShowResults(true);
 
     try {
-      let finalWeight: number;
-      const scaleWeight = parseFloat(selfReportedWeight);
-      if (weightInputMode === 'weight') {
-        finalWeight = scaleWeight || weightCalibration.estimateWeight(pickupCount);
-      } else {
-        finalWeight = calculateBagWeight(bagSize, bagFullness);
-      }
-
-      // Feed the scale measurement into calibration so the lb/pickup
-      // factor learns from real data (Task #22)
-      if (weightInputMode === 'weight' && scaleWeight > 0 && pickupCount > 0) {
-        const calState = await weightCalibration.addSample(pickupCount, scaleWeight, 'scale');
-        if (calState) {
-          setCalFactor(calState.factor);
-          setCalSampleCount(calState.sampleCount);
-        }
-      }
+      // The user's bag report wins; otherwise derive bags from the pickup count.
+      const finalBags = bagReported
+        ? reportedBags(bagSize, bagFullness)
+        : itemsToBags(pickupCount);
 
       const db = await getDatabase();
       const userService = getAuthService();
@@ -994,8 +955,8 @@ export default function MapScreen() {
         location_lon: centerLon,
         items_count: pickupCount,
         bag_qty: 0,
-        bag_size: '30',
-        weight_lb: finalWeight,
+        bag_size: bagReported ? bagSize : '',
+        bags_est: finalBags,
         duration_seconds: elapsedSeconds,
         // Record the user's actual team so it counts toward the team leaderboard
         // (falls back to 'solo' when they're not on a team).
@@ -1019,9 +980,11 @@ export default function MapScreen() {
         }
       }
 
-      // Apple Health: log the cleanup as a walking workout (fitness credit)
+      // Apple Health: log the cleanup as a walking workout (fitness credit).
+      // The weight arg is an internal calorie heuristic only (never displayed):
+      // ~0.05 lb of trash per pickup.
       if (await isHealthSyncEnabled()) {
-        const workout = getFitnessService().createWorkout(pickupCount, finalWeight, elapsedSeconds);
+        const workout = getFitnessService().createWorkout(pickupCount, pickupCount * 0.05, elapsedSeconds);
         const gpsKm = parseFloat(String(calculateCoverage().distance)) || 0;
         syncWorkoutToHealth({
           startMs: Date.now() - elapsedSeconds * 1000,
@@ -1080,8 +1043,8 @@ export default function MapScreen() {
 
   const exportSession = async () => {
     const coverage = calculateCoverage();
-    const detectedWeight = (pickupCount * calFactor).toFixed(1);
-    const selfReported = selfReportedWeight || detectedWeight;
+    const estBags = itemsToBags(pickupCount);
+    const reported = bagReported ? reportedBags(bagSize, bagFullness) : null;
 
     const exportData = `
 ═══════════════════════════════════════════════════════════
@@ -1102,12 +1065,12 @@ Pickups Detected: ${pickupCount}
 Pickup Locations Recorded: ${pickupLocations.length}
 
 ═══════════════════════════════════════════════════════════
-  WEIGHT ANALYSIS
+  BAG ANALYSIS
 ═══════════════════════════════════════════════════════════
 
-Detected Weight (calibrated ${calFactor.toFixed(4)} lb/pickup, ${calSampleCount} scale samples): ${detectedWeight} lb
-Self-Reported Weight: ${selfReported} lb
-Calibration Data: ${detectedWeight !== selfReported ? `VARIANCE: ${(Math.abs(parseFloat(selfReported) - parseFloat(detectedWeight))).toFixed(2)} lb` : 'MATCH'}
+Estimated Bags (from ${pickupCount} pickups): ${estBags.toFixed(2)} (${formatBags(estBags)})
+Reported Bags: ${reported !== null ? `${reported.toFixed(2)} (${bagSize}, ${bagFullness}% full)` : 'not reported'}
+${reported !== null ? `Estimate vs report variance: ${Math.abs(reported - estBags).toFixed(2)} bags` : ''}
 
 ═══════════════════════════════════════════════════════════
   ROUTE DATA (GPS POINTS)
@@ -1239,8 +1202,8 @@ Generated by Pick App - Share this with the development team
             <Text style={styles.topBarLabel}>Pickups</Text>
           </View>
           <View style={styles.topBarStat}>
-            <Text style={styles.topBarValue}>{(pickupCount * calFactor).toFixed(1)} lb</Text>
-            <Text style={styles.topBarLabel}>Est. Weight</Text>
+            <Text style={styles.topBarValue}>{formatBagsShort(itemsToBags(pickupCount))}</Text>
+            <Text style={styles.topBarLabel}>Est. Bags</Text>
           </View>
           <TouchableOpacity
             style={styles.coverageToggle}
@@ -1876,104 +1839,57 @@ Generated by Pick App - Share this with the development team
                 </View>
               </View>
               <Text style={styles.summaryEstimate}>
-                Est. Weight: {(pickupCount * calFactor).toFixed(1)} lb · ≈{formatBags(weightToBags(pickupCount * calFactor))}
-                {calSampleCount >= 2 ? ` (calibrated · ${calSampleCount} weigh-ins)` : ''}
+                Est. collected: {formatBags(itemsToBags(pickupCount))}
               </Text>
             </View>
 
             <View style={styles.summaryBox}>
-              <Text style={styles.summaryLabel}>How much trash did you collect?</Text>
+              <Text style={styles.summaryLabel}>Fill a bag? Tell us how big (optional)</Text>
 
-              {/* Input Mode Toggle */}
-              <View style={styles.modeToggle}>
-                <TouchableOpacity
-                  style={[styles.modeButton, weightInputMode === 'weight' && styles.modeButtonActive]}
-                  onPress={() => setWeightInputMode('weight')}
-                >
-                  <Text style={[styles.modeButtonText, weightInputMode === 'weight' && styles.modeButtonTextActive]}>
-                    Weight
-                  </Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={[styles.modeButton, weightInputMode === 'bag' && styles.modeButtonActive]}
-                  onPress={() => setWeightInputMode('bag')}
-                >
-                  <Text style={[styles.modeButtonText, weightInputMode === 'bag' && styles.modeButtonTextActive]}>
-                    Bag size
-                  </Text>
-                </TouchableOpacity>
+              <View style={styles.bagSizeOptions}>
+                {['small', 'medium', 'large', 'xl'].map((size) => (
+                  <TouchableOpacity
+                    key={size}
+                    style={[styles.bagOption, bagReported && bagSize === size && styles.bagOptionActive]}
+                    onPress={() => { setBagSize(size as any); setBagReported(true); }}
+                  >
+                    <Text style={[styles.bagOptionText, bagReported && bagSize === size && styles.bagOptionTextActive]}>
+                      {size === 'small' ? 'Small\n(13-15 gal)' :
+                       size === 'medium' ? 'Medium\n(30-35 gal)' :
+                       size === 'large' ? 'Large\n(45-60 gal)' :
+                       'XL\n(60+ gal)'}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
               </View>
 
-              {/* Weight Mode */}
-              {weightInputMode === 'weight' ? (
-                <>
-                  <TextInput
-                    style={styles.weightInput}
-                    placeholder="Trash weight only, in lbs (e.g., 0.8)"
-                    keyboardType="decimal-pad"
-                    value={selfReportedWeight}
-                    onChangeText={setSelfReportedWeight}
+              <View style={styles.fullnessContainer}>
+                <Text style={styles.fullnessLabel}>
+                  Fullness: {bagFullness}%
+                </Text>
+                <View style={styles.sliderTrack}>
+                  <View
+                    style={[
+                      styles.sliderFill,
+                      { width: `${bagFullness}%` }
+                    ]}
                   />
-                  <Text style={styles.comparisonText}>
-                    {selfReportedWeight
-                      ? `Estimated ${(pickupCount * calFactor).toFixed(1)} lb, scale says ${parseFloat(selfReportedWeight).toFixed(2)} lb — saving improves calibration`
-                      : `Subtract your bucket/bag weight first. Each net weigh-in tunes the lb/pickup factor (currently ${calFactor.toFixed(3)})`}
-                  </Text>
-                </>
-              ) : (
-                /* Bag Size Mode */
-                <>
-                  <View style={styles.bagSizeOptions}>
-                    {['small', 'medium', 'large', 'xl'].map((size) => (
-                      <TouchableOpacity
-                        key={size}
-                        style={[styles.bagOption, bagSize === size && styles.bagOptionActive]}
-                        onPress={() => setBagSize(size as any)}
-                      >
-                        <Text style={[styles.bagOptionText, bagSize === size && styles.bagOptionTextActive]}>
-                          {size === 'small' ? 'Small\n(13-15 gal)' :
-                           size === 'medium' ? 'Medium\n(30-35 gal)' :
-                           size === 'large' ? 'Large\n(45-60 gal)' :
-                           'XL\n(60+ gal)'}
-                        </Text>
-                      </TouchableOpacity>
-                    ))}
-                  </View>
+                </View>
+                <View style={styles.sliderButtons}>
+                  <TouchableOpacity onPress={() => { setBagFullness(Math.max(0, bagFullness - 10)); setBagReported(true); }}>
+                    <Text style={styles.sliderButton}>−</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity onPress={() => { setBagFullness(Math.min(100, bagFullness + 10)); setBagReported(true); }}>
+                    <Text style={styles.sliderButton}>+</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
 
-                  <View style={styles.fullnessContainer}>
-                    <Text style={styles.fullnessLabel}>
-                      Fullness: {bagFullness}%
-                    </Text>
-                    <View style={styles.sliderTrack}>
-                      <View
-                        style={[
-                          styles.sliderFill,
-                          { width: `${bagFullness}%` }
-                        ]}
-                      />
-                    </View>
-                    <View style={styles.sliderButtons}>
-                      <TouchableOpacity onPress={() => setBagFullness(Math.max(0, bagFullness - 10))}>
-                        <Text style={styles.sliderButton}>−</Text>
-                      </TouchableOpacity>
-                      <TouchableOpacity onPress={() => setBagFullness(Math.min(100, bagFullness + 10))}>
-                        <Text style={styles.sliderButton}>+</Text>
-                      </TouchableOpacity>
-                    </View>
-                  </View>
-
-                  <View style={styles.weightEstimate}>
-                    <Text style={styles.weightEstimateLabel}>Estimated weight:</Text>
-                    <Text style={styles.weightEstimateValue}>
-                      {calculateBagWeight(bagSize, bagFullness).toFixed(2)} lb
-                    </Text>
-                  </View>
-
-                  <Text style={styles.comparisonText}>
-                    Detected {(pickupCount * calFactor).toFixed(1)} lb, you estimate {calculateBagWeight(bagSize, bagFullness).toFixed(2)} lb
-                  </Text>
-                </>
-              )}
+              <Text style={styles.comparisonText}>
+                {bagReported
+                  ? `Saving ${formatBags(reportedBags(bagSize, bagFullness))} — your report beats our estimate`
+                  : `Skip this and we'll estimate from your ${pickupCount} pickups`}
+              </Text>
             </View>
 
             {/* Photo intake */}
@@ -2336,13 +2252,7 @@ Generated by Pick App - Share this with the development team
         visible={showShare}
         onClose={() => setShowShare(false)}
         pieces={pickupCount}
-        weightLb={
-          selfReportedWeight
-            ? parseFloat(selfReportedWeight)
-            : weightInputMode === 'bag'
-              ? calculateBagWeight(bagSize, bagFullness)
-              : pickupCount * calFactor
-        }
+        bags={bagReported ? reportedBags(bagSize, bagFullness) : itemsToBags(pickupCount)}
         distanceMi={parseFloat(String(calculateCoverage().distance || '0')) * 0.621371}
         photoUri={photoUri}
         fullName={user?.displayName || 'You'}
