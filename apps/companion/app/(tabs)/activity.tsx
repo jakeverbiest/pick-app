@@ -1,19 +1,60 @@
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert, Clipboard } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { useState, useEffect, useCallback } from 'react';
+import { useCallback, useEffect, useState } from 'react';
+import { Alert, Keyboard, KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
-import { getDatabase } from '../../src/services/database';
-import { getAuthService } from '../../src/services/authService';
-import { getBadgeService } from '../../src/services/badgeService';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import * as Clipboard from 'expo-clipboard';
 import * as Location from 'expo-location';
+
+import { getAuthService } from '../../src/services/authService';
+import { getDatabase } from '../../src/services/database';
 import { getCoverageStats } from '../../src/services/streetSegments';
-import { COLORS, SPACING, RADIUS } from '../../src/constants/colors';
+import { Icon, IconName } from '../../src/pick/Icon';
+import { C, radius, shadow } from '../../src/pick/theme';
+import { Card, ProgressBar } from '../../src/pick/ui';
+
+const MILESTONE = 50;
+
+// Map a backend badge_type to a Trail line-icon + readable name.
+const BADGE_ICON: Record<string, IconName> = {
+  pioneer: 'pin',
+  explorer: 'route',
+  city_mapper: 'target',
+  collector: 'bag',
+  heavy_lifter: 'bag',
+  king_queen: 'trophy',
+  consistent: 'check',
+  dedicated: 'clock',
+  unstoppable: 'bolt',
+};
+
+function badgeName(type: string) {
+  return type.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function formatDate(ts: number) {
+  const date = new Date(ts * 1000);
+  const today = new Date();
+  const yesterday = new Date(today);
+  yesterday.setDate(yesterday.getDate() - 1);
+  if (date.toDateString() === today.toDateString()) return 'Today';
+  if (date.toDateString() === yesterday.toDateString()) return 'Yesterday';
+  return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+}
+
+function formatTime(seconds: number) {
+  const hrs = Math.floor(seconds / 3600);
+  const mins = Math.floor((seconds % 3600) / 60);
+  if (hrs > 0) return `${hrs}h ${mins}m`;
+  if (mins > 0) return `${mins}m`;
+  return `${seconds}s`;
+}
 
 export default function ActivityScreen() {
   const [stats, setStats] = useState<any>(null);
   const [cleanups, setCleanups] = useState<any[]>([]);
+  const [editing, setEditing] = useState<any | null>(null);
+  const [editWeight, setEditWeight] = useState('');
   const [badges, setBadges] = useState<any[]>([]);
-  const [user, setUser] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [coverage, setCoverage] = useState<{ freshPct: number; everCleanedPct: number; totalSegments: number } | null>(null);
 
@@ -22,42 +63,34 @@ export default function ActivityScreen() {
     loadCoverage();
   }, []);
 
-  const loadCoverage = async () => {
-    try {
-      // Last known fix — no GPS radio spin-up just for a stats card
-      const pos = await Location.getLastKnownPositionAsync();
-      if (!pos) return;
-      const stats = await getCoverageStats(pos.coords.latitude, pos.coords.longitude);
-      if (stats.totalSegments > 0) setCoverage(stats);
-    } catch (error) {
-      console.log('Coverage stats unavailable:', error);
-    }
-  };
-
-  // Reload activity whenever this tab comes into focus
   useFocusEffect(
     useCallback(() => {
       loadActivity();
     }, [])
   );
 
+  const loadCoverage = async () => {
+    try {
+      const pos = await Location.getLastKnownPositionAsync();
+      if (!pos) return;
+      const s = await getCoverageStats(pos.coords.latitude, pos.coords.longitude);
+      if (s.totalSegments > 0) setCoverage(s);
+    } catch (error) {
+      console.log('Coverage stats unavailable:', error);
+    }
+  };
+
   const loadActivity = async () => {
     try {
       const db = await getDatabase();
-      const userService = getAuthService();
-      const currentUser = userService.getCurrentUser();
-
+      const currentUser = getAuthService().getCurrentUser();
       if (!currentUser) {
         setLoading(false);
         return;
       }
-
       const userStats = await db.getCleanupStats();
       const userCleanups = await db.getCleanups(20);
-      const badgeService = getBadgeService();
       const userBadges = await db.getBadges(currentUser.uid);
-
-      setUser(currentUser);
       setStats(userStats);
       setCleanups(userCleanups || []);
       setBadges(userBadges || []);
@@ -68,54 +101,52 @@ export default function ActivityScreen() {
     }
   };
 
-  const formatDate = (timestamp: number) => {
-    const date = new Date(timestamp * 1000);
-    const today = new Date();
-    const yesterday = new Date(today);
-    yesterday.setDate(yesterday.getDate() - 1);
-
-    if (date.toDateString() === today.toDateString()) {
-      return 'Today';
-    }
-    if (date.toDateString() === yesterday.toDateString()) {
-      return 'Yesterday';
-    }
-    return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-  };
-
-  const formatTime = (seconds: number) => {
-    const hrs = Math.floor(seconds / 3600);
-    const mins = Math.floor((seconds % 3600) / 60);
-    if (hrs > 0) return `${hrs}h ${mins}m`;
-    if (mins > 0) return `${mins}m`;
-    return `${seconds}s`;
-  };
-
   const exportCleanup = async (cleanup: any) => {
     try {
       const exportData = {
         id: cleanup.id,
         date: new Date(cleanup.timestamp * 1000).toISOString(),
-        duration: `${formatTime(cleanup.duration_seconds)}`,
+        duration: formatTime(cleanup.duration_seconds),
         items_detected: cleanup.items_count,
         weight_reported_lb: cleanup.weight_lb,
         team: cleanup.team,
-        location: {
-          lat: cleanup.location_lat,
-          lon: cleanup.location_lon,
-        },
+        location: { lat: cleanup.location_lat, lon: cleanup.location_lon },
         route_points: cleanup.route_points ? JSON.parse(cleanup.route_points) : [],
-        motion_log: cleanup.motion_log ? JSON.parse(cleanup.motion_log) : 'not recorded (pre-flight-recorder walk)',
+        motion_log: cleanup.motion_log ? JSON.parse(cleanup.motion_log) : 'not recorded',
         notes: cleanup.notes || 'N/A',
       };
-
-      const exportText = JSON.stringify(exportData, null, 2);
-      await Clipboard.setString(exportText);
-
-      Alert.alert('✅ Exported', 'Cleanup data copied to clipboard!');
+      await Clipboard.setStringAsync(JSON.stringify(exportData, null, 2));
+      Alert.alert('Exported', 'Cleanup data copied to clipboard.');
     } catch (error) {
-      Alert.alert('❌ Error', 'Failed to export cleanup data');
+      Alert.alert('Error', 'Failed to export cleanup data');
       console.error('Export failed:', error);
+    }
+  };
+
+  const openEdit = (cleanup: any) => {
+    setEditing(cleanup);
+    setEditWeight(cleanup.weight_lb ? String(cleanup.weight_lb) : '');
+  };
+
+  const saveEdit = async () => {
+    if (!editing) return;
+    const w = parseFloat(editWeight);
+    if (isNaN(w) || w < 0) {
+      Alert.alert('Enter a weight', 'Please enter the weight in pounds (e.g. 2.5).');
+      return;
+    }
+    try {
+      const db = await getDatabase();
+      const ok = await db.updateCleanup(editing.id, { weight_lb: w });
+      if (ok) {
+        Keyboard.dismiss();
+        setEditing(null);
+        loadActivity();
+      } else {
+        Alert.alert('Error', 'Could not update that cleanup.');
+      }
+    } catch {
+      Alert.alert('Error', 'Could not update that cleanup.');
     }
   };
 
@@ -132,13 +163,10 @@ export default function ActivityScreen() {
             try {
               const db = await getDatabase();
               const ok = await db.deleteCleanup(cleanup.id);
-              if (ok) {
-                loadActivity();
-              } else {
-                Alert.alert('❌ Error', 'Failed to delete cleanup');
-              }
-            } catch (error) {
-              Alert.alert('❌ Error', 'Failed to delete cleanup');
+              if (ok) loadActivity();
+              else Alert.alert('Error', 'Failed to delete cleanup');
+            } catch {
+              Alert.alert('Error', 'Failed to delete cleanup');
             }
           },
         },
@@ -148,351 +176,256 @@ export default function ActivityScreen() {
 
   if (loading) {
     return (
-      <SafeAreaView style={styles.container}>
-        <View style={styles.centerContent}>
-          <Text style={styles.subtitle}>Loading...</Text>
+      <SafeAreaView style={styles.root}>
+        <View style={styles.center}>
+          <Text style={styles.loading}>Loading…</Text>
         </View>
       </SafeAreaView>
     );
   }
 
-  const progressPercent = stats
-    ? Math.min(100, (((stats.total_cleanups as number) || 0) / 50) * 100)
-    : 0;
+  const totalWeight = (stats?.total_weight as number) || 0;
+  const totalCleanups = (stats?.total_cleanups as number) || 0;
+  const cleanupDays = (stats?.cleanup_days as number) || 0;
+  const avgWeight = (stats?.avg_weight as number) || 0;
+
+  // Weight collected in the last 7 days, computed from real cleanups.
+  const weekAgo = Date.now() / 1000 - 7 * 24 * 3600;
+  const weekDelta = cleanups
+    .filter((c) => c.timestamp >= weekAgo)
+    .reduce((sum, c) => sum + (c.weight_lb || 0), 0);
+
+  const milestonePct = Math.min(1, totalCleanups / MILESTONE);
 
   return (
-    <SafeAreaView style={styles.container}>
-      <ScrollView contentContainerStyle={styles.scrollContent}>
-        {/* Stats Overview */}
-        <View style={styles.statsBox}>
-          <Text style={styles.statsLabel}>Your Impact</Text>
+    <SafeAreaView style={styles.root} edges={['top']}>
+      <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
+        <Text style={styles.h1}>Your impact</Text>
 
-          <View style={styles.statsGrid}>
-            <View style={styles.statItem}>
-              <Text style={styles.statValue}>{(stats?.total_cleanups as number) || 0}</Text>
-              <Text style={styles.statLabel}>Cleanups</Text>
-            </View>
-            <View style={styles.statItem}>
-              <Text style={styles.statValue}>
-                {((stats?.total_weight as number) || 0).toFixed(1)}
-              </Text>
-              <Text style={styles.statLabel}>lbs</Text>
-            </View>
-            <View style={styles.statItem}>
-              <Text style={styles.statValue}>{(stats?.cleanup_days as number) || 0}</Text>
-              <Text style={styles.statLabel}>Days</Text>
-            </View>
+        {/* cumulative hero */}
+        <View style={styles.hero}>
+          <Text style={styles.heroLabel}>Total collected</Text>
+          <View style={styles.heroRow}>
+            <Text style={styles.heroNum}>{totalWeight.toFixed(totalWeight >= 100 ? 0 : 1)}</Text>
+            <Text style={styles.heroUnit}>lb</Text>
           </View>
-
-          {/* Progress Bar */}
-          <View style={styles.progressContainer}>
-            <View style={styles.progressBar}>
-              <View
-                style={[
-                  styles.progressFill,
-                  { width: `${progressPercent}%` },
-                ]}
-              />
+          {weekDelta > 0 && (
+            <View style={styles.trendPill}>
+              <Icon name="trend" size={14} color={C.accent} sw={2.2} />
+              <Text style={styles.trendText}>+{weekDelta.toFixed(1)} lb this week</Text>
             </View>
-            <Text style={styles.progressText}>
-              {(stats?.total_cleanups as number) || 0} of 50 cleanups
-            </Text>
-          </View>
+          )}
         </View>
 
-        {/* Neighborhood Coverage */}
-        {coverage && (
-          <View style={styles.statsBox}>
-            <Text style={styles.statsLabel}>Neighborhood Streets</Text>
+        {/* stat tiles */}
+        <View style={styles.tiles}>
+          <Tile value={String(totalCleanups)} label="CLEANUPS" />
+          <Tile value={String(cleanupDays)} label="DAYS" />
+          <Tile value={avgWeight.toFixed(1)} label="AVG LB" />
+        </View>
 
-            <View style={styles.statsGrid}>
-              <View style={styles.statItem}>
-                <Text style={styles.coverageValue}>{coverage.freshPct}%</Text>
-                <Text style={styles.statLabel}>Fresh (5 days)</Text>
-              </View>
-              <View style={styles.statItem}>
-                <Text style={styles.coverageValue}>{coverage.everCleanedPct}%</Text>
-                <Text style={styles.statLabel}>Ever cleaned</Text>
-              </View>
-              <View style={styles.statItem}>
-                <Text style={styles.coverageValue}>{coverage.totalSegments}</Text>
-                <Text style={styles.statLabel}>Street blocks</Text>
-              </View>
-            </View>
-
-            <View style={styles.progressContainer}>
-              <View style={styles.progressBar}>
-                <View style={[styles.progressFill, { width: `${Math.max(1, coverage.everCleanedPct)}%` }]} />
-              </View>
-              <Text style={styles.progressText}>
-                {coverage.everCleanedPct}% of your neighborhood touched so far
-              </Text>
-            </View>
+        {/* milestone */}
+        <Card style={{ marginTop: 12 }}>
+          <View style={styles.between}>
+            <Text style={styles.milestoneTitle}>Next milestone</Text>
+            <Text style={styles.milestoneMeta}>
+              {totalCleanups} / {MILESTONE} cleanups
+            </Text>
           </View>
+          <View style={{ marginTop: 12 }}>
+            <ProgressBar pct={milestonePct} />
+          </View>
+          <Text style={styles.milestoneHint}>
+            {Math.max(0, MILESTONE - totalCleanups)} more cleanups to your next milestone.
+          </Text>
+        </Card>
+
+        {/* neighborhood coverage (real) */}
+        {coverage && (
+          <Card style={{ marginTop: 12 }}>
+            <Text style={styles.cardHeading}>Neighborhood streets</Text>
+            <View style={[styles.tiles, { marginTop: 14 }]}>
+              <MiniStat value={`${coverage.freshPct}%`} label="FRESH" />
+              <MiniStat value={`${coverage.everCleanedPct}%`} label="EVER CLEANED" />
+              <MiniStat value={String(coverage.totalSegments)} label="BLOCKS" />
+            </View>
+            <View style={{ marginTop: 14 }}>
+              <ProgressBar pct={Math.max(0.01, coverage.everCleanedPct / 100)} height={8} />
+            </View>
+            <Text style={styles.milestoneHint}>{coverage.everCleanedPct}% of your neighborhood touched so far.</Text>
+          </Card>
         )}
 
-        {/* Badges Section */}
-        {badges && badges.length > 0 && (
-          <View style={styles.section}>
-            <Text style={styles.sectionTitle}>🏆 Badges Earned ({badges.length})</Text>
-            <View style={styles.badgesGrid}>
-              {badges.map((badge, index) => (
-                <View key={index} style={styles.badgeItem}>
-                  <Text style={styles.badgeEmoji}>🏅</Text>
-                  <Text style={styles.badgeName}>
-                    {badge.badge_type.replace(/_/g, ' ')}
-                  </Text>
-                  <Text style={styles.badgeDate}>
-                    {formatDate(badge.unlocked_at)}
-                  </Text>
+        {/* badges (real) */}
+        {badges.length > 0 && (
+          <>
+            <View style={[styles.between, styles.sectionHead]}>
+              <Text style={styles.sectionH}>Badges</Text>
+              <Text style={styles.sectionAction}>{badges.length} earned</Text>
+            </View>
+            <View style={styles.badgeGrid}>
+              {badges.map((b, i) => (
+                <View key={b.id ?? i} style={styles.badge}>
+                  <View style={styles.badgeWell}>
+                    <Icon name={BADGE_ICON[b.badge_type] ?? 'leaf'} size={20} color={C.primary} />
+                  </View>
+                  <Text style={styles.badgeName}>{badgeName(b.badge_type)}</Text>
                 </View>
               ))}
             </View>
-          </View>
+          </>
         )}
 
-        {/* Recent Cleanups */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Recent Cleanups</Text>
-
-          {cleanups && cleanups.length > 0 ? (
-            cleanups.map((cleanup, index) => (
-              <View key={index} style={styles.cleanupCard}>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.cleanupDate}>
-                    {formatDate(cleanup.timestamp)}
-                  </Text>
-                  <Text style={styles.detailText}>
-                    {cleanup.items_count} items · {formatTime(cleanup.duration_seconds)} · {cleanup.weight_lb.toFixed(1)} lb
-                  </Text>
-                </View>
-                <View style={styles.cleanupActions}>
-                  <TouchableOpacity
-                    style={styles.exportButton}
-                    onPress={() => exportCleanup(cleanup)}
-                  >
-                    <Text style={styles.exportButtonText}>📤</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    style={styles.exportButton}
-                    onPress={() => deleteCleanup(cleanup)}
-                  >
-                    <Text style={styles.exportButtonText}>🗑️</Text>
-                  </TouchableOpacity>
-                </View>
-              </View>
-            ))
-          ) : (
-            <Text style={styles.noCleanups}>No cleanups logged yet. Start on the Map tab!</Text>
-          )}
+        {/* recent cleanups (real) */}
+        <View style={[styles.between, styles.sectionHead]}>
+          <Text style={styles.sectionH}>Recent cleanups</Text>
         </View>
+        {cleanups.length > 0 ? (
+          <Card style={{ padding: 0, overflow: 'hidden' }}>
+            {cleanups.map((c, i) => (
+              <View key={c.id ?? i} style={[styles.recentRow, i < cleanups.length - 1 && styles.rowBorder]}>
+                <View style={styles.recentWell}>
+                  <Icon name="leaf" size={20} color={C.primary} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.recentPlace}>{formatDate(c.timestamp)}</Text>
+                  <Text style={styles.recentSub}>
+                    {c.items_count} pieces · {formatTime(c.duration_seconds)} · {(c.weight_lb || 0).toFixed(1)} lb
+                  </Text>
+                </View>
+                <Pressable style={styles.rowBtn} onPress={() => openEdit(c)} hitSlop={6}>
+                  <Icon name="plus" size={17} color={C.primary} sw={1.9} />
+                </Pressable>
+                <Pressable style={styles.rowBtn} onPress={() => exportCleanup(c)} hitSlop={6}>
+                  <Icon name="share" size={17} color={C.muted} sw={1.8} />
+                </Pressable>
+                <Pressable style={styles.rowBtn} onPress={() => deleteCleanup(c)} hitSlop={6}>
+                  <Icon name="trash" size={17} color={C.danger} sw={1.8} />
+                </Pressable>
+              </View>
+            ))}
+          </Card>
+        ) : (
+          <Card>
+            <Text style={styles.empty}>No cleanups logged yet. Start one on the Map tab.</Text>
+          </Card>
+        )}
       </ScrollView>
+
+      {/* Edit / add-weight-later for a saved cleanup */}
+      <Modal visible={!!editing} transparent animationType="slide" onRequestClose={() => setEditing(null)}>
+        <KeyboardAvoidingView style={styles.editOverlay} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
+          <TouchableOpacity style={StyleSheet.absoluteFill} activeOpacity={1} onPress={() => Keyboard.dismiss()} />
+          <View style={styles.editSheet}>
+            <Text style={styles.editTitle}>Edit weight</Text>
+            {editing && <Text style={styles.editSub}>{formatDate(editing.timestamp)} · {editing.items_count} pieces</Text>}
+            <TextInput
+              style={styles.editInput}
+              placeholder="Weight in lb (e.g. 2.5)"
+              placeholderTextColor={C.muted}
+              keyboardType="decimal-pad"
+              value={editWeight}
+              onChangeText={setEditWeight}
+              autoFocus
+            />
+            <View style={styles.editActions}>
+              <TouchableOpacity style={[styles.editBtn, styles.editCancel]} onPress={() => { Keyboard.dismiss(); setEditing(null); }}>
+                <Text style={styles.editCancelText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={[styles.editBtn, styles.editSave]} onPress={saveEdit}>
+                <Text style={styles.editSaveText}>Save</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
     </SafeAreaView>
   );
 }
 
+function Tile({ value, label }: { value: string; label: string }) {
+  return (
+    <View style={styles.tile}>
+      <Text style={styles.tileNum}>{value}</Text>
+      <Text style={styles.tileLabel}>{label}</Text>
+    </View>
+  );
+}
+
+function MiniStat({ value, label }: { value: string; label: string }) {
+  return (
+    <View style={styles.tile}>
+      <Text style={styles.miniNum}>{value}</Text>
+      <Text style={styles.tileLabel}>{label}</Text>
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: COLORS.cream,
-  },
-  scrollContent: {
-    paddingHorizontal: 16,
-    paddingVertical: 20,
-    paddingBottom: 40,
-  },
-  centerContent: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  header: {
-    marginBottom: 24,
-  },
-  title: {
-    fontSize: 28,
-    fontWeight: '700',
-    color: COLORS.darkSage,
-    marginBottom: 4,
-  },
-  userName: {
-    fontSize: 14,
-    color: COLORS.mutedSage,
-    fontWeight: '500',
-  },
-  subtitle: {
-    fontSize: 16,
-    color: COLORS.mutedSage,
-  },
-  statsBox: {
-    backgroundColor: COLORS.white,
-    borderRadius: 12,
-    paddingHorizontal: 16,
-    paddingVertical: 28,
-    marginBottom: 24,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.1,
-    shadowRadius: 2,
-  },
-  statsLabel: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: COLORS.darkSage,
-    marginBottom: 12,
-  },
-  statsGrid: {
-    flexDirection: 'row',
-    justifyContent: 'space-around',
-    marginBottom: 16,
-  },
-  statItem: {
-    alignItems: 'center',
-  },
-  statValue: {
-    fontSize: 52,
-    fontWeight: '800',
-    color: '#34C759',
-    marginBottom: 4,
-  },
-  statLabel: {
-    fontSize: 13,
-    color: COLORS.mutedSage,
-    fontWeight: '600',
-  },
-  coverageValue: {
-    fontSize: 28,
-    fontWeight: '800',
-    color: COLORS.sage,
-    marginBottom: 4,
-  },
-  progressContainer: {
-    marginTop: 16,
-  },
-  progressBar: {
-    height: 8,
-    backgroundColor: COLORS.border,
-    borderRadius: 4,
-    overflow: 'hidden',
-    marginBottom: 8,
-  },
-  progressFill: {
-    height: '100%',
-    backgroundColor: COLORS.accent,
-  },
-  progressText: {
-    fontSize: 12,
-    color: COLORS.mutedSage,
-    textAlign: 'center',
-  },
-  section: {
-    marginBottom: 24,
-  },
-  sectionTitle: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: COLORS.darkSage,
-    marginBottom: 12,
-  },
-  badgesGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 12,
-  },
-  badgeItem: {
-    flex: 1,
-    minWidth: '47%',
-    backgroundColor: COLORS.white,
-    borderRadius: 10,
-    padding: 12,
-    alignItems: 'center',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
-    shadowRadius: 2,
-  },
-  badgeEmoji: {
-    fontSize: 32,
-    marginBottom: 8,
-  },
-  badgeName: {
-    fontSize: 11,
-    fontWeight: '600',
-    color: COLORS.darkSage,
-    textAlign: 'center',
-    marginBottom: 4,
-    textTransform: 'capitalize',
-  },
-  badgeDate: {
-    fontSize: 10,
-    color: COLORS.mutedSage,
-  },
-  cleanupCard: {
-    backgroundColor: COLORS.white,
-    borderRadius: 10,
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    marginBottom: 8,
+  root: { flex: 1, backgroundColor: C.cream },
+  scroll: { paddingHorizontal: 16, paddingTop: 8, paddingBottom: 40 },
+  center: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+  loading: { fontSize: 16, color: C.muted },
+
+  h1: { fontSize: 28, fontWeight: '700', letterSpacing: -0.4, color: C.dark, marginBottom: 18 },
+
+  hero: { backgroundColor: C.primary, borderRadius: radius.cardLg, padding: 22 },
+  heroLabel: { fontSize: 13, color: C.heroSub, fontWeight: '500' },
+  heroRow: { flexDirection: 'row', alignItems: 'baseline', gap: 8, marginTop: 6 },
+  heroNum: { fontSize: 52, fontWeight: '700', letterSpacing: -1.5, lineHeight: 54, color: '#fff' },
+  heroUnit: { fontSize: 18, fontWeight: '600', color: C.heroSub2 },
+  trendPill: {
     flexDirection: 'row',
     alignItems: 'center',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
-    shadowRadius: 2,
-  },
-  cleanupActions: {
-    flexDirection: 'row',
-    gap: 8,
-    alignItems: 'center',
-  },
-  cleanupHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
-    marginBottom: 8,
-  },
-  cleanupDate: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: COLORS.darkSage,
-  },
-  cleanupTeam: {
-    fontSize: 12,
-    color: COLORS.mutedSage,
-    marginTop: 2,
-  },
-  cleanupStats: {
-    alignItems: 'flex-end',
-  },
-  cleanupWeight: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: '#34C759',
-  },
-  cleanupDetails: {
-    flexDirection: 'row',
-    gap: 8,
-    flexWrap: 'wrap',
-  },
-  detailText: {
-    fontSize: 12,
-    color: COLORS.mutedSage,
-  },
-  noCleanups: {
-    fontSize: 14,
-    color: COLORS.mutedSage,
-    textAlign: 'center',
-    paddingVertical: 20,
-    fontStyle: 'italic',
-  },
-  exportButton: {
+    gap: 6,
+    alignSelf: 'flex-start',
+    marginTop: 14,
+    backgroundColor: 'rgba(255,255,255,0.12)',
     paddingVertical: 6,
-    paddingHorizontal: 9,
-    backgroundColor: COLORS.light,
-    borderRadius: 6,
+    paddingHorizontal: 11,
+    borderRadius: radius.pill,
   },
-  exportButtonText: {
-    fontSize: 14,
-    fontWeight: '600',
-  },
+  trendText: { fontSize: 13, fontWeight: '600', color: '#fff' },
+
+  tiles: { flexDirection: 'row', gap: 10, marginTop: 12 },
+  tile: { flex: 1, backgroundColor: '#fff', borderRadius: radius.card, padding: 15, ...shadow.card },
+  tileNum: { fontSize: 24, fontWeight: '700', letterSpacing: -0.5, color: C.dark },
+  miniNum: { fontSize: 22, fontWeight: '700', letterSpacing: -0.5, color: C.primary },
+  tileLabel: { fontSize: 11, color: C.muted, fontWeight: '600', marginTop: 2 },
+
+  between: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'baseline' },
+  cardHeading: { fontSize: 15, fontWeight: '700', color: C.dark },
+  milestoneTitle: { fontSize: 14, fontWeight: '600', color: C.dark },
+  milestoneMeta: { fontSize: 13, color: C.muted },
+  milestoneHint: { fontSize: 12, color: C.muted, marginTop: 8 },
+
+  sectionHead: { marginTop: 22, marginBottom: 12, marginHorizontal: 4 },
+  sectionH: { fontSize: 17, fontWeight: '700', color: C.dark },
+  sectionAction: { fontSize: 13, color: C.accent, fontWeight: '600' },
+
+  badgeGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
+  badge: { width: '31.6%', backgroundColor: '#fff', borderRadius: 14, paddingVertical: 14, paddingHorizontal: 8, alignItems: 'center', ...shadow.card },
+  badgeWell: { width: 38, height: 38, borderRadius: 19, alignItems: 'center', justifyContent: 'center', backgroundColor: C.tint },
+  badgeName: { fontSize: 11, fontWeight: '600', color: '#3A4A33', marginTop: 8, textAlign: 'center' },
+
+  recentRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 14, paddingHorizontal: 15 },
+  rowBorder: { borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: C.border2 },
+  recentWell: { width: 38, height: 38, borderRadius: 11, backgroundColor: C.tint, alignItems: 'center', justifyContent: 'center' },
+  recentPlace: { fontSize: 15, fontWeight: '600', color: C.dark },
+  recentSub: { fontSize: 12, color: C.muted, marginTop: 1 },
+  rowBtn: { width: 34, height: 34, borderRadius: 10, backgroundColor: C.field, alignItems: 'center', justifyContent: 'center' },
+
+  empty: { fontSize: 14, color: C.muted, textAlign: 'center', paddingVertical: 12 },
+
+  editOverlay: { flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(27,46,26,0.45)' },
+  editSheet: { backgroundColor: C.cream, borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 22, paddingBottom: 34 },
+  editTitle: { fontSize: 20, fontWeight: '700', color: C.dark },
+  editSub: { fontSize: 13, color: C.muted, marginTop: 2, marginBottom: 14 },
+  editInput: { backgroundColor: '#fff', borderRadius: 12, borderWidth: 1, borderColor: C.border3, paddingVertical: 14, paddingHorizontal: 14, fontSize: 16, color: C.dark },
+  editActions: { flexDirection: 'row', gap: 12, marginTop: 16 },
+  editBtn: { flex: 1, borderRadius: 12, paddingVertical: 14, alignItems: 'center' },
+  editCancel: { backgroundColor: '#fff', borderWidth: 1, borderColor: C.border3 },
+  editCancelText: { color: C.dark, fontSize: 15, fontWeight: '700' },
+  editSave: { backgroundColor: C.primary },
+  editSaveText: { color: '#fff', fontSize: 15, fontWeight: '700' },
 });

@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>PICK — Detection Test Scorecard</title>
+<style>
+  @page { size: letter; margin: 0.4in; }
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, Helvetica, Arial, sans-serif; color: #000; margin: 0; line-height: 1.25; -webkit-print-color-adjust: exact; }
+  h1 { font-size: 17px; margin: 0; }
+  .sub { color: #444; font-size: 10.5px; margin: 1px 0 8px; }
+  .top { display: flex; gap: 18px; font-size: 10.5px; margin-bottom: 8px; }
+  .top div { flex: 1; }
+  .top u { display: inline-block; min-width: 70px; border-bottom: 1px solid #999; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
+  .walk { border: 1px solid #000; border-radius: 5px; padding: 6px 8px; page-break-inside: avoid; }
+  .walk.ctrl { border-width: 2.5px; }
+  .walk h2 { font-size: 12px; margin: 0 0 1px; }
+  .walk .why { font-size: 9.5px; color: #444; margin: 0 0 6px; }
+  .row { font-size: 11px; margin-top: 4px; }
+  .row u { display: inline-block; min-width: 34px; border-bottom: 1px solid #888; }
+  .row u.lg { min-width: 100%; }
+  .lbl { color: #222; }
+  .note { font-size: 9.5px; color: #333; border-top: 1px solid #999; margin-top: 8px; padding-top: 6px; }
+</style>
+</head>
+<body>
+  <h1>PICK — detection test scorecard</h1>
+  <p class="sub">One walk per box, in order. Real bend-and-pick motions, spaced a few seconds apart. Record your TRUE count + the app count.</p>
+  <div class="top">
+    <div>Tester: <u>&nbsp;</u></div>
+    <div>Date: <u>&nbsp;</u></div>
+    <div>Phone: <u>&nbsp;</u></div>
+  </div>
+
+  <div class="grid">
+    <div class="walk">
+      <h2>1 · Pocket, screen ON</h2>
+      <p class="why">Your normal setup — prime suspect. Swing arms naturally. ~10 pickups.</p>
+      <div class="row"><span class="lbl">Start</span> <u>&nbsp;</u> &nbsp; <span class="lbl">Pocket (pants/jacket)</span> <u>&nbsp;</u></div>
+      <div class="row"><span class="lbl">True</span> <u>&nbsp;</u> &nbsp; <span class="lbl">App</span> <u>&nbsp;</u> &nbsp; <span class="lbl">Dur</span> <u>&nbsp;</u> &nbsp; <span class="lbl">Pace</span> s / n / b</div>
+      <div class="row"><span class="lbl">Phantom moments</span> <u class="lg">&nbsp;</u></div>
+    </div>
+
+    <div class="walk">
+      <h2>2 · Pocket, screen OFF (locked)</h2>
+      <p class="why">Same as #1, but lock the screen first — isolates screen-off behavior.</p>
+      <div class="row"><span class="lbl">Start</span> <u>&nbsp;</u> &nbsp; <span class="lbl">Pocket (pants/jacket)</span> <u>&nbsp;</u></div>
+      <div class="row"><span class="lbl">True</span> <u>&nbsp;</u> &nbsp; <span class="lbl">App</span> <u>&nbsp;</u> &nbsp; <span class="lbl">Dur</span> <u>&nbsp;</u> &nbsp; <span class="lbl">Pace</span> s / n / b</div>
+      <div class="row"><span class="lbl">Phantom moments</span> <u class="lg">&nbsp;</u></div>
+    </div>
+
+    <div class="walk">
+      <h2>3 · In hand, screen ON</h2>
+      <p class="why">Hold like you're glancing at it; pick up with the other hand. Watch the live counter.</p>
+      <div class="row"><span class="lbl">Start</span> <u>&nbsp;</u> &nbsp; <span class="lbl">True</span> <u>&nbsp;</u> &nbsp; <span class="lbl">App</span> <u>&nbsp;</u> &nbsp; <span class="lbl">Dur</span> <u>&nbsp;</u></div>
+      <div class="row"><span class="lbl">Live phantom (what + when)</span> <u class="lg">&nbsp;</u></div>
+    </div>
+
+    <div class="walk">
+      <h2>4 · In a bag / backpack</h2>
+      <p class="why">Tests bag bounce + jostle. ~10 pickups.</p>
+      <div class="row"><span class="lbl">Start</span> <u>&nbsp;</u> &nbsp; <span class="lbl">Bag type</span> <u>&nbsp;</u></div>
+      <div class="row"><span class="lbl">True</span> <u>&nbsp;</u> &nbsp; <span class="lbl">App</span> <u>&nbsp;</u> &nbsp; <span class="lbl">Dur</span> <u>&nbsp;</u> &nbsp; <span class="lbl">Pace</span> s / n / b</div>
+      <div class="row"><span class="lbl">Phantom moments</span> <u class="lg">&nbsp;</u></div>
+    </div>
+
+    <div class="walk ctrl">
+      <h2>5 · NO-PICKUP CONTROL — 2-3 min ★</h2>
+      <p class="why">Pick up NOTHING, normal pace. Include arm swings, a curb step, a few jog steps, sit + stand. Every count = false positive.</p>
+      <div class="row"><span class="lbl">Start</span> <u>&nbsp;</u> &nbsp; <span class="lbl">Carry mode</span> <u>&nbsp;</u> &nbsp; <span class="lbl">Dur</span> <u>&nbsp;</u></div>
+      <div class="row"><span class="lbl">App count (= false +)</span> <u>&nbsp;</u> &nbsp; <span class="lbl">(true should be 0)</span></div>
+      <div class="row"><span class="lbl">What you did when it counted</span> <u class="lg">&nbsp;</u></div>
+    </div>
+
+    <div class="walk ctrl">
+      <h2>6 · NO-PICKUP, BRISK — 1 min ★</h2>
+      <p class="why">Pick up NOTHING, walk FAST. Compare the false-count to #5 — does speed cause over-counting?</p>
+      <div class="row"><span class="lbl">Start</span> <u>&nbsp;</u> &nbsp; <span class="lbl">Carry mode</span> <u>&nbsp;</u> &nbsp; <span class="lbl">Dur</span> <u>&nbsp;</u></div>
+      <div class="row"><span class="lbl">App count (= false +)</span> <u>&nbsp;</u> &nbsp; <span class="lbl">(true should be 0)</span></div>
+      <div class="row"><span class="lbl">Notes vs. #5</span> <u class="lg">&nbsp;</u></div>
+    </div>
+  </div>
+
+  <p class="note"><b>After each walk:</b> Activity → tap the share icon on it → it copies the full record (with raw motion log). Paste each into the chat prefixed with its number + label + true count (e.g. "Walk 5 — no-pickup control — true 0"). The walk's timestamp is its fingerprint, so going in order keeps it all attributable. ★ = highest priority.</p>
+</body>
+</html>

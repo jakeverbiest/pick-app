@@ -1,12 +1,18 @@
 import { DarkTheme, DefaultTheme, ThemeProvider } from '@react-navigation/native';
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
-import { View, Text } from 'react-native';
+import { useEffect } from 'react';
 import 'react-native-reanimated';
+import * as SplashScreen from 'expo-splash-screen';
 
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { useAppInitialization } from '@/src/hooks/useAppInitialization';
-import { COLORS } from '@/src/constants/colors';
+import { prefetchNycHoods } from '@/src/services/neighborhoods';
+import { LoadingView, ErrorView } from '@/src/pick/LoadingView';
+
+// Keep the native splash up until our own branded loading view is on screen,
+// so there's no white flash between the OS splash and the app.
+SplashScreen.preventAutoHideAsync().catch(() => {});
 
 export const unstable_settings = {
   anchor: '(tabs)',
@@ -16,28 +22,22 @@ export default function RootLayout() {
   const colorScheme = useColorScheme();
   const { isInitialized, authUser, error } = useAppInitialization();
 
+  // Hand off from the native splash to our branded view on first render.
+  useEffect(() => {
+    SplashScreen.hideAsync().catch(() => {});
+    // Warm the NYC neighborhoods layer during login/safety, so the map's hood
+    // outlines (and the first hood tap) don't wait on a 1.5MB download.
+    prefetchNycHoods();
+  }, []);
+
   // Show error screen if initialization fails
   if (error) {
-    return (
-      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 20, backgroundColor: COLORS.cream }}>
-        <Text style={{ fontSize: 18, fontWeight: '700', marginBottom: 12, color: COLORS.darkSage }}>
-          ⚠️ Initialization Error
-        </Text>
-        <Text style={{ fontSize: 14, color: COLORS.mutedSage, textAlign: 'center' }}>
-          {error}
-        </Text>
-      </View>
-    );
+    return <ErrorView message={error} />;
   }
 
-  // Show loading screen while initializing
+  // Show branded loading screen while initializing
   if (!isInitialized) {
-    return (
-      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: COLORS.cream }}>
-        <Text style={{ fontSize: 18, fontWeight: '700', color: COLORS.sage }}>🧹 Pick</Text>
-        <Text style={{ fontSize: 14, color: COLORS.mutedSage, marginTop: 12 }}>Initializing...</Text>
-      </View>
-    );
+    return <LoadingView message="Getting things ready…" />;
   }
 
   return (

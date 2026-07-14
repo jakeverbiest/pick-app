@@ -163,6 +163,12 @@ class MockDatabaseService {
     console.log('✅ All data cleared');
   }
 
+  /** Mock parity with firebaseDatabase.deleteAccountData (throws on failure). */
+  async deleteAccountData() {
+    await this.clearAllData();
+    console.log('🗑️ Account cloud data deleted (mock)');
+  }
+
   // Location tracking
   async addLocationPoint(lat: number, lon: number) {
     sessionLocations.push({

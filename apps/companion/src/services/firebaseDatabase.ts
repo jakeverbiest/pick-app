@@ -19,8 +19,11 @@ import {
   setDoc,
   deleteDoc,
   writeBatch,
+  arrayUnion,
+  arrayRemove,
   Timestamp,
 } from 'firebase/firestore';
+import { getStorage, ref as storageRef, uploadBytes, getDownloadURL, deleteObject } from 'firebase/storage';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { app } from './firebaseConfig';
 
@@ -28,6 +31,7 @@ const CLEANUPS_CACHE_KEY = 'pick_app_cleanups_cache';
 const USER_SETTINGS_CACHE_KEY = 'pick_app_user_settings_cache';
 const BADGES_CACHE_KEY = 'pick_app_badges_cache';
 const MOCK_CLEANUPS_CACHE_KEY = 'pick_app_cleanups'; // Old mock database key
+const CACHE_OWNER_KEY = 'pick_app_cache_owner_uid'; // which user the device-global caches belong to
 
 export interface Cleanup {
   id: string;
@@ -43,6 +47,8 @@ export interface Cleanup {
   team: string;
   fitness_tracked: boolean;
   notes?: string;
+  city?: string; // geo-derived (reverse-geocoded at save) — for city/global rollups
+  neighborhood?: string; // geo-derived — the local board this walk counts toward
   route_points?: string; // JSON array of [lat, lon] pairs
   motion_log?: string; // JSON flight-recorder events (tuning data, ~100B/event)
   synced?: boolean;
@@ -58,6 +64,9 @@ export interface UserSettings {
   fitness_apps: string;
   team_name?: string;
   team_id?: string;
+  leaderboard_hidden?: boolean; // opted out of the public individual leaderboard
+  community_sharing_enabled?: boolean; // show the "Share to community" option (default on)
+  community_auto_post?: boolean; // auto-post a cleanup's photo to community on save (default off)
   created_at: number;
   updated_at: number;
 }
@@ -98,8 +107,48 @@ export interface TeamStats {
   avg_pickups_per_session: number;
 }
 
+/** A community feed post: a cleanup photo + caption. No precise location. */
+export interface Post {
+  id: string;
+  uid: string;
+  display_name: string;
+  neighborhood: string;
+  caption: string;
+  image_url: string;
+  storage_path: string;
+  liked_by: string[];
+  created_at: number;
+}
+
+/** Per-user public leaderboard aggregate (no routes — totals + name only). */
+export interface UserStats {
+  uid: string;
+  display_name: string;
+  team: string;
+  total_pickups: number;
+  total_weight: number;
+  total_cleanups: number;
+  active_days: number;
+  hidden: boolean; // opted out of the public individual leaderboard
+  updated_at: number;
+}
+
+export interface TeamDir {
+  id: string;
+  name: string;
+  created_by: string;
+  created_at: number;
+}
+
+export interface TeamDirWithStats extends TeamDir {
+  member_count: number;
+  total_pickups: number;
+  total_weight: number;
+}
+
 // Get Firestore instance
 const db = getFirestore(app);
+const storage = getStorage(app);
 
 class FirebaseDatabase {
   private currentUserId: string | null = null;
@@ -107,6 +156,27 @@ class FirebaseDatabase {
   async initialize(userId: string) {
     this.currentUserId = userId;
     console.log('✅ Firebase database initialized for user:', userId);
+
+    // Per-user cache isolation. The offline caches use device-global keys, so a
+    // different account signing in on the same device would otherwise inherit
+    // the previous user's cached cleanups/badges/settings — visible offline or
+    // before Firestore responds (the "25 cached vs 4 in Firestore" mismatch).
+    // Drop the stale caches whenever the cache owner changes.
+    try {
+      const cacheOwner = await AsyncStorage.getItem(CACHE_OWNER_KEY);
+      if (cacheOwner && cacheOwner !== userId) {
+        console.log(`🧹 Cache owner changed (${cacheOwner} → ${userId}) — clearing stale local caches`);
+        await AsyncStorage.multiRemove([
+          CLEANUPS_CACHE_KEY,
+          USER_SETTINGS_CACHE_KEY,
+          BADGES_CACHE_KEY,
+        ]);
+        this.invalidateCleanupsMemo();
+      }
+      await AsyncStorage.setItem(CACHE_OWNER_KEY, userId);
+    } catch (error) {
+      console.error('Cache owner check failed:', error);
+    }
 
     // Migrate old mock database cleanups
     await this.migrateFromMockDatabase();
@@ -185,6 +255,9 @@ class FirebaseDatabase {
       // Update cache
       await this.updateCleanupCache(cleanupWithId);
 
+      // Refresh this user's public leaderboard aggregate (fire-and-forget).
+      void this.updateUserStats(this.currentUserId);
+
       console.log(`✅ Cleanup saved to Firestore: ${docRef.id}`);
       return cleanupWithId;
     } catch (error) {
@@ -215,20 +288,25 @@ class FirebaseDatabase {
    * Get cleanups for current user
    */
   async getCleanups(limitCount: number = 50): Promise<Cleanup[]> {
-    const memo = this.cleanupsMemo.get(limitCount);
+    // Fetch ONE canonical set and slice per caller. Previously the memo was
+    // keyed by limitCount, so getCleanups(50) and getCleanups(1000) each fired
+    // their own Firestore read (the duplicate "Loaded N cleanups" in logs).
+    // Users have few cleanups, so one fetch covers every caller.
+    const CANON = 1000;
+    const memo = this.cleanupsMemo.get(CANON);
     if (memo && Date.now() - memo.at < 15000) {
-      return memo.data;
+      return memo.data.slice(0, limitCount);
     }
-    const inflight = this.cleanupsInflight.get(limitCount);
-    if (inflight) return inflight;
+    const inflight = this.cleanupsInflight.get(CANON);
+    if (inflight) return inflight.then((d) => d.slice(0, limitCount));
 
-    const promise = this.fetchCleanups(limitCount).finally(() => {
-      this.cleanupsInflight.delete(limitCount);
+    const promise = this.fetchCleanups(CANON).finally(() => {
+      this.cleanupsInflight.delete(CANON);
     });
-    this.cleanupsInflight.set(limitCount, promise);
+    this.cleanupsInflight.set(CANON, promise);
     const data = await promise;
-    this.cleanupsMemo.set(limitCount, { at: Date.now(), data });
-    return data;
+    this.cleanupsMemo.set(CANON, { at: Date.now(), data });
+    return data.slice(0, limitCount);
   }
 
   private async fetchCleanups(limitCount: number): Promise<Cleanup[]> {
@@ -301,6 +379,35 @@ class FirebaseDatabase {
       return true;
     } catch (error) {
       console.error('Failed to delete cleanup:', error);
+      return false;
+    }
+  }
+
+  /**
+   * Edit a saved cleanup — e.g., add or correct the weight later from Activity.
+   * Updates Firestore + the offline cache and refreshes the leaderboard aggregate.
+   */
+  async updateCleanup(
+    cleanupId: string,
+    fields: Partial<Pick<Cleanup, 'weight_lb' | 'items_count'>>
+  ): Promise<boolean> {
+    try {
+      this.invalidateCleanupsMemo();
+      if (!cleanupId.startsWith('offline_')) {
+        await updateDoc(doc(db, 'cleanups', cleanupId), fields as any);
+      }
+      try {
+        const cached = await AsyncStorage.getItem(CLEANUPS_CACHE_KEY);
+        if (cached) {
+          const list = JSON.parse(cached).map((c: any) => (c.id === cleanupId ? { ...c, ...fields } : c));
+          await AsyncStorage.setItem(CLEANUPS_CACHE_KEY, JSON.stringify(list));
+        }
+      } catch {}
+      void this.updateUserStats(this.currentUserId || undefined);
+      console.log(`✏️ Cleanup updated: ${cleanupId}`);
+      return true;
+    } catch (error) {
+      console.error('Failed to update cleanup:', error);
       return false;
     }
   }
@@ -422,11 +529,90 @@ class FirebaseDatabase {
       };
       await updateDoc(doc(db, 'users', userId), updated);
       console.log(`✅ User settings updated for ${userId}`);
+      // Propagate name / team / opt-out changes to the public leaderboard doc.
+      void this.updateUserStats(userId);
       return updated;
     } catch (error) {
       console.error('Failed to update user settings:', error);
       return null;
     }
+  }
+
+  // ---------- Teams ----------
+
+  /** Slug used as a team's document id (stable for a given name). */
+  private teamSlug(name: string): string {
+    return (
+      name.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60) || 'team'
+    );
+  }
+
+  /** All teams in the shared directory. */
+  async getTeams(): Promise<TeamDir[]> {
+    try {
+      const snap = await getDocs(collection(db, 'teams'));
+      return snap.docs.map((d) => {
+        const v = d.data() as any;
+        return {
+          id: d.id,
+          name: String(v.name ?? d.id),
+          created_by: String(v.created_by ?? ''),
+          created_at: Number(v.created_at ?? 0),
+        };
+      });
+    } catch (error) {
+      console.error('Failed to get teams:', error);
+      return [];
+    }
+  }
+
+  /**
+   * Teams merged with their leaderboard stats (member / activity counts).
+   * Teams with no cleanups yet show zeros. Sorted by members, then pickups.
+   */
+  async getTeamsWithStats(): Promise<TeamDirWithStats[]> {
+    const [teams, stats] = await Promise.all([this.getTeams(), this.getTeamLeaderboard()]);
+    const byName = new Map(stats.map((s) => [s.team, s]));
+    return teams
+      .map((t) => {
+        const s = byName.get(t.name);
+        return {
+          ...t,
+          member_count: s?.member_count ?? 0,
+          total_pickups: s?.total_pickups ?? 0,
+          total_weight: s?.total_weight ?? 0,
+        };
+      })
+      .sort((a, b) => b.member_count - a.member_count || b.total_pickups - a.total_pickups);
+  }
+
+  /**
+   * Join an existing team, or create it if it doesn't exist yet. Records the
+   * team in the user's settings so future cleanups count toward it.
+   * Returns the joined team's { id, name }.
+   */
+  async joinOrCreateTeam(userId: string, name: string): Promise<{ id: string; name: string }> {
+    const clean = name.trim();
+    if (!clean) throw new Error('Enter a team name.');
+    const id = this.teamSlug(clean);
+    const ref = doc(db, 'teams', id);
+    const existing = await getDoc(ref);
+    const teamName = existing.exists() ? String((existing.data() as any).name ?? clean) : clean;
+    if (!existing.exists()) {
+      await setDoc(ref, { name: clean, created_by: userId, created_at: Date.now() });
+    }
+    await this.updateUserSettings(userId, { team_name: teamName, team_id: id } as Partial<UserSettings>);
+    return { id, name: teamName };
+  }
+
+  /** Join an existing team (chosen from the directory). */
+  async joinTeam(userId: string, team: { id: string; name: string }): Promise<void> {
+    await this.updateUserSettings(userId, { team_name: team.name, team_id: team.id } as Partial<UserSettings>);
+  }
+
+  /** Leave the current team (back to solo). */
+  async leaveTeam(userId: string): Promise<void> {
+    await this.updateUserSettings(userId, { team_name: '', team_id: '' } as Partial<UserSettings>);
   }
 
   /**
@@ -595,6 +781,79 @@ class FirebaseDatabase {
   }
 
   /**
+   * Delete every trace of the account's cloud data. Used by account deletion
+   * (App Store Guideline 5.1.1). Unlike clearAllData, this THROWS on failure —
+   * the caller must NOT delete the Firebase Auth user if this fails, or the
+   * data becomes permanently orphaned (owner-only security rules mean nobody
+   * can delete it once the auth user is gone).
+   *
+   * Covers, beyond clearAllData: the public leaderboard aggregate
+   * (user_stats/{uid}), the user's community posts (Firestore docs + Storage
+   * images), and the uid's likes on other users' posts.
+   *
+   * NOT covered (rules forbid client deletes): `feedback` docs — purge those
+   * manually from the Firebase console on deletion requests.
+   */
+  async deleteAccountData(): Promise<void> {
+    const uid = this.currentUserId;
+    if (!uid) throw new Error('No signed-in user.');
+
+    // Own community posts, including their Storage images.
+    const postsSnap = await getDocs(
+      query(collection(db, 'posts'), where('uid', '==', uid))
+    );
+    for (const postDoc of postsSnap.docs) {
+      const storagePath = (postDoc.data() as any).storage_path;
+      await deleteDoc(postDoc.ref);
+      if (storagePath) {
+        try {
+          await deleteObject(storageRef(storage, storagePath));
+        } catch {
+          // image already gone — ignore
+        }
+      }
+    }
+
+    // Remove this uid from liked_by arrays on other users' posts.
+    const likedSnap = await getDocs(
+      query(collection(db, 'posts'), where('liked_by', 'array-contains', uid))
+    );
+    for (const likedDoc of likedSnap.docs) {
+      await updateDoc(likedDoc.ref, { liked_by: arrayRemove(uid) });
+    }
+
+    // Cleanups.
+    const cleanupsSnap = await getDocs(
+      query(collection(db, 'cleanups'), where('userId', '==', uid))
+    );
+    for (const cleanupDoc of cleanupsSnap.docs) {
+      await deleteDoc(cleanupDoc.ref);
+    }
+
+    // Badges.
+    const badgesSnap = await getDocs(
+      query(collection(db, 'badges'), where('userId', '==', uid))
+    );
+    for (const badgeDoc of badgesSnap.docs) {
+      await deleteDoc(badgeDoc.ref);
+    }
+
+    // Public leaderboard aggregate + profile document.
+    await deleteDoc(doc(db, 'user_stats', uid));
+    await deleteDoc(doc(db, 'users', uid));
+
+    // Local caches.
+    await AsyncStorage.multiRemove([
+      CLEANUPS_CACHE_KEY,
+      USER_SETTINGS_CACHE_KEY,
+      BADGES_CACHE_KEY,
+      CACHE_OWNER_KEY,
+    ]);
+
+    console.log('🗑️ Account cloud data deleted');
+  }
+
+  /**
    * Get statistics for a team
    */
   async getTeamStats(team: string): Promise<TeamStats> {
@@ -679,6 +938,184 @@ class FirebaseDatabase {
   }
 
   /**
+   * Privacy-safe team leaderboard.
+   * Reads the `team_stats` aggregate maintained by the Cloud Functions
+   * (onCleanupWrite / rebuildTeamStats) instead of other users' raw cleanups,
+   * so it works cross-user without exposing cleanup routes.
+   */
+  async getTeamLeaderboard(): Promise<TeamStats[]> {
+    try {
+      const snapshot = await getDocs(collection(db, 'team_stats'));
+      const teams = snapshot.docs.map((d) => d.data() as TeamStats);
+      teams.sort((a, b) => b.total_pickups - a.total_pickups);
+      return teams;
+    } catch (error) {
+      console.error('Failed to get team leaderboard:', error);
+      return [];
+    }
+  }
+
+  /**
+   * Recompute this user's public leaderboard aggregate from their own cleanups
+   * and write it to `user_stats/{uid}` (owner-writable, all-readable). Holds
+   * totals + display name + team only — never routes. Call after a cleanup is
+   * saved and whenever the display name / team / opt-out changes. Fire-and-forget.
+   */
+  async updateUserStats(userId?: string): Promise<void> {
+    const uid = userId || this.currentUserId;
+    if (!uid) return;
+    try {
+      const mine = await this.getCleanups(1000);
+      const settings = await this.getUserSettings(uid);
+      const stats: UserStats = {
+        uid,
+        display_name: settings?.display_name || 'Picker',
+        team: settings?.team_name || 'Solo',
+        total_pickups: mine.reduce((s, c) => s + (c.items_count || 0), 0),
+        total_weight: mine.reduce((s, c) => s + (c.weight_lb || 0), 0),
+        total_cleanups: mine.length,
+        active_days: new Set(mine.map((c) => new Date((c.timestamp || 0) * 1000).toDateString())).size,
+        hidden: !!settings?.leaderboard_hidden,
+        updated_at: Date.now(),
+      };
+      await setDoc(doc(db, 'user_stats', uid), stats, { merge: true });
+    } catch (error) {
+      console.error('Failed to update user_stats:', error);
+    }
+  }
+
+  /**
+   * Cross-user individual leaderboard. Reads the privacy-safe `user_stats`
+   * aggregate; opted-out users (hidden) are filtered out. Sorted in-memory by
+   * the chosen metric to avoid composite-index setup.
+   */
+  async getIndividualLeaderboard(
+    metric: 'pickups' | 'weight' | 'days' = 'pickups'
+  ): Promise<UserStats[]> {
+    try {
+      const snapshot = await getDocs(query(collection(db, 'user_stats'), where('hidden', '==', false)));
+      const users = snapshot.docs.map((d) => d.data() as UserStats);
+      const field = metric === 'pickups' ? 'total_pickups' : metric === 'weight' ? 'total_weight' : 'active_days';
+      users.sort((a, b) => (b[field] || 0) - (a[field] || 0));
+      return users;
+    } catch (error) {
+      console.error('Failed to get individual leaderboard:', error);
+      return [];
+    }
+  }
+
+  // ── Community feed ──────────────────────────────────────────────────────
+
+  /**
+   * Share a cleanup photo to the community feed. Uploads the local image to
+   * Firebase Storage (cleanup_photos/{uid}/...), then writes a `posts` doc with
+   * the download URL + caption + neighborhood. No precise location is stored.
+   */
+  async createPost(input: { caption: string; neighborhood: string; photoUri: string }): Promise<Post | null> {
+    const uid = this.currentUserId;
+    if (!uid) return null;
+    try {
+      const settings = await this.getUserSettings(uid);
+      const path = `cleanup_photos/${uid}/${Date.now()}.jpg`;
+      const resp = await fetch(input.photoUri);
+      const blob = await resp.blob();
+      const sref = storageRef(storage, path);
+      // Declare contentType explicitly: Expo file blobs often have an empty
+      // type, which fails the Storage rule's `image/.*` check (silent denial).
+      await uploadBytes(sref, blob, { contentType: 'image/jpeg' });
+      const image_url = await getDownloadURL(sref);
+      const post = {
+        uid,
+        display_name: settings?.display_name || 'Picker',
+        neighborhood: input.neighborhood || settings?.neighborhood || '',
+        caption: (input.caption || '').slice(0, 280),
+        image_url,
+        storage_path: path,
+        liked_by: [] as string[],
+        created_at: Date.now(),
+      };
+      const docRef = await addDoc(collection(db, 'posts'), post);
+      console.log(`✅ Community post created: ${docRef.id}`);
+      return { id: docRef.id, ...post };
+    } catch (error) {
+      console.error('Failed to create post:', error);
+      return null;
+    }
+  }
+
+  /** Newest community posts first. */
+  async getPosts(limitCount = 50): Promise<Post[]> {
+    try {
+      const snapshot = await getDocs(query(collection(db, 'posts'), orderBy('created_at', 'desc'), limit(limitCount)));
+      return snapshot.docs.map((d) => ({ id: d.id, ...(d.data() as any) })) as Post[];
+    } catch (error) {
+      console.error('Failed to get posts:', error);
+      return [];
+    }
+  }
+
+  /** Add or remove the current user's like on a post. */
+  async toggleLikePost(postId: string, liked: boolean): Promise<void> {
+    const uid = this.currentUserId;
+    if (!uid) return;
+    try {
+      await updateDoc(doc(db, 'posts', postId), {
+        liked_by: liked ? arrayUnion(uid) : arrayRemove(uid),
+      });
+    } catch (error) {
+      console.error('Failed to like post:', error);
+    }
+  }
+
+  /** Delete one of the current user's own posts (Firestore doc + Storage file). */
+  async deletePost(post: Post): Promise<boolean> {
+    try {
+      await deleteDoc(doc(db, 'posts', post.id));
+      if (post.storage_path) {
+        try {
+          await deleteObject(storageRef(storage, post.storage_path));
+        } catch {
+          // image already gone — ignore
+        }
+      }
+      console.log(`🗑️ Post deleted: ${post.id}`);
+      return true;
+    } catch (error) {
+      console.error('Failed to delete post:', error);
+      return false;
+    }
+  }
+
+  // ── Feedback ────────────────────────────────────────────────────────────
+
+  /**
+   * In-app tester feedback → `feedback` collection (read in the Firebase
+   * console). Stamps who/when/build so it's actionable. Create-only from clients.
+   */
+  async submitFeedback(payload: {
+    message: string;
+    email?: string;
+    displayName?: string;
+    appVersion?: string;
+  }): Promise<boolean> {
+    try {
+      await addDoc(collection(db, 'feedback'), {
+        uid: this.currentUserId || 'anon',
+        message: (payload.message || '').slice(0, 2000),
+        email: payload.email || '',
+        display_name: payload.displayName || '',
+        app_version: payload.appVersion || '',
+        created_at: Date.now(),
+      });
+      console.log('📨 Feedback submitted');
+      return true;
+    } catch (error) {
+      console.error('Failed to submit feedback:', error);
+      return false;
+    }
+  }
+
+  /**
    * Create a new challenge
    */
   async createChallenge(challenge: Omit<Challenge, 'id' | 'created_at' | 'updated_at'>) {
@@ -754,7 +1191,9 @@ class FirebaseDatabase {
    */
   private async updateCleanupCache(...cleanups: Cleanup[]) {
     try {
-      const existing = await this.getCleanupCache();
+      // Merge against the RAW cache (all users) so writing the current user's
+      // data never evicts another account's offline cleanups from storage.
+      const existing = await this.getCleanupCacheRaw();
       const merged = [...cleanups, ...existing.filter((e) => !cleanups.find((c) => c.id === e.id))];
       await AsyncStorage.setItem(CLEANUPS_CACHE_KEY, JSON.stringify(merged));
     } catch (error) {
@@ -762,7 +1201,8 @@ class FirebaseDatabase {
     }
   }
 
-  private async getCleanupCache(): Promise<Cleanup[]> {
+  /** Raw cache contents (ALL users on this device). Use only for storage merges. */
+  private async getCleanupCacheRaw(): Promise<Cleanup[]> {
     try {
       const cached = await AsyncStorage.getItem(CLEANUPS_CACHE_KEY);
       return cached ? JSON.parse(cached) : [];
@@ -770,6 +1210,19 @@ class FirebaseDatabase {
       console.error('Failed to get cache:', error);
       return [];
     }
+  }
+
+  private async getCleanupCache(): Promise<Cleanup[]> {
+    const list = await this.getCleanupCacheRaw();
+    // Scope cached reads to the signed-in user. The cache key is device-global,
+    // so without this a previous account's cleanups — including unsynced ones the
+    // user-scoped Firestore query can't filter out — would surface in the current
+    // user's Activity/stats. Every cached cleanup carries userId (set on
+    // add/migrate/fetch), so this filter is exact.
+    if (this.currentUserId) {
+      return list.filter((c) => c.userId === this.currentUserId);
+    }
+    return list;
   }
 
   /** Normalize any timestamp (ms or seconds) to SECONDS — the cache/display unit. */

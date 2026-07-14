@@ -39,7 +39,7 @@ export interface CalibrationState {
   factorRange: { min: number; max: number } | null;
 }
 
-class WeightCalibrationService {
+export class WeightCalibrationService {
   private samples: CalibrationSample[] = [];
   private loaded = false;
 

@@ -1,0 +1,116 @@
+rules_version = '2';
+
+// PICK Firestore Security Rules
+//
+// STATUS: LIVE. Published to project pick-app-74c2e. The app authenticates
+// with Firebase Auth (src/services/authService.ts) and writes every document
+// keyed to the Firebase Auth UID, so these owner-scoped rules are satisfied.
+//
+// This file is the version-controlled source of truth. To redeploy after edits:
+//   firebase deploy --only firestore:rules        (needs firebase.json + login)
+//
+// Design notes:
+// - Cleanups are OWNER-ONLY reads: routes can reveal home locations even when
+//   trimmed. The shared community map reads segment_status (no routes).
+// - Leaderboards read team_stats, which is written ONLY by the Cloud Functions
+//   (admin SDK bypasses these rules); clients can read but never write it.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return signedIn() && request.auth.uid == userId;
+    }
+
+    // --- Cleanups: OWNER-ONLY reads (routes reveal home locations even
+    //     trimmed; the shared community map uses segment_status, which has
+    //     no routes). Team leaderboards are served by team_stats, populated
+    //     by the Cloud Functions below. ---
+    match /cleanups/{cleanupId} {
+      allow read: if isOwner(resource.data.userId);
+      allow create: if isOwner(request.resource.data.userId)
+        && request.resource.data.items_count is number
+        && request.resource.data.items_count >= 0
+        && request.resource.data.items_count < 5000
+        && request.resource.data.weight_lb is number
+        && request.resource.data.weight_lb >= 0
+        && request.resource.data.weight_lb < 1000;
+      allow update, delete: if isOwner(resource.data.userId);
+    }
+
+    // --- User settings: private to the owner ---
+    match /users/{userId} {
+      allow read, write: if isOwner(userId);
+    }
+
+    // --- Teams: the shared team directory. Anyone signed-in can browse and
+    //     create a team (to join or start one); team docs are immutable once
+    //     created. Membership itself lives in each user's private settings;
+    //     member/activity counts come from team_stats (Cloud Function). ---
+    match /teams/{teamId} {
+      allow read: if signedIn();
+      allow create: if signedIn()
+        && request.resource.data.created_by == request.auth.uid
+        && request.resource.data.name is string
+        && request.resource.data.name.size() > 0
+        && request.resource.data.name.size() <= 60;
+      allow update, delete: if false;
+    }
+
+    // --- Team stats: the privacy-safe leaderboard aggregate. Written only by
+    //     the onCleanupWrite / rebuildTeamStats Cloud Functions (the admin SDK
+    //     bypasses these rules); any signed-in user may read. No raw cleanup
+    //     routes are ever exposed here. ---
+    match /team_stats/{teamId} {
+      allow read: if signedIn();
+      allow write: if false;
+    }
+
+    // --- Badges: readable by all signed-in (profiles), writable by owner ---
+    match /badges/{badgeId} {
+      allow read: if signedIn();
+      allow create: if isOwner(request.resource.data.userId);
+      allow update, delete: if isOwner(resource.data.userId);
+    }
+
+    // --- Challenges: shared. Anyone signed-in reads; creator manages;
+    //     participants may add themselves ---
+    match /challenges/{challengeId} {
+      allow read: if signedIn();
+      allow create: if isOwner(request.resource.data.created_by);
+      allow update: if signedIn() && (
+        resource.data.created_by == request.auth.uid
+        // joining: only the participants array may change
+        || request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly(['participants', 'updated_at'])
+      );
+      allow delete: if signedIn() && resource.data.created_by == request.auth.uid;
+    }
+
+    // --- Street segment status: the shared coverage layer.
+    //     Anyone signed-in can read and stamp segments cleaned, but only
+    //     with a plausible payload (no backdating, no spoofing others) ---
+    match /segment_status/{segmentId} {
+      allow read: if signedIn();
+      allow write: if signedIn()
+        && request.resource.data.last_user == request.auth.uid
+        && request.resource.data.last_cleaned is number
+        && request.resource.data.last_cleaned <= request.time.toMillis() + 60000
+        && request.resource.data.last_cleaned > request.time.toMillis() - 86400000;
+    }
+
+    // --- Analytics: write-only from clients ---
+    match /analytics/{docId} {
+      allow create: if signedIn();
+      allow read, update, delete: if false;
+    }
+
+    // Everything else: denied
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

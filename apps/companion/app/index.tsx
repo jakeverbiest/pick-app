@@ -3,6 +3,7 @@ import { useRouter } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { getAuthService } from '../src/services/authService';
 import { SAFETY_ACK_KEY } from './safety';
+import { LoadingView } from '../src/pick/LoadingView';
 
 export default function RootIndexScreen() {
   const router = useRouter();
@@ -32,5 +33,6 @@ export default function RootIndexScreen() {
     route();
   }, []);
 
-  return null;
+  // Branded splash while we decide where to send the user (no blank flash).
+  return <LoadingView />;
 }

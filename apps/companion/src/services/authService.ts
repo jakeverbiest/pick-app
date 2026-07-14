@@ -21,9 +21,11 @@ import {
   signInWithEmailAndPassword,
   signOut,
   sendPasswordResetEmail,
+  sendEmailVerification,
   onAuthStateChanged,
   updateProfile,
   deleteUser,
+  reload,
 } from 'firebase/auth';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { auth } from './firebaseConfig';
@@ -38,6 +40,7 @@ export interface AuthUser {
   email: string;
   displayName: string;
   neighborhood: string;
+  emailVerified: boolean;
 }
 
 class AuthService {
@@ -66,6 +69,7 @@ class AuthService {
             email: user.email ?? '',
             displayName: user.displayName ?? '',
             neighborhood,
+            emailVerified: user.emailVerified,
           };
           console.log(`✅ Auth loaded: ${this.currentUser.email}`);
         } else {
@@ -93,11 +97,20 @@ class AuthService {
       const cred = await createUserWithEmailAndPassword(auth, email, password);
       await updateProfile(cred.user, { displayName });
 
+      // Send a verification email so accounts can't be made with someone
+      // else's address. Never block signup if the email send fails.
+      try {
+        await sendEmailVerification(cred.user);
+        console.log(`✉️ Verification email sent to ${email}`);
+      } catch (e) {
+        console.warn('Could not send verification email:', e);
+      }
+
       const db = await getDatabase();
       await db.initialize(cred.user.uid);
       await db.initializeUserSettings(cred.user.uid, displayName, neighborhood);
 
-      this.currentUser = { uid: cred.user.uid, email, displayName, neighborhood };
+      this.currentUser = { uid: cred.user.uid, email, displayName, neighborhood, emailVerified: cred.user.emailVerified };
       await this.migrateLegacyAccount(cred.user.uid);
       this.notifyListeners();
       console.log(`✅ Signup successful: ${email}`);
@@ -123,6 +136,7 @@ class AuthService {
         email: cred.user.email ?? email,
         displayName: cred.user.displayName ?? '',
         neighborhood,
+        emailVerified: cred.user.emailVerified,
       };
       await this.migrateLegacyAccount(cred.user.uid);
       this.notifyListeners();
@@ -150,8 +164,19 @@ class AuthService {
     const user = auth.currentUser;
     if (!user) throw new Error('Not signed in.');
 
+    // Delete cloud data FIRST, and abort if it fails: once the auth user is
+    // gone, owner-only security rules make the leftover data undeletable.
     const db = await getDatabase();
-    await (db as any).clearAllData();
+    try {
+      await (db as any).deleteAccountData();
+    } catch (error: any) {
+      console.error('❌ Account data deletion failed — auth user NOT deleted:', error);
+      throw new Error(
+        error?.code === 'auth/network-request-failed' || error?.message?.includes('network')
+          ? 'Network error while deleting your data. Nothing was deleted — check your connection and try again.'
+          : 'Could not delete your data. Nothing was deleted — please try again.'
+      );
+    }
 
     try {
       await deleteUser(user);
@@ -178,6 +203,33 @@ class AuthService {
 
   getCurrentUser(): AuthUser | null {
     return this.currentUser;
+  }
+
+  /** Resend the verification email to the signed-in user. */
+  async resendVerification(): Promise<void> {
+    const user = auth.currentUser;
+    if (!user) throw new Error('Not signed in.');
+    await sendEmailVerification(user);
+    console.log('✉️ Verification email re-sent');
+  }
+
+  /**
+   * Re-check verification from Firebase. `emailVerified` is cached on the token,
+   * so we reload the user to pick up a verification that happened in the browser.
+   */
+  async refreshEmailVerified(): Promise<boolean> {
+    const user = auth.currentUser;
+    if (!user) return false;
+    await reload(user);
+    if (this.currentUser) {
+      this.currentUser.emailVerified = user.emailVerified;
+      this.notifyListeners();
+    }
+    return user.emailVerified;
+  }
+
+  isEmailVerified(): boolean {
+    return !!this.currentUser?.emailVerified;
   }
 
   isLoggedIn(): boolean {

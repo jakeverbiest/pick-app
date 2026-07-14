@@ -1,170 +1,352 @@
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { useState, useEffect, useCallback } from 'react';
+import { useCallback, useEffect, useState } from 'react';
+import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
-import { getDatabase } from '../../src/services/firebaseDatabase';
-import { getAuthService } from '../../src/services/authService';
-import { weightToBags, formatBags } from '../../src/services/impactMetrics';
-import { COLORS, SPACING, RADIUS } from '../../src/constants/colors';
+import { useRouter } from 'expo-router';
+import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { getAuthService } from '../../src/services/authService';
+import { getDatabase } from '../../src/services/firebaseDatabase';
+import type { UserStats, Challenge } from '../../src/services/firebaseDatabase';
+import { formatBags, weightToBags } from '../../src/services/impactMetrics';
+import { Icon, IconName } from '../../src/pick/Icon';
+import { C, radius, shadow } from '../../src/pick/theme';
+import { ProgressBar } from '../../src/pick/ui';
+
+type Board = 'you' | 'teams' | 'challenges';
 type SortMetric = 'pickups' | 'weight' | 'days';
 
-const medals = ['🥇', '🥈', '🥉'];
+const BOARDS: { key: Board; label: string }[] = [
+  { key: 'you', label: 'You' },
+  { key: 'teams', label: 'Teams' },
+  { key: 'challenges', label: 'Challenges' },
+];
+
+const METRICS: { key: SortMetric; label: string; unit: string }[] = [
+  { key: 'pickups', label: 'Pickups', unit: 'pickups' },
+  { key: 'weight', label: 'Weight', unit: 'bags' },
+  { key: 'days', label: 'Active days', unit: 'days' },
+];
+
+const GOAL_ICON: Record<string, IconName> = {
+  pickups: 'bag',
+  weight: 'leaf',
+  distance: 'route',
+  days: 'clock',
+};
+
+type Personal = { pickups: number; weight: number; days: number; cleanups: number };
 
 export default function LeaderboardScreen() {
+  const [board, setBoard] = useState<Board>('you');
   const [metric, setMetric] = useState<SortMetric>('pickups');
-  const [leaderboard, setLeaderboard] = useState<any[]>([]);
+  const [teams, setTeams] = useState<any[]>([]);
+  const [individuals, setIndividuals] = useState<UserStats[]>([]);
+  const [challenges, setChallenges] = useState<Challenge[]>([]);
   const [userTeam, setUserTeam] = useState<string>('solo');
-  const [userTeamRank, setUserTeamRank] = useState<number | null>(null);
+  const [me, setMe] = useState<{ uid: string; hidden: boolean } | null>(null);
+  const [personal, setPersonal] = useState<Personal>({ pickups: 0, weight: 0, days: 0, cleanups: 0 });
   const [loading, setLoading] = useState(true);
+  const router = useRouter();
 
-  useEffect(() => {
-    loadLeaderboard();
-  }, [metric]);
-
-  useFocusEffect(
-    useCallback(() => {
-      loadLeaderboard();
-    }, [metric])
-  );
-
-  const loadLeaderboard = async () => {
+  const load = useCallback(async () => {
     try {
       setLoading(true);
       const db = await getDatabase();
-      const authService = getAuthService();
-      const currentUser = authService.getCurrentUser();
-
-      let userTeamName = 'solo';
-
-      // Get user's team
+      const currentUser = getAuthService().getCurrentUser();
       if (currentUser) {
         const settings = await db.getUserSettings(currentUser.uid);
-        if (settings?.team_name) {
-          userTeamName = settings.team_name;
-          setUserTeam(userTeamName);
-        }
+        setUserTeam(settings?.team_name || 'solo');
+        setMe({ uid: currentUser.uid, hidden: !!settings?.leaderboard_hidden });
+        // Write this account's public stats doc and WAIT for it, so the
+        // individual board read below includes the current user on first open
+        // (a fire-and-forget write here races the read and omits you).
+        await db.updateUserStats(currentUser.uid);
       }
-
-      // Get leaderboard
-      const leaderboardData = await db.getLeaderboard();
-      setLeaderboard(leaderboardData);
-
-      // Find user's team rank
-      if (currentUser) {
-        const rank = leaderboardData.findIndex((t) => t.team === userTeamName);
-        setUserTeamRank(rank >= 0 ? rank + 1 : null);
-      }
-
-      setLoading(false);
+      const mine = await db.getCleanups(1000);
+      setPersonal({
+        pickups: mine.reduce((s, c) => s + (c.items_count || 0), 0),
+        weight: mine.reduce((s, c) => s + (c.weight_lb || 0), 0),
+        days: new Set(mine.map((c) => new Date((c.timestamp || 0) * 1000).toDateString())).size,
+        cleanups: mine.length,
+      });
+      const [indiv, teamData, active] = await Promise.all([
+        db.getIndividualLeaderboard(metric),
+        db.getTeamLeaderboard(),
+        db.getChallenges('active'),
+      ]);
+      setIndividuals(indiv || []);
+      setTeams(teamData || []);
+      setChallenges((active as Challenge[]) || []);
     } catch (error) {
       console.error('Failed to load leaderboard:', error);
+    } finally {
       setLoading(false);
     }
-  };
+  }, [metric]);
 
-  const formatMetricValue = (entry: any) => {
-    switch (metric) {
-      case 'pickups':
-        return entry.total_pickups.toString();
-      case 'weight':
-        return formatBags(weightToBags(entry.total_weight as number));
-      case 'days':
-        return entry.total_days.toString();
-      default:
-        return '—';
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  useFocusEffect(
+    useCallback(() => {
+      load();
+    }, [load])
+  );
+
+  const joinChallenge = async (challengeId: string) => {
+    if (!me) {
+      Alert.alert('Sign in required', 'You must be logged in to join a challenge.');
+      return;
+    }
+    try {
+      const db = await getDatabase();
+      await db.joinChallenge(challengeId, me.uid);
+      load();
+    } catch (error) {
+      Alert.alert('Error', 'Failed to join challenge');
+      console.error('Failed to join challenge:', error);
     }
   };
 
-  const metricLabel = {
-    pickups: 'Pickups',
-    weight: 'Bags',
-    days: 'Active Days',
-  };
+  const unit = METRICS.find((m) => m.key === metric)!.unit;
+
+  const userValue = (u: UserStats): number =>
+    metric === 'pickups' ? u.total_pickups || 0 : metric === 'weight' ? u.total_weight || 0 : u.active_days || 0;
+  const teamValue = (t: any): number =>
+    metric === 'pickups' ? t.total_pickups || 0 : metric === 'weight' ? t.total_weight || 0 : t.total_days || 0;
+  const show = (v: number): string => (metric === 'weight' ? formatBags(weightToBags(v)) : String(v));
+
+  const indivRanked = [...individuals].sort((a, b) => userValue(b) - userValue(a));
+  const myIndex = me && !me.hidden ? indivRanked.findIndex((u) => u.uid === me.uid) : -1;
+  const myRank = myIndex >= 0 ? myIndex + 1 : null;
+
+  const isSolo = !userTeam || userTeam.toLowerCase() === 'solo';
+  const teamRanked = [...teams]
+    .filter((t) => (t.team || '').toLowerCase() !== 'solo')
+    .sort((a, b) => teamValue(b) - teamValue(a));
+  const teamIndex = isSolo ? -1 : teamRanked.findIndex((t) => t.team === userTeam);
+  const teamRank = teamIndex >= 0 ? teamIndex + 1 : null;
+  const teamGap = teamIndex > 0 ? teamValue(teamRanked[teamIndex - 1]) - teamValue(teamRanked[teamIndex]) : 0;
+
+  const personalShown = metric === 'weight' ? formatBags(weightToBags(personal.weight)) : metric === 'days' ? String(personal.days) : String(personal.pickups);
 
   if (loading) {
     return (
-      <SafeAreaView style={styles.container}>
-        <View style={styles.centerContent}>
-          <Text style={styles.title}>🏆 Team Leaderboard</Text>
-          <Text style={styles.subtitle}>Loading...</Text>
+      <SafeAreaView style={styles.root} edges={['top']}>
+        <View style={styles.center}>
+          <Text style={styles.loading}>Loading…</Text>
         </View>
       </SafeAreaView>
     );
   }
 
   return (
-    <SafeAreaView style={styles.container}>
-      <ScrollView contentContainerStyle={styles.scrollContent}>
-        {/* Header */}
-        <View style={styles.header}>
-          <Text style={styles.title}>🏆 Team Leaderboard</Text>
-          <Text style={styles.subtitle}>Top teams by {metricLabel[metric].toLowerCase()}</Text>
+    <SafeAreaView style={styles.root} edges={['top']}>
+      <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
+        <Text style={styles.h1}>Leaderboard</Text>
+        <Text style={styles.sub}>Your impact, your team, the challenges.</Text>
+
+        {/* board switch: You · Teams · Challenges */}
+        <View style={styles.segment}>
+          {BOARDS.map((b) => {
+            const active = board === b.key;
+            return (
+              <Pressable key={b.key} style={[styles.segBtn, active && styles.segBtnActive]} onPress={() => setBoard(b.key)}>
+                <Text style={[styles.segText, active && styles.segTextActive]}>{b.label}</Text>
+              </Pressable>
+            );
+          })}
         </View>
 
-        {/* Metric Selector */}
-        <View style={styles.metricButtons}>
-          {(['pickups', 'weight', 'days'] as SortMetric[]).map((m) => (
-            <TouchableOpacity
-              key={m}
-              style={[styles.metricButton, metric === m && styles.metricButtonActive]}
-              onPress={() => setMetric(m)}
-            >
-              <Text
-                style={[styles.metricButtonText, metric === m && styles.metricButtonTextActive]}
-              >
-                {metricLabel[m]}
-              </Text>
-            </TouchableOpacity>
-          ))}
-        </View>
-
-        {/* Leaderboard List */}
-        {leaderboard.length === 0 ? (
-          <View style={styles.emptyContainer}>
-            <Text style={styles.emptyText}>No teams yet. Join a team and start cleaning!</Text>
-          </View>
-        ) : (
-          <View style={styles.leaderboardList}>
-            {leaderboard.map((entry, index) => {
-              const isUserTeam = entry.team === userTeam;
-              const medal = index < 3 ? medals[index] : `#${index + 1}`;
-
+        {/* metric switch — only for the ranked boards */}
+        {board !== 'challenges' && (
+          <View style={[styles.segment, styles.metricSegment]}>
+            {METRICS.map((m) => {
+              const active = metric === m.key;
               return (
-                <View
-                  key={entry.team}
-                  style={[styles.leaderboardItem, isUserTeam && styles.leaderboardItemHighlight]}
-                >
-                  <View style={styles.rankSection}>
-                    <Text style={styles.medal}>{medal}</Text>
-                  </View>
-
-                  <View style={styles.userSection}>
-                    <Text style={styles.userName}>
-                      {entry.team} {isUserTeam ? '(Your Team)' : ''}
-                    </Text>
-                    <Text style={styles.userMeta}>
-                      {entry.member_count} members • {entry.total_cleanups} cleanups
-                    </Text>
-                  </View>
-
-                  <View style={styles.valueSection}>
-                    <Text style={styles.value}>{formatMetricValue(entry)}</Text>
-                  </View>
-                </View>
+                <Pressable key={m.key} style={[styles.segBtnSm, active && styles.segBtnActive]} onPress={() => setMetric(m.key)}>
+                  <Text style={[styles.segTextSm, active && styles.segTextActive]}>{m.label}</Text>
+                </Pressable>
               );
             })}
           </View>
         )}
 
-        {/* Your Team Rank Info */}
-        {userTeamRank && leaderboard.length > 0 && (
-          <View style={styles.yourRankBox}>
-            <Text style={styles.yourRankLabel}>Your Team's Rank</Text>
-            <Text style={styles.yourRankValue}>#{userTeamRank}</Text>
-            <Text style={styles.yourRankMeta}>
-              {leaderboard.length} teams tracked
-            </Text>
+        {/* ============================ YOU ============================ */}
+        {board === 'you' && (
+          <View style={{ marginTop: 16 }}>
+            <View style={styles.personalCard}>
+              <View style={styles.personalTop}>
+                <Icon name="activity" size={20} color={C.primary} sw={1.8} />
+                <Text style={styles.personalLabel}>Your impact</Text>
+              </View>
+              <Text style={styles.personalValue}>
+                {personalShown} <Text style={styles.personalUnit}>{unit}</Text>
+              </Text>
+              <Text style={styles.personalSub}>
+                {me?.hidden
+                  ? "You're hidden from the leaderboard — only you can see this."
+                  : myRank
+                    ? `Ranked #${myRank} of ${indivRanked.length} ${indivRanked.length === 1 ? 'picker' : 'pickers'}`
+                    : `${personal.cleanups} cleanup${personal.cleanups === 1 ? '' : 's'} logged`}
+              </Text>
+              {me?.hidden && (
+                <Pressable style={styles.joinBtn} onPress={() => router.push('/(tabs)/settings')}>
+                  <Text style={styles.joinBtnText}>Show me on the leaderboard</Text>
+                </Pressable>
+              )}
+            </View>
+
+            {indivRanked.length === 0 ? (
+              <View style={styles.empty}>
+                <Text style={styles.emptyText}>The leaderboard is just getting started. Log a cleanup to appear here.</Text>
+              </View>
+            ) : (
+              <View style={{ gap: 10, marginTop: 14 }}>
+                {indivRanked.map((u, i) => {
+                  const you = me && u.uid === me.uid;
+                  const top = i < 3;
+                  return (
+                    <View key={u.uid} style={[styles.row, you && styles.rowYou]}>
+                      <View style={[styles.rank, top ? styles.rankTop : styles.rankPlain]}>
+                        <Text style={[styles.rankText, top && { color: '#fff' }]}>{i + 1}</Text>
+                      </View>
+                      <View style={{ flex: 1, minWidth: 0 }}>
+                        <Text style={styles.teamName} numberOfLines={1}>
+                          {u.display_name || 'Picker'}
+                          {you ? '  ·  You' : ''}
+                        </Text>
+                        <Text style={styles.teamMembers}>{u.team || 'Solo'}</Text>
+                      </View>
+                      <View style={{ alignItems: 'flex-end' }}>
+                        <Text style={styles.value}>{show(userValue(u))}</Text>
+                        <Text style={styles.unit}>{unit}</Text>
+                      </View>
+                    </View>
+                  );
+                })}
+              </View>
+            )}
+          </View>
+        )}
+
+        {/* ============================ TEAMS ============================ */}
+        {board === 'teams' && (
+          <View style={{ marginTop: 16 }}>
+            {teamRanked.length === 0 ? (
+              <View style={styles.empty}>
+                <Text style={styles.emptyText}>No teams yet — be the first to start one.</Text>
+              </View>
+            ) : (
+              <View style={{ gap: 10 }}>
+                {teamRanked.map((entry, i) => {
+                  const you = entry.team === userTeam;
+                  const top = i < 3;
+                  return (
+                    <View key={entry.team} style={[styles.row, you && styles.rowYou]}>
+                      <View style={[styles.rank, top ? styles.rankTop : styles.rankPlain]}>
+                        <Text style={[styles.rankText, top && { color: '#fff' }]}>{i + 1}</Text>
+                      </View>
+                      <View style={{ flex: 1, minWidth: 0 }}>
+                        <Text style={styles.teamName} numberOfLines={1}>
+                          {entry.team}
+                          {you ? '  ·  You' : ''}
+                        </Text>
+                        <Text style={styles.teamMembers}>
+                          {entry.member_count} members · {entry.total_cleanups} cleanups
+                        </Text>
+                      </View>
+                      <View style={{ alignItems: 'flex-end' }}>
+                        <Text style={styles.value}>{show(teamValue(entry))}</Text>
+                        <Text style={styles.unit}>{unit}</Text>
+                      </View>
+                    </View>
+                  );
+                })}
+              </View>
+            )}
+
+            {isSolo ? (
+              <View style={styles.callout}>
+                <Icon name="trophy" size={26} color={C.primary} sw={1.7} />
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.calloutTitle}>You're flying solo</Text>
+                  <Text style={styles.calloutSub}>Join a team to climb the team board.</Text>
+                </View>
+                <Pressable style={styles.calloutBtn} onPress={() => router.push('/(tabs)/settings')}>
+                  <Text style={styles.calloutBtnText}>Join</Text>
+                </Pressable>
+              </View>
+            ) : teamRank ? (
+              <View style={styles.callout}>
+                <Icon name="trophy" size={26} color={C.primary} sw={1.7} />
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.calloutTitle}>{userTeam} is #{teamRank}</Text>
+                  <Text style={styles.calloutSub}>
+                    {teamRank === 1 ? "You're in the lead — keep it up." : `${teamGap.toLocaleString()} ${unit} from the next spot.`}
+                  </Text>
+                </View>
+              </View>
+            ) : null}
+          </View>
+        )}
+
+        {/* ========================= CHALLENGES ========================= */}
+        {board === 'challenges' && (
+          <View style={{ marginTop: 16 }}>
+            {challenges.length === 0 ? (
+              <View style={styles.chEmptyCard}>
+                <Text style={styles.emptyText}>No active challenges yet. Check back soon.</Text>
+              </View>
+            ) : (
+              <View style={{ gap: 14 }}>
+                {challenges.map((c) => {
+                  const joined = c.participants?.includes(me?.uid || '');
+                  const daysLeft = Math.max(0, Math.ceil((c.end_date - Date.now() / 1000) / 86400));
+                  const joinedCount = c.participants?.length || 0;
+                  const pct = Math.min(1, joinedCount / Math.max(c.goal_value, 5));
+                  return (
+                    <View key={c.id} style={styles.chCard}>
+                      <View style={styles.chHeadRow}>
+                        <View style={styles.chWell}>
+                          <Icon name={GOAL_ICON[c.goal_type] ?? 'flag'} size={22} color={C.primary} />
+                        </View>
+                        <View style={{ flex: 1 }}>
+                          <Text style={styles.chName}>{c.name}</Text>
+                          {!!c.description && <Text style={styles.chDesc}>{c.description}</Text>}
+                        </View>
+                      </View>
+
+                      <View style={styles.chMetaRow}>
+                        <Text style={styles.chProgressText}>
+                          Goal: <Text style={styles.chProgressStrong}>{c.goal_value.toLocaleString()}</Text> {c.goal_type} · {joinedCount} joined
+                        </Text>
+                        <View style={styles.chDaysPill}>
+                          <Icon name="clock" size={12} color={C.warning} sw={1.8} />
+                          <Text style={styles.chDaysText}>{daysLeft}d left</Text>
+                        </View>
+                      </View>
+
+                      <View style={{ marginTop: 12 }}>
+                        <ProgressBar pct={pct} height={8} />
+                      </View>
+
+                      <Pressable
+                        disabled={joined}
+                        style={({ pressed }) => [styles.chJoinBtn, joined ? styles.chJoinedBtn : styles.chJoinBtnIdle, pressed && !joined && { opacity: 0.9 }]}
+                        onPress={() => joinChallenge(c.id)}
+                      >
+                        {joined && <Icon name="check" size={16} color={C.primary} sw={2.2} />}
+                        <Text style={[styles.chJoinText, joined ? styles.chJoinedText : styles.chJoinTextIdle]}>
+                          {joined ? 'Joined' : 'Join challenge'}
+                        </Text>
+                      </Pressable>
+                    </View>
+                  );
+                })}
+              </View>
+            )}
           </View>
         )}
       </ScrollView>
@@ -173,140 +355,84 @@ export default function LeaderboardScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: COLORS.cream,
-  },
-  scrollContent: {
-    paddingHorizontal: 16,
-    paddingVertical: 20,
-    paddingBottom: 40,
-  },
-  centerContent: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  header: {
-    marginBottom: 20,
-  },
-  title: {
-    fontSize: 28,
-    fontWeight: '700',
-    color: '#333',
-    marginBottom: 4,
-  },
-  subtitle: {
-    fontSize: 13,
-    color: '#999',
-  },
-  metricButtons: {
-    flexDirection: 'row',
-    gap: 8,
-    marginBottom: 20,
-  },
-  metricButton: {
-    flex: 1,
-    paddingVertical: 10,
-    borderRadius: 8,
-    backgroundColor: COLORS.white,
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: '#eee',
-  },
-  metricButtonActive: {
-    backgroundColor: COLORS.accent,
-    borderColor: '#007AFF',
-  },
-  metricButtonText: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#666',
-  },
-  metricButtonTextActive: {
-    color: '#fff',
-  },
-  emptyContainer: {
-    paddingVertical: 40,
-    alignItems: 'center',
-  },
-  emptyText: {
-    fontSize: 14,
-    color: '#999',
-  },
-  leaderboardList: {
-    marginBottom: 20,
-  },
-  leaderboardItem: {
+  root: { flex: 1, backgroundColor: C.cream },
+  scroll: { paddingHorizontal: 16, paddingTop: 8, paddingBottom: 40 },
+  center: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+  loading: { fontSize: 16, color: C.muted },
+
+  h1: { fontSize: 28, fontWeight: '700', letterSpacing: -0.4, color: C.dark },
+  sub: { fontSize: 14, color: C.text3, marginTop: 4, marginBottom: 18 },
+
+  segment: { flexDirection: 'row', gap: 6, backgroundColor: '#EAEBE4', borderRadius: 12, padding: 4 },
+  metricSegment: { marginTop: 10 },
+  segBtn: { flex: 1, borderRadius: 9, paddingVertical: 9, alignItems: 'center' },
+  segBtnSm: { flex: 1, borderRadius: 8, paddingVertical: 7, alignItems: 'center' },
+  segBtnActive: { backgroundColor: '#fff', ...shadow.card },
+  segText: { fontSize: 13, fontWeight: '700', color: C.muted },
+  segTextSm: { fontSize: 12, fontWeight: '600', color: C.muted },
+  segTextActive: { color: C.primary },
+
+  row: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: COLORS.white,
-    borderRadius: 10,
-    paddingHorizontal: 12,
+    gap: 13,
+    backgroundColor: '#fff',
+    borderRadius: radius.card,
     paddingVertical: 14,
-    marginBottom: 8,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
-    shadowRadius: 2,
+    paddingHorizontal: 15,
+    ...shadow.card,
   },
-  leaderboardItemHighlight: {
-    backgroundColor: COLORS.light,
+  rowYou: { borderLeftWidth: 4, borderLeftColor: C.accent },
+  rank: { width: 30, height: 30, borderRadius: 9, alignItems: 'center', justifyContent: 'center' },
+  rankTop: { backgroundColor: C.primary },
+  rankPlain: { backgroundColor: C.tint },
+  rankText: { fontSize: 14, fontWeight: '700', color: C.primary },
+  teamName: { fontSize: 15, fontWeight: '700', color: C.dark },
+  teamMembers: { fontSize: 12, color: C.muted, marginTop: 1 },
+  value: { fontSize: 17, fontWeight: '700', color: C.primary },
+  unit: { fontSize: 11, color: C.muted, fontWeight: '600' },
+
+  callout: { backgroundColor: C.tint, borderRadius: radius.card, padding: 16, marginTop: 16, flexDirection: 'row', alignItems: 'center', gap: 13 },
+  calloutTitle: { fontSize: 14, fontWeight: '700', color: C.dark },
+  calloutSub: { fontSize: 12, color: C.text2, marginTop: 2 },
+  calloutBtn: { backgroundColor: C.primary, borderRadius: 9, paddingVertical: 8, paddingHorizontal: 14 },
+  calloutBtnText: { color: '#fff', fontSize: 13, fontWeight: '700' },
+
+  empty: { paddingVertical: 40, alignItems: 'center' },
+  emptyText: { fontSize: 14, color: C.muted, textAlign: 'center' },
+
+  personalCard: {
+    backgroundColor: '#fff',
+    borderRadius: radius.card,
+    padding: 18,
     borderLeftWidth: 4,
-    borderLeftColor: '#34C759',
+    borderLeftColor: C.accent,
+    ...shadow.card,
   },
-  rankSection: {
-    width: 50,
-    alignItems: 'center',
-  },
-  medal: {
-    fontSize: 24,
-  },
-  userSection: {
-    flex: 1,
-    marginLeft: 8,
-  },
-  userName: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#333',
-    marginBottom: 2,
-  },
-  userMeta: {
-    fontSize: 11,
-    color: '#999',
-  },
-  valueSection: {
-    alignItems: 'flex-end',
-    minWidth: 60,
-  },
-  value: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: '#007AFF',
-  },
-  yourRankBox: {
-    backgroundColor: COLORS.light,
-    borderRadius: 10,
-    padding: 16,
-    alignItems: 'center',
-    borderLeftWidth: 4,
-    borderLeftColor: '#34C759',
-  },
-  yourRankLabel: {
-    fontSize: 12,
-    color: '#558B2F',
-    fontWeight: '600',
-    marginBottom: 4,
-  },
-  yourRankValue: {
-    fontSize: 32,
-    fontWeight: '700',
-    color: '#34C759',
-    marginBottom: 4,
-  },
-  yourRankMeta: {
-    fontSize: 11,
-    color: '#999',
-  },
+  personalTop: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 8 },
+  personalLabel: { fontSize: 12, fontWeight: '700', color: C.muted, letterSpacing: 0.4, textTransform: 'uppercase' },
+  personalValue: { fontSize: 30, fontWeight: '700', color: C.primary, letterSpacing: -0.5 },
+  personalUnit: { fontSize: 14, fontWeight: '600', color: C.muted },
+  personalSub: { fontSize: 13, color: C.text2, marginTop: 4 },
+  joinBtn: { marginTop: 14, backgroundColor: C.primary, borderRadius: 10, paddingVertical: 11, alignItems: 'center' },
+  joinBtnText: { color: '#fff', fontSize: 14, fontWeight: '700' },
+
+  // challenges
+  chCard: { backgroundColor: '#fff', borderRadius: 18, padding: 18, ...shadow.card },
+  chHeadRow: { flexDirection: 'row', alignItems: 'center', gap: 11 },
+  chWell: { width: 40, height: 40, borderRadius: 12, backgroundColor: C.tint, alignItems: 'center', justifyContent: 'center' },
+  chName: { fontSize: 16, fontWeight: '700', letterSpacing: -0.2, color: C.dark },
+  chDesc: { fontSize: 12, color: C.muted, marginTop: 1 },
+  chMetaRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 16, gap: 10 },
+  chProgressText: { fontSize: 13, color: C.text2, fontWeight: '500', flex: 1 },
+  chProgressStrong: { fontWeight: '700', color: C.dark },
+  chDaysPill: { flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: C.warnBg, paddingVertical: 4, paddingHorizontal: 9, borderRadius: radius.pill },
+  chDaysText: { color: C.warning, fontSize: 12, fontWeight: '700' },
+  chJoinBtn: { marginTop: 16, borderRadius: 12, paddingVertical: 12, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7 },
+  chJoinBtnIdle: { backgroundColor: C.primary },
+  chJoinedBtn: { backgroundColor: C.tint },
+  chJoinText: { fontSize: 14, fontWeight: '700' },
+  chJoinTextIdle: { color: '#fff' },
+  chJoinedText: { color: C.primary },
+  chEmptyCard: { backgroundColor: '#fff', borderRadius: radius.card, padding: 20, ...shadow.card },
 });

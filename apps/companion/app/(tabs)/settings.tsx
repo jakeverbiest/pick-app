@@ -1,4 +1,7 @@
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert, TextInput, Modal, Clipboard } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert, TextInput, Modal, KeyboardAvoidingView, Platform, Keyboard } from 'react-native';
+import * as Clipboard from 'expo-clipboard';
+import Constants from 'expo-constants';
+import * as Updates from 'expo-updates';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useState, useEffect } from 'react';
 import { useRouter } from 'expo-router';
@@ -19,11 +22,28 @@ import {
   CrashReport,
 } from '../../src/services/crashRecorder';
 import { stopBackgroundSession } from '../../src/services/backgroundSession';
+import { TeamSection } from '../../src/pick/TeamSection';
+
+// A real signal for "did my OTA land?" — the app VERSION (1.0.0) never changes
+// on an OTA, only the update bundle does. updateId changes every publish; an
+// embedded launch means no OTA has been applied over the installed build yet.
+function otaBuildStamp(): string {
+  try {
+    if (Updates.updateId) {
+      const d = Updates.createdAt ? new Date(Updates.createdAt as any) : null;
+      return `${Updates.updateId.slice(0, 8)}${d ? ' · ' + d.toISOString().slice(0, 10) : ''}`;
+    }
+    return Updates.isEmbeddedLaunch ? 'embedded (no OTA yet)' : 'dev';
+  } catch {
+    return 'dev';
+  }
+}
 
 export default function SettingsScreen() {
   const router = useRouter();
   const [displayName, setDisplayName] = useState('');
   const [neighborhood, setNeighborhood] = useState('');
+  const [geoDebug, setGeoDebug] = useState('');
   const [weightUnit, setWeightUnit] = useState('lb');
   const [distanceUnit, setDistanceUnit] = useState('mi');
   const [enabledFitnessApps, setEnabledFitnessApps] = useState<FitnessApp[]>([]);
@@ -40,6 +60,15 @@ export default function SettingsScreen() {
   const [carryMode, setCarryMode] = useState<CarryMode>('auto');
   const [healthSync, setHealthSync] = useState(true);
   const [crashReports, setCrashReports] = useState<CrashReport[]>([]);
+  const [uid, setUid] = useState('');
+  const [email, setEmail] = useState('');
+  const [feedbackOpen, setFeedbackOpen] = useState(false);
+  const [feedbackText, setFeedbackText] = useState('');
+  const [sendingFeedback, setSendingFeedback] = useState(false);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [leaderboardHidden, setLeaderboardHidden] = useState(false);
+  const [communitySharing, setCommunitySharing] = useState(true);
+  const [communityAutoPost, setCommunityAutoPost] = useState(false);
 
   useEffect(() => {
     AsyncStorage.getItem(CARRY_MODE_KEY).then((v) => {
@@ -49,11 +78,51 @@ export default function SettingsScreen() {
       if (v !== null) setHealthSync(v === 'true');
     });
     getCrashReports().then(setCrashReports);
+    Promise.all([
+      AsyncStorage.getItem('@pick_geodebug'),
+      AsyncStorage.getItem('@pick_geo_boundary'),
+    ]).then(([v, b]) => {
+      if (!v) return;
+      try {
+        const d = JSON.parse(v);
+        setGeoDebug(`apple:${d.district || '—'} · osm:${d.osm || '—'} · city:${d.city || '—'} · bound:${b || '—'}`);
+      } catch {}
+    });
   }, []);
 
   const copyCrashReports = () => {
-    Clipboard.setString(formatCrashReports(crashReports));
-    Alert.alert('📋 Copied', 'Crash reports copied. Paste them to share with the developer.');
+    Clipboard.setStringAsync(formatCrashReports(crashReports));
+    Alert.alert('Copied', 'Crash reports copied. Paste them to share with the developer.');
+  };
+
+  const sendFeedback = async () => {
+    const msg = feedbackText.trim();
+    if (!msg) {
+      Alert.alert('Add a note', 'Tell us what’s working or what’s broken.');
+      return;
+    }
+    setSendingFeedback(true);
+    try {
+      const db = await getDatabase();
+      const ok = await db.submitFeedback({
+        message: msg,
+        email,
+        displayName,
+        appVersion: `${Constants.expoConfig?.version ?? '?'} (${Constants.executionEnvironment ?? '?'})`,
+      });
+      setSendingFeedback(false);
+      if (ok) {
+        Keyboard.dismiss();
+        setFeedbackOpen(false);
+        setFeedbackText('');
+        Alert.alert('Thank you!', 'Your feedback was sent — we read every note.');
+      } else {
+        Alert.alert('Could not send', 'Please try again in a moment.');
+      }
+    } catch {
+      setSendingFeedback(false);
+      Alert.alert('Could not send', 'Please try again in a moment.');
+    }
   };
 
   const clearReports = () => {
@@ -73,7 +142,7 @@ export default function SettingsScreen() {
   const forceStopTracking = async () => {
     await stopBackgroundSession();
     Alert.alert(
-      '🛑 Tracking stopped',
+      'Tracking stopped',
       'Any leftover background location tracking has been turned off. If the iOS location arrow was on with no active cleanup, it should clear now.'
     );
   };
@@ -93,7 +162,7 @@ export default function SettingsScreen() {
     const items = parseInt(manualItems, 10);
     const weight = parseFloat(manualWeight);
     if (!items || items <= 0 || !weight || weight <= 0) {
-      Alert.alert('⚠️ Check values', 'Enter the detected pickup count and the NET trash weight (bucket subtracted).');
+      Alert.alert('Check values', 'Enter the detected pickup count and the NET trash weight (bucket subtracted).');
       return;
     }
     const state = await weightCalibration.addSample(items, weight, 'manual');
@@ -101,9 +170,9 @@ export default function SettingsScreen() {
       setCalibration(state);
       setManualItems('');
       setManualWeight('');
-      Alert.alert('✅ Weigh-in added', `Factor is now ${state.factor.toFixed(3)} lb/pickup (${state.sampleCount} sample${state.sampleCount === 1 ? '' : 's'})`);
+      Alert.alert('Weigh-in added', `Factor is now ${state.factor.toFixed(3)} lb/pickup (${state.sampleCount} sample${state.sampleCount === 1 ? '' : 's'})`);
     } else {
-      Alert.alert('⚠️ Rejected', 'That combination is implausible (factor outside 0.001–2.0 lb/item). Double-check the numbers.');
+      Alert.alert('Rejected', 'That combination is implausible (factor outside 0.001–2.0 lb/item). Double-check the numbers.');
     }
   };
 
@@ -127,7 +196,9 @@ export default function SettingsScreen() {
       const currentUser = userService.getCurrentUser();
 
       if (currentUser) {
+        setUid(currentUser.uid);
         setDisplayName(currentUser.displayName);
+        setEmail(currentUser.email || '');
         setNeighborhood(currentUser.neighborhood);
 
         const db = await getDatabase();
@@ -137,6 +208,9 @@ export default function SettingsScreen() {
           setWeightUnit(userSettings.weight_unit || 'lb');
           setDistanceUnit(userSettings.distance_unit || 'mi');
           setTeamName(userSettings.team_name || '');
+          setLeaderboardHidden(!!userSettings.leaderboard_hidden);
+          setCommunitySharing(userSettings.community_sharing_enabled !== false);
+          setCommunityAutoPost(!!userSettings.community_auto_post);
           try {
             const apps = JSON.parse(userSettings.fitness_apps || '[]');
             setEnabledFitnessApps(apps);
@@ -173,13 +247,59 @@ export default function SettingsScreen() {
         distance_unit: distanceUnit,
         fitness_apps: JSON.stringify(enabledFitnessApps),
         team_name: teamName,
+        leaderboard_hidden: leaderboardHidden,
+        community_sharing_enabled: communitySharing,
+        community_auto_post: communityAutoPost,
       } as any);
 
       setIsEditing(false);
-      Alert.alert('✅ Settings Saved', 'Your preferences have been updated');
+      Alert.alert('Settings Saved', 'Your preferences have been updated');
     } catch (error) {
       console.error('Failed to save settings:', error);
-      Alert.alert('❌ Error', 'Failed to save settings. Please try again.');
+      Alert.alert('Error', 'Failed to save settings. Please try again.');
+    }
+  };
+
+  // Leaderboard visibility applies immediately (privacy toggle) and propagates
+  // to the public user_stats doc via updateUserSettings → updateUserStats.
+  const toggleLeaderboardVisibility = async () => {
+    const next = !leaderboardHidden;
+    setLeaderboardHidden(next);
+    try {
+      const db = await getDatabase();
+      const currentUser = getAuthService().getCurrentUser();
+      if (currentUser) await db.updateUserSettings(currentUser.uid, { leaderboard_hidden: next } as any);
+    } catch (error) {
+      console.error('Failed to update leaderboard visibility:', error);
+      setLeaderboardHidden(!next); // revert on failure
+    }
+  };
+
+  // Community photo sharing applies immediately and just gates the in-app
+  // "Share to community" option — it never auto-posts anything.
+  const toggleCommunitySharing = async () => {
+    const next = !communitySharing;
+    setCommunitySharing(next);
+    try {
+      const db = await getDatabase();
+      const currentUser = getAuthService().getCurrentUser();
+      if (currentUser) await db.updateUserSettings(currentUser.uid, { community_sharing_enabled: next } as any);
+    } catch (error) {
+      console.error('Failed to update community sharing:', error);
+      setCommunitySharing(!next); // revert on failure
+    }
+  };
+
+  const toggleCommunityAutoPost = async () => {
+    const next = !communityAutoPost;
+    setCommunityAutoPost(next);
+    try {
+      const db = await getDatabase();
+      const currentUser = getAuthService().getCurrentUser();
+      if (currentUser) await db.updateUserSettings(currentUser.uid, { community_auto_post: next } as any);
+    } catch (error) {
+      console.error('Failed to update auto-post:', error);
+      setCommunityAutoPost(!next);
     }
   };
 
@@ -248,11 +368,11 @@ export default function SettingsScreen() {
         } as any);
       }
 
-      Alert.alert('✅ Dev Mode', '5 mock cleanups added at different ages');
-      console.log('✅ Mock data populated');
+      Alert.alert('Dev Mode', '5 mock cleanups added at different ages');
+      console.log('Mock data populated');
     } catch (error) {
       console.error('Mock data error:', error);
-      Alert.alert('❌ Error', 'Failed to add mock data');
+      Alert.alert('Error', 'Failed to add mock data');
     }
   };
 
@@ -260,7 +380,7 @@ export default function SettingsScreen() {
     return (
       <SafeAreaView style={styles.container}>
         <View style={styles.centerContent}>
-          <Text style={styles.title}>Settings</Text>
+          <Text style={styles.title}>You</Text>
           <Text style={styles.subtitle}>Loading...</Text>
         </View>
       </SafeAreaView>
@@ -272,7 +392,7 @@ export default function SettingsScreen() {
       <ScrollView contentContainerStyle={styles.scrollContent}>
         {/* Header */}
         <View style={styles.header}>
-          <Text style={styles.title}>Settings</Text>
+          <Text style={styles.title}>You</Text>
           {!isEditing && (
             <TouchableOpacity onPress={() => setIsEditing(true)}>
               <Text style={styles.editButton}>Edit</Text>
@@ -393,7 +513,21 @@ export default function SettingsScreen() {
           </View>
         </View>
 
-        {/* Weight Calibration Section */}
+        {/* Advanced settings toggle */}
+        <TouchableOpacity
+          style={styles.advancedToggle}
+          onPress={() => setAdvancedOpen((v) => !v)}
+          activeOpacity={0.7}
+        >
+          <Text style={styles.advancedToggleText}>
+            {advancedOpen ? 'Hide advanced settings' : 'Show advanced settings'}
+          </Text>
+          <Text style={styles.advancedChevron}>{advancedOpen ? '▾' : '▸'}</Text>
+        </TouchableOpacity>
+
+        {/* Weight Calibration + Carry Mode (advanced) */}
+        {advancedOpen && (
+        <>
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Weight Calibration</Text>
           <Text style={styles.sectionSubtext}>
@@ -509,7 +643,7 @@ export default function SettingsScreen() {
           )}
         </View>
 
-        {/* Carry Mode Section */}
+        {/* Carry Mode Section (advanced) */}
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Carry Mode</Text>
           <Text style={styles.sectionSubtext}>
@@ -530,6 +664,8 @@ export default function SettingsScreen() {
             ))}
           </View>
         </View>
+        </>
+        )}
 
         {/* Apple Health Section */}
         <View style={styles.section}>
@@ -551,51 +687,62 @@ export default function SettingsScreen() {
           </View>
         </View>
 
-        {/* Team/Events Section */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Team & Events</Text>
-          <Text style={styles.sectionSubtext}>
-            Join a cleanup challenge or team (school, work, volunteer group)
-          </Text>
+        {/* Team Section — directory + create/join/leave */}
+        {uid ? <TeamSection userId={uid} currentTeam={teamName} onChange={setTeamName} /> : null}
 
-          {isEditing ? (
-            <View>
-              <TextInput
-                style={styles.teamInput}
-                placeholder="Enter team or event name (e.g., 'Lincoln High School', 'Google Volunteer Day')"
-                value={teamName}
-                onChangeText={setTeamName}
-                placeholderTextColor="#ccc"
-              />
-              <Text style={styles.teamInputHint}>
-                Leaving blank will show your achievement badge instead
+        {/* Leaderboard visibility */}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Leaderboard</Text>
+          <View style={styles.toggleRow}>
+            <View style={{ flex: 1, paddingRight: 12 }}>
+              <Text style={styles.toggleLabel}>Show me on the leaderboard</Text>
+              <Text style={styles.toggleSubtext}>
+                When on, your display name and totals appear on the individual leaderboard so others can see your impact. Turn off to stay private — only you will see your numbers.
               </Text>
             </View>
-          ) : (
-            <View style={styles.teamDisplayBox}>
-              {teamName ? (
-                <>
-                  <Text style={styles.teamBadge}>🏢 {teamName}</Text>
-                  <Text style={styles.teamSubtext}>All your cleanups contribute to this team's total!</Text>
-                </>
-              ) : (
-                <>
-                  <Text style={styles.teamBadge}>🎯 Solo Cleaner</Text>
-                  <Text style={styles.teamSubtext}>Tap Edit to join a team or event</Text>
-                </>
-              )}
+            <TouchableOpacity
+              style={[styles.toggleButton, !leaderboardHidden && styles.toggleButtonActive]}
+              onPress={toggleLeaderboardVisibility}
+            >
+              <View style={[styles.toggleThumb, !leaderboardHidden && styles.toggleThumbActive]} />
+            </TouchableOpacity>
+          </View>
+        </View>
+
+        {/* Community sharing */}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Community</Text>
+          <View style={styles.toggleRow}>
+            <View style={{ flex: 1, paddingRight: 12 }}>
+              <Text style={styles.toggleLabel}>Share cleanups to community</Text>
+              <Text style={styles.toggleSubtext}>
+                Shows the “Share to community” option after a cleanup so you can post a photo. Turn off to hide it entirely — nothing is ever posted automatically.
+              </Text>
+            </View>
+            <TouchableOpacity
+              style={[styles.toggleButton, communitySharing && styles.toggleButtonActive]}
+              onPress={toggleCommunitySharing}
+            >
+              <View style={[styles.toggleThumb, communitySharing && styles.toggleThumbActive]} />
+            </TouchableOpacity>
+          </View>
+
+          {communitySharing && (
+            <View style={[styles.toggleRow, { marginTop: 14 }]}>
+              <View style={{ flex: 1, paddingRight: 12 }}>
+                <Text style={styles.toggleLabel}>Auto-post photos</Text>
+                <Text style={styles.toggleSubtext}>
+                  When you add a photo to a cleanup, post it to the community automatically on save — no extra tap. Off by default; you can always delete a post.
+                </Text>
+              </View>
+              <TouchableOpacity
+                style={[styles.toggleButton, communityAutoPost && styles.toggleButtonActive]}
+                onPress={toggleCommunityAutoPost}
+              >
+                <View style={[styles.toggleThumb, communityAutoPost && styles.toggleThumbActive]} />
+              </TouchableOpacity>
             </View>
           )}
-
-          <View style={styles.teamInfoBox}>
-            <Text style={styles.teamInfoTitle}>💡 Why Teams?</Text>
-            <Text style={styles.teamInfoText}>
-              • School competitions and volunteer days{'\n'}
-              • Corporate cleanup challenges{'\n'}
-              • Community group initiatives{'\n'}
-              • Track team impact together
-            </Text>
-          </View>
         </View>
 
         {/* Fitness Apps Section */}
@@ -605,23 +752,35 @@ export default function SettingsScreen() {
             Track cleanups as exercise in your favorite fitness apps
           </Text>
 
-          {/* App Toggles */}
-          <View style={styles.appsGrid}>
+          {/* App toggles — same pill style as Units, no emoji */}
+          <View style={styles.fitnessGrid}>
             {Object.entries(FITNESS_APPS).map(([appKey, appConfig]) => {
               const app = appKey as FitnessApp;
               const isEnabled = enabledFitnessApps.includes(app);
+              const platformLabel =
+                appConfig.platform === 'ios'
+                  ? 'iOS'
+                  : appConfig.platform === 'android'
+                  ? 'Android'
+                  : 'iOS & Android';
 
               return (
                 <TouchableOpacity
                   key={app}
-                  style={[styles.appCard, isEnabled && styles.appCardActive]}
+                  style={[styles.fitnessButton, isEnabled && styles.unitButtonActive]}
                   onPress={() => isEditing && toggleFitnessApp(app)}
                   disabled={!isEditing}
+                  activeOpacity={0.8}
                 >
-                  <Text style={styles.appIcon}>{appConfig.icon}</Text>
-                  <Text style={styles.appName}>{appConfig.name}</Text>
-                  <Text style={styles.appPlatform}>{appConfig.platform}</Text>
-                  {isEnabled && <Text style={styles.appCheckmark}>✓</Text>}
+                  <Text
+                    style={[styles.fitnessName, isEnabled && styles.unitButtonTextActive]}
+                    numberOfLines={1}
+                  >
+                    {appConfig.name}
+                  </Text>
+                  <Text style={[styles.fitnessPlatform, isEnabled && styles.fitnessPlatformActive]}>
+                    {platformLabel}
+                  </Text>
                 </TouchableOpacity>
               );
             })}
@@ -629,7 +788,7 @@ export default function SettingsScreen() {
 
           {/* Recommendation Box */}
           <View style={styles.recommendationBox}>
-            <Text style={styles.recommendationLabel}>💡 Smart Deduplication</Text>
+            <Text style={styles.recommendationLabel}>Smart deduplication</Text>
             <Text style={styles.recommendationText}>{fitnessRecommendation}</Text>
           </View>
 
@@ -645,8 +804,8 @@ export default function SettingsScreen() {
           </View>
         </View>
 
-        {/* About Section */}
-        {/* Diagnostics — long-walk crash black box */}
+        {/* Diagnostics (advanced) */}
+        {advancedOpen && (
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Diagnostics</Text>
           <Text style={styles.sectionSubtext}>
@@ -657,7 +816,7 @@ export default function SettingsScreen() {
           {crashReports.length === 0 ? (
             <View style={styles.settingRow}>
               <Text style={styles.label}>Crash reports</Text>
-              <Text style={styles.value}>None — clean so far 🎉</Text>
+              <Text style={styles.value}>None — clean so far</Text>
             </View>
           ) : (
             <>
@@ -692,7 +851,7 @@ export default function SettingsScreen() {
               })}
 
               <TouchableOpacity style={[styles.button, styles.buttonDev]} onPress={copyCrashReports}>
-                <Text style={styles.buttonText}>📋 Copy reports to share</Text>
+                <Text style={styles.buttonText}>Copy reports to share</Text>
               </TouchableOpacity>
 
               <TouchableOpacity style={[styles.button, styles.buttonDev]} onPress={clearReports}>
@@ -702,11 +861,20 @@ export default function SettingsScreen() {
           )}
 
           <TouchableOpacity style={[styles.button, styles.buttonDev]} onPress={forceStopTracking}>
-            <Text style={styles.buttonText}>🛑 Force-stop background tracking</Text>
+            <Text style={styles.buttonText}>Force-stop background tracking</Text>
           </TouchableOpacity>
           <Text style={[styles.sectionSubtext, { marginTop: SPACING.xs }]}>
             Use this if the iOS location arrow stays on when no cleanup is running.
           </Text>
+        </View>
+        )}
+
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Feedback</Text>
+          <Text style={styles.sectionSubtext}>Found a bug or have an idea? Tell Jake directly.</Text>
+          <TouchableOpacity style={styles.feedbackButton} onPress={() => setFeedbackOpen(true)}>
+            <Text style={styles.feedbackButtonText}>Send feedback</Text>
+          </TouchableOpacity>
         </View>
 
         <View style={styles.section}>
@@ -714,18 +882,25 @@ export default function SettingsScreen() {
 
           <View style={styles.settingRow}>
             <Text style={styles.label}>App Version</Text>
-            <Text style={styles.value}>1.0.0</Text>
+            <Text style={styles.value}>{Constants.expoConfig?.version ?? '1.0.0'}</Text>
           </View>
 
           <View style={styles.settingRow}>
-            <Text style={styles.label}>Build</Text>
-            <Text style={styles.value}>2026.06.01</Text>
+            <Text style={styles.label}>Update</Text>
+            <Text style={styles.value}>{otaBuildStamp()}</Text>
           </View>
 
           <View style={styles.settingRow}>
             <Text style={styles.label}>Status</Text>
             <Text style={styles.valueBeta}>Beta</Text>
           </View>
+
+          {geoDebug ? (
+            <View style={styles.settingRow}>
+              <Text style={styles.label}>Geo debug</Text>
+              <Text style={[styles.value, { flex: 1, textAlign: 'right', fontSize: 11 }]} numberOfLines={2}>{geoDebug}</Text>
+            </View>
+          ) : null}
 
           <TouchableOpacity style={styles.settingRow} onPress={() => setLegalDoc('privacy')}>
             <Text style={styles.label}>Privacy Policy</Text>
@@ -774,7 +949,8 @@ export default function SettingsScreen() {
           </View>
         )}
 
-        {/* Dev Mode */}
+        {/* Developer Mode (advanced) */}
+        {advancedOpen && (
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Developer Mode</Text>
           <Text style={styles.sectionSubtext}>
@@ -785,7 +961,7 @@ export default function SettingsScreen() {
             style={[styles.button, styles.buttonDev]}
             onPress={() => {
               Alert.alert(
-                '📍 Populate Mock Data',
+                'Populate Mock Data',
                 'Add 5 mock cleanups at different ages to test the neighborhood view.\n\n• Today (Fresh)\n• 2 days (Fresh)\n• 7 days (Dusty)\n• 11 days (Attention)\n• 16 days (Not counted)',
                 [
                   { text: 'Cancel', style: 'cancel' },
@@ -797,9 +973,10 @@ export default function SettingsScreen() {
               );
             }}
           >
-            <Text style={styles.buttonText}>📊 Add 5 Mock Cleanups</Text>
+            <Text style={styles.buttonText}>Add 5 mock cleanups</Text>
           </TouchableOpacity>
         </View>
+        )}
 
         {/* Danger Zone */}
         <View style={styles.section}>
@@ -822,10 +999,10 @@ export default function SettingsScreen() {
                       try {
                         const db = await getDatabase();
                         await db.clearAllData();
-                        Alert.alert('✅ Data Cleared', 'All data has been deleted.');
+                        Alert.alert('Data Cleared', 'All data has been deleted.');
                         loadSettings();
                       } catch (error) {
-                        Alert.alert('❌ Error', 'Failed to clear data.');
+                        Alert.alert('Error', 'Failed to clear data.');
                       }
                     },
                   },
@@ -853,7 +1030,7 @@ export default function SettingsScreen() {
                         await authService.deleteAccount();
                         router.replace('/auth/signup');
                       } catch (error: any) {
-                        Alert.alert('❌ Could not delete account', error.message);
+                        Alert.alert('Could not delete account', error.message);
                       }
                     },
                   },
@@ -879,10 +1056,10 @@ export default function SettingsScreen() {
                       try {
                         const authService = getAuthService();
                         await authService.logout();
-                        console.log('✅ Logged out successfully');
+                        console.log('Logged out successfully');
                         router.replace('/auth/login');
                       } catch (error) {
-                        Alert.alert('❌ Error', 'Failed to logout.');
+                        Alert.alert('Error', 'Failed to logout.');
                       }
                     },
                   },
@@ -890,10 +1067,40 @@ export default function SettingsScreen() {
               );
             }}
           >
-            <Text style={styles.logoutButtonText}>🚪 Logout</Text>
+            <Text style={styles.logoutButtonText}>Log out</Text>
           </TouchableOpacity>
         </View>
       </ScrollView>
+
+      {/* Feedback composer */}
+      <Modal visible={feedbackOpen} transparent animationType="slide" onRequestClose={() => setFeedbackOpen(false)}>
+        <KeyboardAvoidingView style={styles.fbOverlay} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
+          <TouchableOpacity style={styles.fbBackdrop} activeOpacity={1} onPress={() => Keyboard.dismiss()} />
+          <View style={styles.fbSheet}>
+            <Text style={styles.fbTitle}>Send feedback</Text>
+            <Text style={styles.fbSub}>Bugs, ideas, anything — it goes straight to Jake.</Text>
+            <TextInput
+              style={styles.fbInput}
+              placeholder="What's working, what's broken, what you'd change…"
+              placeholderTextColor="#8B9B7F"
+              value={feedbackText}
+              onChangeText={setFeedbackText}
+              multiline
+              maxLength={2000}
+              editable={!sendingFeedback}
+              autoFocus
+            />
+            <View style={styles.fbActions}>
+              <TouchableOpacity style={[styles.fbBtn, styles.fbCancel]} onPress={() => { Keyboard.dismiss(); setFeedbackOpen(false); }} disabled={sendingFeedback}>
+                <Text style={styles.fbCancelText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={[styles.fbBtn, styles.fbSend]} onPress={sendFeedback} disabled={sendingFeedback}>
+                <Text style={styles.fbSendText}>{sendingFeedback ? 'Sending…' : 'Send'}</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -926,7 +1133,7 @@ const styles = StyleSheet.create({
   },
   editButton: {
     fontSize: 14,
-    color: '#007AFF',
+    color: '#34C759',
     fontWeight: '600',
   },
   subtitle: {
@@ -934,27 +1141,55 @@ const styles = StyleSheet.create({
     color: '#666',
   },
   section: {
-    marginBottom: 24,
+    backgroundColor: COLORS.white,
+    borderRadius: 18,
+    padding: 16,
+    marginBottom: 14,
+    shadowColor: '#1B2E1A',
+    shadowOpacity: 0.06,
+    shadowRadius: 3,
+    shadowOffset: { width: 0, height: 1 },
+    elevation: 1,
   },
   sectionTitle: {
-    fontSize: 16,
-    fontWeight: '600',
+    fontSize: 17,
+    fontWeight: '700',
     color: COLORS.darkSage,
-    marginBottom: 12,
+    marginBottom: 10,
+    letterSpacing: -0.2,
   },
   sectionSubtext: {
     fontSize: 12,
-    color: '#999',
+    color: COLORS.mutedSage,
     marginBottom: 12,
+    lineHeight: 17,
+  },
+  advancedToggle: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 12,
+    paddingHorizontal: 4,
+    marginBottom: 4,
+  },
+  advancedToggleText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: COLORS.mutedSage,
+    letterSpacing: 0.2,
+  },
+  advancedChevron: {
+    fontSize: 14,
+    color: COLORS.mutedSage,
   },
   settingRow: {
     paddingVertical: 12,
     borderBottomWidth: 1,
-    borderBottomColor: '#eee',
+    borderBottomColor: '#F0F0EA',
   },
   label: {
     fontSize: 13,
-    color: '#666',
+    color: COLORS.mutedSage,
     marginBottom: 4,
     fontWeight: '500',
   },
@@ -1032,16 +1267,16 @@ const styles = StyleSheet.create({
   },
   appCard: {
     width: '48%',
-    backgroundColor: COLORS.white,
-    borderRadius: 10,
+    backgroundColor: '#F7F8F3',
+    borderRadius: 12,
     padding: 12,
     alignItems: 'center',
     borderWidth: 2,
-    borderColor: '#eee',
+    borderColor: 'transparent',
   },
   appCardActive: {
-    borderColor: '#34C759',
-    backgroundColor: COLORS.light,
+    borderColor: COLORS.accent,
+    backgroundColor: '#EEF3E6',
   },
   appIcon: {
     fontSize: 32,
@@ -1066,36 +1301,60 @@ const styles = StyleSheet.create({
     top: 8,
     right: 8,
   },
-  recommendationBox: {
-    backgroundColor: COLORS.light,
-    borderRadius: 10,
-    padding: 12,
+  fitnessGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
     marginBottom: 16,
-    borderLeftWidth: 4,
-    borderLeftColor: '#34C759',
+  },
+  fitnessButton: {
+    width: '48%',
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    borderRadius: 10,
+    backgroundColor: COLORS.light,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
+  fitnessName: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: COLORS.darkSage,
+  },
+  fitnessPlatform: {
+    fontSize: 11,
+    color: COLORS.mutedSage,
+    marginTop: 3,
+  },
+  fitnessPlatformActive: {
+    color: 'rgba(255,255,255,0.8)',
+  },
+  recommendationBox: {
+    backgroundColor: '#EEF3E6',
+    borderRadius: 14,
+    padding: 14,
+    marginBottom: 16,
   },
   recommendationLabel: {
     fontSize: 12,
-    fontWeight: '600',
-    color: '#2E7D32',
+    fontWeight: '700',
+    color: COLORS.sage,
     marginBottom: 6,
   },
   recommendationText: {
     fontSize: 12,
-    color: '#558B2F',
+    color: '#5C6B54',
     lineHeight: 18,
   },
   configBox: {
-    backgroundColor: COLORS.white,
-    borderRadius: 10,
-    padding: 12,
-    borderLeftWidth: 4,
-    borderLeftColor: '#007AFF',
+    backgroundColor: '#EEF3E6',
+    borderRadius: 14,
+    padding: 14,
   },
   configTitle: {
     fontSize: 12,
-    fontWeight: '600',
-    color: '#1565C0',
+    fontWeight: '700',
+    color: COLORS.sage,
     marginBottom: 8,
   },
   configItem: {
@@ -1161,7 +1420,7 @@ const styles = StyleSheet.create({
   },
   legalLink: {
     fontSize: 14,
-    color: '#007AFF',
+    color: '#34C759',
     fontWeight: '600',
   },
   legalHeader: {
@@ -1193,12 +1452,10 @@ const styles = StyleSheet.create({
     color: '#444',
   },
   calibrationBox: {
-    backgroundColor: COLORS.white,
-    borderRadius: 10,
-    padding: 12,
+    backgroundColor: '#EEF3E6',
+    borderRadius: 14,
+    padding: 14,
     marginBottom: 12,
-    borderLeftWidth: 4,
-    borderLeftColor: '#34C759',
   },
   calibrationRow: {
     flexDirection: 'row',
@@ -1225,12 +1482,10 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
   manualWeighInBox: {
-    backgroundColor: COLORS.white,
-    borderRadius: 8,
-    padding: 12,
+    backgroundColor: '#EEF3E6',
+    borderRadius: 14,
+    padding: 14,
     marginBottom: 12,
-    borderWidth: 1,
-    borderColor: '#e0e8dc',
   },
   manualWeighInRow: {
     flexDirection: 'row',
@@ -1248,8 +1503,8 @@ const styles = StyleSheet.create({
     color: COLORS.darkSage,
   },
   manualWeighInButton: {
-    backgroundColor: COLORS.accent,
-    borderRadius: 6,
+    backgroundColor: COLORS.sage,
+    borderRadius: 10,
     paddingHorizontal: 16,
     justifyContent: 'center',
   },
@@ -1259,14 +1514,14 @@ const styles = StyleSheet.create({
     color: '#fff',
   },
   calibrationSamplesBox: {
-    backgroundColor: COLORS.light,
-    borderRadius: 8,
-    padding: 12,
+    backgroundColor: '#EEF3E6',
+    borderRadius: 14,
+    padding: 14,
   },
   calibrationSamplesTitle: {
     fontSize: 12,
-    fontWeight: '600',
-    color: '#2E7D32',
+    fontWeight: '700',
+    color: COLORS.sage,
     marginBottom: 8,
   },
   calibrationSampleRow: {
@@ -1331,12 +1586,10 @@ const styles = StyleSheet.create({
     fontStyle: 'italic',
   },
   teamDisplayBox: {
-    backgroundColor: COLORS.white,
-    borderRadius: 10,
-    padding: 12,
+    backgroundColor: '#EEF3E6',
+    borderRadius: 14,
+    padding: 14,
     marginBottom: 12,
-    borderLeftWidth: 4,
-    borderLeftColor: '#34C759',
   },
   teamBadge: {
     fontSize: 14,
@@ -1349,21 +1602,19 @@ const styles = StyleSheet.create({
     color: '#666',
   },
   teamInfoBox: {
-    backgroundColor: COLORS.light,
-    borderRadius: 8,
-    padding: 12,
-    borderLeftWidth: 4,
-    borderLeftColor: '#34C759',
+    backgroundColor: '#EEF3E6',
+    borderRadius: 14,
+    padding: 14,
   },
   teamInfoTitle: {
     fontSize: 12,
-    fontWeight: '600',
-    color: '#2E7D32',
+    fontWeight: '700',
+    color: COLORS.sage,
     marginBottom: 4,
   },
   teamInfoText: {
     fontSize: 11,
-    color: '#558B2F',
+    color: '#5C6B54',
     lineHeight: 16,
   },
   actionButtons: {
@@ -1381,7 +1632,7 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.light,
   },
   buttonSave: {
-    backgroundColor: COLORS.accent,
+    backgroundColor: COLORS.sage,
   },
   buttonText: {
     fontSize: 14,
@@ -1425,4 +1676,36 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: '#FF3B30',
   },
+
+  feedbackButton: {
+    marginTop: 12,
+    backgroundColor: COLORS.sage,
+    borderRadius: 12,
+    paddingVertical: 13,
+    alignItems: 'center',
+  },
+  feedbackButtonText: { color: '#fff', fontSize: 15, fontWeight: '700' },
+
+  fbOverlay: { flex: 1, justifyContent: 'flex-end' },
+  fbBackdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(27,46,26,0.45)' },
+  fbSheet: { backgroundColor: COLORS.cream, borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 22, paddingBottom: 34 },
+  fbTitle: { fontSize: 20, fontWeight: '700', color: COLORS.darkSage },
+  fbSub: { fontSize: 13, color: COLORS.mutedSage, marginTop: 2, marginBottom: 14 },
+  fbInput: {
+    backgroundColor: '#fff',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    padding: 14,
+    fontSize: 15,
+    color: COLORS.darkSage,
+    minHeight: 110,
+    textAlignVertical: 'top',
+  },
+  fbActions: { flexDirection: 'row', gap: 12, marginTop: 16 },
+  fbBtn: { flex: 1, borderRadius: 12, paddingVertical: 14, alignItems: 'center' },
+  fbCancel: { backgroundColor: '#fff', borderWidth: 1, borderColor: COLORS.border },
+  fbCancelText: { color: COLORS.darkSage, fontSize: 15, fontWeight: '700' },
+  fbSend: { backgroundColor: COLORS.sage },
+  fbSendText: { color: '#fff', fontSize: 15, fontWeight: '700' },
 });

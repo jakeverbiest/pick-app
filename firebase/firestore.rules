@@ -47,11 +47,54 @@ service cloud.firestore {
       allow read, write: if isOwner(userId);
     }
 
+    // --- Team stats: the privacy-safe leaderboard aggregate. Written only by
+    //     the onCleanupWrite / rebuildTeamStats Cloud Functions (the admin SDK
+    //     bypasses these rules); any signed-in user may read. No raw cleanup
+    //     routes are ever exposed here. ---
+    match /team_stats/{teamId} {
+      allow read: if signedIn();
+      allow write: if false;
+    }
+
+    // --- Teams directory: shared list of named teams. Any signed-in user reads
+    //     (directory + existence checks) and may create a team stamped with
+    //     their own uid; only the creator may change or remove it. ---
+    match /teams/{teamId} {
+      allow read: if signedIn();
+      allow create: if isOwner(request.resource.data.created_by)
+        && request.resource.data.name is string
+        && request.resource.data.name.size() > 0
+        && request.resource.data.name.size() < 60;
+      allow update, delete: if isOwner(resource.data.created_by);
+    }
+
     // --- Badges: readable by all signed-in (profiles), writable by owner ---
     match /badges/{badgeId} {
       allow read: if signedIn();
       allow create: if isOwner(request.resource.data.userId);
       allow update, delete: if isOwner(resource.data.userId);
+    }
+
+    // --- User stats: the per-user public leaderboard aggregate. Totals +
+    //     display name + team only — NEVER routes. Any signed-in user reads
+    //     (to render the individual leaderboard); each user writes only their
+    //     own doc. Opt-out is the `hidden` flag, filtered client-side. ---
+    match /user_stats/{userId} {
+      allow read: if signedIn();
+      allow write: if isOwner(userId);
+    }
+
+    // --- Community posts: a cleanup photo + caption (no precise location).
+    //     Any signed-in user reads; the author creates/deletes their own;
+    //     anyone signed-in may toggle a like (only the liked_by array changes). ---
+    match /posts/{postId} {
+      allow read: if signedIn();
+      allow create: if isOwner(request.resource.data.uid);
+      allow delete: if isOwner(resource.data.uid);
+      allow update: if signedIn() && (
+        isOwner(resource.data.uid)
+        || request.resource.data.diff(resource.data).affectedKeys().hasOnly(['liked_by'])
+      );
     }
 
     // --- Challenges: shared. Anyone signed-in reads; creator manages;
@@ -80,8 +123,24 @@ service cloud.firestore {
         && request.resource.data.last_cleaned > request.time.toMillis() - 86400000;
     }
 
+    // --- Park status: same shared coverage model as segments, for park zones ---
+    match /park_status/{parkId} {
+      allow read: if signedIn();
+      allow write: if signedIn()
+        && request.resource.data.last_user == request.auth.uid
+        && request.resource.data.last_cleaned is number
+        && request.resource.data.last_cleaned <= request.time.toMillis() + 60000
+        && request.resource.data.last_cleaned > request.time.toMillis() - 86400000;
+    }
+
     // --- Analytics: write-only from clients ---
     match /analytics/{docId} {
+      allow create: if signedIn();
+      allow read, update, delete: if false;
+    }
+
+    // --- Feedback: testers submit; only the owner (you) reads via console/admin ---
+    match /feedback/{docId} {
       allow create: if signedIn();
       allow read, update, delete: if false;
     }

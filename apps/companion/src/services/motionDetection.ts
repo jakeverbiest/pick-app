@@ -49,6 +49,10 @@ export interface MotionEventRecord {
 export const CARRY_MODE_KEY = '@pick_carry_mode_v2'; // 'auto' | 'pocket' | 'hand'
 export type CarryMode = 'auto' | 'pocket' | 'hand';
 const POCKET_MIN_GYRO = 1.5; // pocket picks observed at 2.9-7.4; handling/insertion at 0.48
+// If a walking-rhythm window happened within this long, an isolated 1-2 peak
+// "pickup" is almost certainly a stride bounce — real picking pauses to bend,
+// which breaks the rhythm. Tunable; raise to be stricter, lower to be looser.
+const WALKING_CONTEXT_MS = 2500;
 const GYRO_BASELINE_WINDOW = 8; // recent events used for auto carry classification
 
 class MotionDetector {
@@ -56,6 +60,7 @@ class MotionDetector {
   private sessionEvents: MotionEventRecord[] = [];
   private sessionStartTime: number = 0;
   private lastPickupTime: number = 0;
+  private lastRhythmicTime: number = 0; // last walking-rhythm window, for context suppression
   private isListening: boolean = false;
   private accelSubscription: any = null;
   private gyroSubscription: any = null;
@@ -90,6 +95,13 @@ class MotionDetector {
       this.onErrorCallback = onError || null;
       this.isListening = true;
       this.sessionEvents = [];
+      // Reset per-session pickup state. These were NOT cleared before, so
+      // pickupEvents accumulated across every walk in an app session — and the
+      // saved count (pickupEvents.length at Stop) was the running TOTAL, not the
+      // walk's count. This was the real "severe overcount."
+      this.pickupEvents = [];
+      this.lastPickupTime = 0;
+      this.lastRhythmicTime = 0;
       this.sessionStartTime = Date.now();
 
       // Carry mode: auto (default) classifies pocket-vs-hand from the gyro
@@ -227,10 +239,28 @@ class MotionDetector {
           const finalConfidence = result.confidence;
           const accepted = finalConfidence > 30;
 
+          // Track when we last saw a walking-rhythm window. The rhythmic filter
+          // catches the obvious 3-5 peak walking windows; the leftover false
+          // positives are isolated 1-2 peak stride bounces that fire DURING
+          // continuous walking and look identical to a real pickup by every
+          // per-event metric (force/rotation/peaks/confidence). The only thing
+          // that separates them is context: real litter picking pauses to bend,
+          // which breaks the rhythm.
+          if (!accepted && typeof result.reason === 'string' && result.reason.startsWith('rhythmic')) {
+            this.lastRhythmicTime = now;
+          }
+
           let counted = false;
+          let suppressed = false;
           if (accepted) {
-            // Confidence threshold: lowered from 40 to 30 to catch more pickups
-            counted = this.detectPickupFromShape(now, profile, finalConfidence);
+            if (now - this.lastRhythmicTime < WALKING_CONTEXT_MS) {
+              // Still mid-stride — almost certainly a walking bounce, not a
+              // pause-and-bend pickup. Suppress (logged, not counted).
+              suppressed = true;
+            } else {
+              // Confidence threshold: lowered from 40 to 30 to catch more pickups
+              counted = this.detectPickupFromShape(now, profile, finalConfidence);
+            }
           }
 
           // Flight recorder: every event — rejected, cooldown-suppressed, or counted
@@ -245,7 +275,7 @@ class MotionDetector {
             confidence: finalConfidence,
             accepted,
             counted,
-            reason: !accepted ? result.reason : counted ? 'ok' : 'cooldown',
+            reason: !accepted ? result.reason : suppressed ? 'walking context (stride bounce?)' : counted ? 'ok' : 'cooldown',
             peaks,
             speed: this.lastLocation?.speed ?? -1,
           });

@@ -1,5 +1,7 @@
-import { View, Text, StyleSheet, TouchableOpacity, Modal, TextInput, ScrollView, Alert, Clipboard, AppState } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { View, Text, StyleSheet, TouchableOpacity, Modal, TextInput, ScrollView, Alert, AppState, Image, Share, ActivityIndicator, KeyboardAvoidingView, Platform, Keyboard } from 'react-native';
+import * as Clipboard from 'expo-clipboard';
+import * as ImagePicker from 'expo-image-picker';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useState, useEffect, useRef } from 'react';
 import { useRouter } from 'expo-router';
 import * as Location from 'expo-location';
@@ -8,8 +10,11 @@ import MotionDetector from '../../src/services/motionDetection';
 import PickupAggregator from '../../src/services/pickupAggregator';
 import weightCalibration, { DEFAULT_LB_PER_PICKUP } from '../../src/services/weightCalibration';
 import { weightToBags, formatBags } from '../../src/services/impactMetrics';
-import { getCoverage, markRouteCleaned } from '../../src/services/streetSegments';
+import { getCoverage, markRouteCleaned, getParkCoverage, markParksCleaned, getTileStats, tileId, getCoverageForRing, routeCoverageFraction } from '../../src/services/streetSegments';
+import { osmNeighborhood, getNycHoodsInBounds, polygonStats, HoodShape } from '../../src/services/neighborhoods';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
+import Constants from 'expo-constants';
 import { startBackgroundSession, stopBackgroundSession } from '../../src/services/backgroundSession';
 import { beginSessionTrace, heartbeat, endSessionTrace } from '../../src/services/crashRecorder';
 import { syncWorkoutToHealth, isHealthSyncEnabled } from '../../src/services/healthService';
@@ -19,9 +24,12 @@ import { getDatabase } from '../../src/services/database';
 import { getAuthService } from '../../src/services/authService';
 import { getBadgeService } from '../../src/services/badgeService';
 import { COLORS, SPACING, RADIUS, TYPOGRAPHY } from '../../src/constants/colors';
+import { Icon } from '../../src/pick/Icon';
+import { ShareComposer } from '../../src/pick/ShareComposer';
 
 export default function MapScreen() {
   const router = useRouter();
+  const insets = useSafeAreaInsets();
   const webviewRef = useRef<WebView>(null);
   const heatmapWebviewRef = useRef<WebView>(null);
   const [pickupCount, setPickupCount] = useState(0);
@@ -31,6 +39,43 @@ export default function MapScreen() {
   const locationRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [showSummary, setShowSummary] = useState(false);
   const [showResults, setShowResults] = useState(false);
+  const [photoUri, setPhotoUri] = useState<string | null>(null);
+  const [neighborhood, setNeighborhood] = useState('');
+  const [communitySharing, setCommunitySharing] = useState(true);
+  const [communityAutoPost, setCommunityAutoPost] = useState(false);
+  // 'background' = OS keeps the walk alive screen-off (real build + Always loc);
+  // 'foreground' = screen must stay on (Expo Go / permission denied); null = unknown.
+  const [sessionMode, setSessionMode] = useState<'background' | 'foreground' | null>(null);
+  const startingRef = useRef(false);
+  const [showCommunityCompose, setShowCommunityCompose] = useState(false);
+  const [communityCaption, setCommunityCaption] = useState('');
+  const [posting, setPosting] = useState(false);
+  const [showShare, setShowShare] = useState(false);
+
+  const pickPhoto = () => {
+    Alert.alert('Add a photo', 'Show the spot you cleaned up.', [
+      {
+        text: 'Take photo',
+        onPress: async () => {
+          const perm = await ImagePicker.requestCameraPermissionsAsync();
+          if (!perm.granted) {
+            Alert.alert('Camera access needed', 'Enable camera access in Settings to take a photo.');
+            return;
+          }
+          const res = await ImagePicker.launchCameraAsync({ quality: 0.7, allowsEditing: true });
+          if (!res.canceled && res.assets?.[0]) setPhotoUri(res.assets[0].uri);
+        },
+      },
+      {
+        text: 'Choose from library',
+        onPress: async () => {
+          const res = await ImagePicker.launchImageLibraryAsync({ quality: 0.7, allowsEditing: true });
+          if (!res.canceled && res.assets?.[0]) setPhotoUri(res.assets[0].uri);
+        },
+      },
+      { text: 'Cancel', style: 'cancel' },
+    ]);
+  };
   const [selfReportedWeight, setSelfReportedWeight] = useState('');
   const [weightInputMode, setWeightInputMode] = useState<'weight' | 'bag'>('weight');
   const [bagSize, setBagSize] = useState<'small' | 'medium' | 'large' | 'xl'>('large');
@@ -40,10 +85,15 @@ export default function MapScreen() {
   const [userTeam, setUserTeam] = useState<string>('');
   const [superlative, setSuperlative] = useState<string>('');
   const [sessionRoute, setSessionRoute] = useState<any[]>([]);
+  // Drives unmounting the heavy map WebView when backgrounded mid-cleanup
+  // (iOS gives backgrounded apps a tiny memory budget — the WebView was the
+  // prime suspect for the ~7-min long-walk kills).
+  const [appActive, setAppActive] = useState(true);
   const [pickupLocations, setPickupLocations] = useState<any[]>([]);
   const [currentLocation, setCurrentLocation] = useState<any>(null);
   const [batterySaver, setBatterySaver] = useState(true); // Optimized for battery
   const pickupCounterRef = useRef(0); // Track pickups since last location record
+  const currentLocationRef = useRef<{ lat: number; lon: number } | null>(null); // latest fix — pickup-pin fallback
   const [gpsInterval, setGpsInterval] = useState(20000); // 20s base interval
   const lastPickupTimeRef = useRef(0);
   const highFrequencyEndRef = useRef(0);
@@ -52,10 +102,31 @@ export default function MapScreen() {
   const [mapReady, setMapReady] = useState(false);
   const [showScaleInfo, setShowScaleInfo] = useState(false);
   const [showNeighborhood, setShowNeighborhood] = useState(false);
+  // Past-cleanup coverage (street shading + dimmed routes) stays visible during
+  // an active walk so the cleaned area reads as "cared for"; toggle to declutter.
+  const [coverageVisible, setCoverageVisible] = useState(true);
   const [calFactor, setCalFactor] = useState(DEFAULT_LB_PER_PICKUP);
   const [calSampleCount, setCalSampleCount] = useState(0);
-  const [coverageStats, setCoverageStats] = useState<{ freshPct: number; totalSegments: number } | null>(null);
+  const [coverageStats, setCoverageStats] = useState<{ freshPct: number; totalSegments: number; toGo: number } | null>(null);
+  // Tap-to-focus neighborhood + a running city rollup across hoods checked.
+  const [selectedHood, setSelectedHood] = useState<{ name: string; freshPct: number; toGo: number; total: number } | null>(null);
+  const [cityRollup, setCityRollup] = useState<{ city: string; freshPct: number } | null>(null);
+  const hoodRingsRef = useRef<Record<string, [number, number][]>>({});
+  const hoodScoresRef = useRef<Record<string, { fresh: number; total: number }>>({});
+  // Level mode: a neighborhood "booted up" as a bounded level you fill in.
+  const [activeLevel, setActiveLevel] = useState<{
+    name: string;
+    total: number; fresh: number; freshPct: number; toGo: number; untouched: number;
+  } | null>(null);
+  const [activating, setActivating] = useState<string | null>(null); // hood name during reveal
+  const activeLevelRef = useRef<boolean>(false);
+  const activationTokenRef = useRef<number>(0); // invalidates stale in-flight activations
+  // Live recolor: the active level's segments + a throttle clock.
+  const levelSegmentsRef = useRef<Array<{ id: string; coords: [number, number][]; daysOld: number | null; cleaned: boolean }>>([]);
+  const lastRecolorRef = useRef<number>(0);
+  const [currentArea, setCurrentArea] = useState<{ city: string; neighborhood: string }>({ city: '', neighborhood: '' });
   const coverageLoadedRef = useRef(false);
+  const panLoadRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [pocketMode, setPocketMode] = useState(false);
   const pocketTapsRef = useRef<number[]>([]);
   const pocketModeRef = useRef(false);
@@ -70,25 +141,38 @@ export default function MapScreen() {
   useEffect(() => {
     const sub = AppState.addEventListener('change', (state) => {
       appActiveRef.current = state === 'active';
+      setAppActive(state === 'active');
     });
     return () => sub.remove();
   }, []);
 
   const mapVisible = () => appActiveRef.current && !pocketModeRef.current;
 
-  // Keep the screen awake while a cleanup session is running — screen lock
-  // kills the motion sensors in this build.
+  // When the map WebView unmounts on background-during-cleanup, reset mapReady
+  // so coverage + route re-inject cleanly once it remounts on return.
   useEffect(() => {
-    if (isListening) {
+    if (!appActive && isListening) setMapReady(false);
+  }, [appActive, isListening]);
+
+  // Keep the screen awake ONLY when we can't run in the background. When a real
+  // background-location session is active ('background'), let the screen lock in
+  // the pocket — the walk survives via the OS, there's nothing to touch, and no
+  // Pocket Mode is needed. Until the mode resolves (null) we keep it awake to be
+  // safe, so we never silently drop a foreground-only session.
+  useEffect(() => {
+    if (isListening && sessionMode !== 'background') {
       activateKeepAwakeAsync('cleanup');
     } else {
       deactivateKeepAwake('cleanup');
+    }
+    if (!isListening) {
       setPocketMode(false);
+      setSessionMode(null);
     }
     return () => {
       deactivateKeepAwake('cleanup');
     };
-  }, [isListening]);
+  }, [isListening, sessionMode]);
 
   // Pocket mode exits on triple-tap within 1.2s. Exiting also trims the
   // last few seconds of "pickups" — that motion was you pulling the phone out.
@@ -123,16 +207,70 @@ export default function MapScreen() {
     }
   };
 
-  // Street-segment coverage: load once when map + location are ready
+  // Street-segment coverage: load when map + location are ready. Only lock the
+  // "loaded" flag on SUCCESS — a new neighborhood whose first Overpass fetch is
+  // slow/failed will retry on the next GPS fix instead of staying empty.
   useEffect(() => {
-    if (mapReady && currentLocation && !coverageLoadedRef.current) {
-      coverageLoadedRef.current = true;
-      loadStreetCoverage(currentLocation.lat, currentLocation.lon);
+    if (mapReady && currentLocation && !coverageLoadedRef.current && !activeLevelRef.current) {
+      loadStreetCoverage(currentLocation.lat, currentLocation.lon).then((ok) => {
+        if (ok) coverageLoadedRef.current = true;
+      });
+      // Also draw the tappable hood outlines on launch so the overview is never
+      // blank waiting for a pan/moveend.
+      loadHoodsInView([currentLocation.lat - 0.012, currentLocation.lon - 0.016, currentLocation.lat + 0.012, currentLocation.lon + 0.016]);
     }
   }, [mapReady, currentLocation]);
 
-  const loadStreetCoverage = async (lat: number, lon: number) => {
+  // When the app returns to the foreground while idle, re-fetch location and
+  // allow coverage to reload — so opening in a NEW neighborhood updates the map
+  // without needing a full app restart (the WebView persists across background).
+  useEffect(() => {
+    if (appActive && !isListening) {
+      coverageLoadedRef.current = false;
+      trackLocation();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [appActive, isListening]);
+
+  // Re-center the idle map + re-name the neighborhood whenever the fix changes
+  // (e.g. after foregrounding somewhere new). Only when not mid-cleanup, so it
+  // never yanks the map during a walk.
+  useEffect(() => {
+    if (!currentLocation || isListening || !mapReady) return;
+    webviewRef.current?.injectJavaScript(
+      `if (window.updateLocation) { window.updateLocation(${currentLocation.lat}, ${currentLocation.lon}); } true;`
+    );
+    refreshArea(currentLocation.lat, currentLocation.lon);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentLocation, isListening, mapReady]);
+
+  // Past-cleanup routes race the WebView load at mount, so redraw them once the
+  // map JS is ready — and keep them visible (or hidden) per the coverage toggle.
+  // This also restores them after a background-driven WebView remount mid-walk.
+  useEffect(() => {
+    if (!mapReady) return;
+    loadHistoricalCleanups();
+    webviewRef.current?.injectJavaScript(`
+      if (window.setCoverageVisible) { window.setCoverageVisible(${coverageVisible}); }
+      true;
+    `);
+
+    // If the app sits open past local midnight, today's corridors are now
+    // "yesterday" — reload to drop them. (Foreground refresh covers the more
+    // common background-then-reopen case.)
+    const msToMidnight = new Date().setHours(24, 0, 0, 0) - Date.now();
+    const midnightTimer = setTimeout(() => { loadHistoricalCleanups(); }, msToMidnight + 1000);
+    return () => clearTimeout(midnightTimer);
+  }, [mapReady]);
+
+  const loadStreetCoverage = async (lat: number, lon: number): Promise<boolean> => {
     try {
+      // Streets and parks are independent fetches — run them concurrently so a
+      // cold start pays for the slower of the two, not the sum.
+      const parksPromise = getParkCoverage(lat, lon).catch((e) => {
+        console.error('Park coverage error:', e);
+        return [] as Awaited<ReturnType<typeof getParkCoverage>>;
+      });
       const segments = await getCoverage(lat, lon);
       if (segments.length > 0 && webviewRef.current) {
         webviewRef.current.injectJavaScript(`
@@ -140,17 +278,244 @@ export default function MapScreen() {
           true;
         `);
       }
-      const fresh = segments.filter((s) => s.daysOld !== null && s.daysOld <= 5).length;
-      const stats = {
-        freshPct: segments.length > 0 ? Math.round((fresh / segments.length) * 100) : 0,
-        totalSegments: segments.length,
-      };
-      setCoverageStats(stats);
-      console.log(`🛣️ Coverage: ${stats.freshPct}% of ${stats.totalSegments} segments fresh`);
+
+      // Parks (open zones, e.g. Carroll Park) — render alongside street segments.
+      try {
+        const parks = await parksPromise;
+        if (parks.length > 0 && webviewRef.current) {
+          webviewRef.current.injectJavaScript(`
+            if (window.renderParks) { window.renderParks(${JSON.stringify(parks)}); }
+            true;
+          `);
+        }
+      } catch (e) {
+        console.error('Park coverage error:', e);
+      }
+      // Stats are scoped to the CURRENT TILE (a fixed, completable area), not the
+      // whole 600m fetch bubble — so "% green" and "blocks to go" hold steady as
+      // you pan instead of drifting with the map. The tile is universal: same
+      // unit in any city, no per-city boundary data.
+      const tile = getTileStats(lat, lon, segments);
+      // A failed/rate-limited re-fetch returns 0 segments — don't let it clobber
+      // stats we already have with a bogus "0/0".
+      setCoverageStats((prev) =>
+        tile.total === 0 && prev && prev.totalSegments > 0
+          ? prev
+          : { freshPct: tile.freshPct, totalSegments: tile.total, toGo: tile.toGo }
+      );
+      console.log(`🛣️ Tile ${tile.tileId}: ${tile.freshPct}% green, ${tile.toGo}/${tile.total} to go`);
+      return segments.length > 0;
     } catch (error) {
       console.error('Street coverage error:', error);
+      return false;
     }
   };
+
+  // Reverse-geocode a point to its city + neighborhood NAME (works globally
+  // via the phone's geocoder — the unit for local boards until we bundle crisp
+  // official boundary shapes per launch city).
+  const geocodeArea = async (lat: number, lon: number): Promise<{ city: string; neighborhood: string }> => {
+    try {
+      const g = (await Location.reverseGeocodeAsync({ latitude: lat, longitude: lon }))[0];
+      if (g) {
+        const city = g.city || g.subregion || g.region || '';
+        const district = g.district || '';
+        // Prefer OSM (free, global, tile-cached). Apple frequently returns the
+        // BOROUGH as its sub-locality for NYC — taking that gave the stuck
+        // "Brooklyn". So call OSM regardless, and use Apple's district only when
+        // OSM is empty AND it isn't just echoing the city/borough.
+        const osm = await osmNeighborhood(lat, lon);
+        const neighborhood = osm || (district && district !== city ? district : '');
+        // Ground-truth readout for the Settings "Geo debug" row.
+        try {
+          await AsyncStorage.setItem('@pick_geodebug', JSON.stringify({ district, osm, city, tile: tileId(lat, lon) }));
+        } catch {}
+        return { city, neighborhood };
+      }
+    } catch {}
+    return { city: '', neighborhood: '' };
+  };
+
+  // Apply a geocode result to the header, keeping a neighborhood name once we
+  // have one: a later geocode over a panned map center often returns no
+  // sub-locality, and we'd rather hold the last real name than drop back to the
+  // borough. Reset the name only when we've genuinely moved to a different city.
+  const applyArea = (area: { city: string; neighborhood: string }) =>
+    setCurrentArea((prev) => ({
+      city: area.city || prev.city,
+      neighborhood:
+        area.neighborhood || (area.city && area.city !== prev.city ? '' : prev.neighborhood),
+    }));
+
+  // Default header name from the geocoder (used until you tap a neighborhood).
+  const refreshArea = (lat: number, lon: number) => {
+    geocodeArea(lat, lon).then(applyArea);
+  };
+
+  // Draw all neighborhood outlines intersecting the current view as a tappable
+  // layer. Rings are stashed so a tap can score that hood from coverage.
+  const loadHoodsInView = (b: [number, number, number, number]) => {
+    getNycHoodsInBounds(b[0], b[1], b[2], b[3]).then((hoods: HoodShape[]) => {
+      if (!hoods.length) return;
+      hoods.forEach((h) => { hoodRingsRef.current[h.name] = h.ring; });
+      const payload = hoods.map((h) => ({ name: h.name, ring: h.ring }));
+      webviewRef.current?.injectJavaScript(`
+        if (window.renderNeighborhoods) { window.renderNeighborhoods(${JSON.stringify(payload)}); }
+        ${selectedHood ? `if (window.highlightNeighborhood) { window.highlightNeighborhood(${JSON.stringify(selectedHood.name)}); }` : ''}
+        true;
+      `);
+    });
+  };
+
+  // Activate a hood as a level: frame + lock the map on it, reveal all its
+  // streets (untouched in soft gray, cleaned on the freshness scale), show
+  // completion stats. reveal=true plays the 2s "entering" beat (tap to browse);
+  // reveal=false enters quietly (used when you start a cleanup inside a hood).
+  const activateHood = async (name: string, ring: [number, number][], reveal: boolean) => {
+    if (activating) return;
+    const token = ++activationTokenRef.current; // invalidated by exitLevel / a newer activation
+    setSelectedHood(null);
+    if (reveal) setActivating(name);
+    activeLevelRef.current = true;
+    webviewRef.current?.injectJavaScript(`
+      if (window.enterLevel) { window.enterLevel(${JSON.stringify(ring)}); }
+      true;
+    `);
+    const started = Date.now();
+    const segments = await getCoverageForRing(ring);
+    // Bail if we've since exited the level (or started a different one) — stops a
+    // stale fetch from re-drawing the spotlight/level after the user left.
+    if (activationTokenRef.current !== token || !activeLevelRef.current) return;
+    const total = segments.length;
+    const fresh = segments.filter((s) => s.daysOld !== null && s.daysOld <= 5).length;
+    const untouched = segments.filter((s) => s.daysOld === null).length;
+    const freshPct = total > 0 ? Math.round((fresh / total) * 100) : 0;
+    const toGo = Math.max(0, total - fresh);
+    // Keep the segments for live recoloring as you walk.
+    levelSegmentsRef.current = segments.map((s) => ({ id: s.id, coords: s.coords, daysOld: s.daysOld, cleaned: false }));
+    const payload = segments.map((s) => ({ id: s.id, coords: s.coords, daysOld: s.daysOld }));
+    webviewRef.current?.injectJavaScript(`
+      if (window.renderLevel) { window.renderLevel(${JSON.stringify(payload)}); }
+      true;
+    `);
+    hoodScoresRef.current[name] = { fresh, total };
+    const agg = Object.values(hoodScoresRef.current).reduce(
+      (a, s) => ({ fresh: a.fresh + s.fresh, total: a.total + s.total }), { fresh: 0, total: 0 });
+    setCityRollup({ city: currentArea.city || 'City', freshPct: agg.total > 0 ? Math.round((agg.fresh / agg.total) * 100) : 0 });
+    const apply = () => { setActiveLevel({ name, total, fresh, freshPct, toGo, untouched }); setActivating(null); };
+    if (reveal) setTimeout(apply, Math.max(400, 2000 - (Date.now() - started)));
+    else apply();
+  };
+
+  // Tap a neighborhood outline → browse it with the full 2s reveal.
+  const focusHood = (name: string) => {
+    const ring = hoodRingsRef.current[name];
+    if (ring) activateHood(name, ring, true);
+  };
+
+  // Live recolor: while picking inside a level, flip each street green the moment
+  // your route covers ≥80% of it — you watch the hood fill in. Throttled, and
+  // only segments near you are checked, so it stays cheap.
+  useEffect(() => {
+    if (!isListening || !activeLevelRef.current) return;
+    const pts = sessionRoute;
+    if (pts.length < 2) return;
+    const now = Date.now();
+    if (now - lastRecolorRef.current < 2500) return;
+    lastRecolorRef.current = now;
+    const segs = levelSegmentsRef.current;
+    if (!segs.length) return;
+    const last = pts[pts.length - 1];
+    const newlyClean: string[] = [];
+    for (const s of segs) {
+      if (s.cleaned) continue;
+      const m = s.coords[Math.floor(s.coords.length / 2)];
+      const dx = (m[1] - last.lon) * 111320 * Math.cos((last.lat * Math.PI) / 180);
+      const dy = (m[0] - last.lat) * 110540;
+      if (dx * dx + dy * dy > 90 * 90) continue; // only segments within ~90m of you
+      if (routeCoverageFraction(s.coords, pts, 15) >= 0.8) { s.cleaned = true; newlyClean.push(s.id); }
+    }
+    if (newlyClean.length) {
+      webviewRef.current?.injectJavaScript(
+        newlyClean.map((id) => `if(window.markLevelClean){window.markLevelClean(${JSON.stringify(id)});}`).join('') + ' true;'
+      );
+      const total = segs.length;
+      const fresh = segs.filter((s) => s.cleaned || (s.daysOld !== null && s.daysOld <= 5)).length;
+      const untouched = segs.filter((s) => !s.cleaned && s.daysOld === null).length;
+      setActiveLevel((prev) => prev ? { ...prev, fresh, freshPct: total > 0 ? Math.round((fresh / total) * 100) : 0, toGo: Math.max(0, total - fresh), untouched } : prev);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionRoute, isListening]);
+
+  // Re-draw the tappable hood outlines + coverage around a point (used when
+  // returning to the overview so neighborhoods are immediately selectable).
+  const refreshOverviewAround = (lat: number, lon: number) => {
+    loadStreetCoverage(lat, lon);
+    loadHoodsInView([lat - 0.012, lon - 0.016, lat + 0.012, lon + 0.016]);
+  };
+
+  // Close the results recap and return to a fresh, tappable overview where you
+  // are now — so you can immediately pick a new neighborhood after submitting.
+  const finishSession = () => {
+    setShowResults(false);
+    setPickupCount(0);
+    setElapsedSeconds(0);
+    setSessionRoute([]);
+    setPickupLocations([]);
+    setPhotoUri(null);
+    setShowShare(false);
+    if (activeLevelRef.current) exitLevel();
+    else if (currentLocation) refreshOverviewAround(currentLocation.lat, currentLocation.lon);
+  };
+
+  // Leave level mode → back to the overview of all hoods, recentered on you.
+  const exitLevel = () => {
+    activationTokenRef.current++; // cancel any in-flight activation
+    activeLevelRef.current = false;
+    setActiveLevel(null);
+    setActivating(null);
+    setSelectedHood(null);
+    levelSegmentsRef.current = [];
+    const la = currentLocation?.lat, lo = currentLocation?.lon;
+    // Always tear down the veil/level layers; recenter + reload only if we have a fix.
+    webviewRef.current?.injectJavaScript(`
+      if (window.exitLevel) { window.exitLevel(); }
+      ${typeof la === 'number' ? `try { map.setView([${la}, ${lo}], 15); } catch (e) {}` : ''}
+      true;
+    `);
+    if (typeof la === 'number') refreshOverviewAround(la, lo);
+  };
+
+  // "Map grows as you explore": when you pan/zoom the map (and aren't mid-
+  // cleanup), load coverage for the area you moved to. The neighborhood name +
+  // boundary deliberately do NOT update here — they're anchored to your real
+  // location (below) so the outline stays put instead of flipping as the map
+  // center crosses hoods. Debounced; skips very zoomed-out views.
+  const handleMapMessage = (event: any) => {
+    try {
+      const msg = JSON.parse(event.nativeEvent.data);
+      if (msg.type === 'hoodTap' && msg.name) {
+        if (!activeLevelRef.current) focusHood(msg.name);
+        return;
+      }
+      if (msg.type !== 'moveend' || isListening) return;
+      if (activeLevelRef.current) return; // level is locked to its hood — don't grow/rename
+      if (typeof msg.zoom === 'number' && msg.zoom < 14) return;
+      if (panLoadRef.current) clearTimeout(panLoadRef.current);
+      panLoadRef.current = setTimeout(() => {
+        loadStreetCoverage(msg.lat, msg.lon);
+        if (Array.isArray(msg.b)) loadHoodsInView(msg.b);
+      }, 600);
+    } catch {}
+  };
+
+  // Name the user's current neighborhood once we have a fix (header label).
+  useEffect(() => {
+    if (currentLocation && !currentArea.neighborhood && !currentArea.city) {
+      refreshArea(currentLocation.lat, currentLocation.lon);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentLocation]);
 
   useEffect(() => {
     if (isListening) {
@@ -215,6 +580,7 @@ export default function MapScreen() {
         longitude = location.coords.longitude;
       }
       setCurrentLocation({ lat: latitude, lon: longitude });
+      currentLocationRef.current = { lat: latitude, lon: longitude };
 
       setSessionRoute((prev) => {
         const updated = [
@@ -254,9 +620,9 @@ export default function MapScreen() {
               if (window.updateLocation && window.redrawRoute) {
                 window.updateLocation(${latitude}, ${longitude});
                 window.redrawRoute(${JSON.stringify(routeCoords)});
-                console.log('✅ Route updated with ${updated.length} points');
+                console.log('Route updated with ${updated.length} points');
               } else {
-                console.log('❌ Map functions not ready');
+                console.log('Map functions not ready');
               }
             } catch(e) {
               console.error('Map update error:', e.toString());
@@ -279,11 +645,11 @@ export default function MapScreen() {
     const weight = stats?.total_weight || 0;
     const days = stats?.cleanup_days || 0;
 
-    if (cleanups >= 50) return '🏆 Champion';
-    if (cleanups >= 20) return '⭐ Rising Star';
-    if (cleanups >= 10) return '💪 Committed';
-    if (cleanups >= 5) return '🌱 Growing';
-    if (cleanups >= 1) return '🎯 Getting Started';
+    if (cleanups >= 50) return 'Champion';
+    if (cleanups >= 20) return 'Rising Star';
+    if (cleanups >= 10) return 'Committed';
+    if (cleanups >= 5) return 'Growing';
+    if (cleanups >= 1) return 'Getting Started';
     return '';
   };
 
@@ -343,8 +709,13 @@ export default function MapScreen() {
           route_points = JSON.stringify(slim);
         }
       } catch {}
+      // The DB stores timestamp in SECONDS, but the WebView freshness logic
+      // compares against Date.now() (MILLISECONDS). Passing seconds straight
+      // through made every walk read as ~20,000 days old → forced red. Normalize
+      // to ms here (any value that looks like seconds gets *1000).
+      const tsMs = c.timestamp && c.timestamp < 1e12 ? c.timestamp * 1000 : c.timestamp;
       return {
-        timestamp: c.timestamp,
+        timestamp: tsMs,
         location_lat: c.location_lat,
         location_lon: c.location_lon,
         route_points,
@@ -357,11 +728,22 @@ export default function MapScreen() {
       const cleanups = await db.getCleanups(100); // Load recent cleanups
       setHistoricalCleanups(cleanups);
 
-      // Inject into map if available
-      if (webviewRef.current && cleanups.length > 0) {
-        const cleanupJson = JSON.stringify(cleanups);
+      // Personal walk corridors are an "I just did this" confirmation, not a
+      // permanent freshness map — the shared segment layer owns long-term
+      // freshness. So only draw walks from the current local calendar day; at
+      // midnight (or the next refresh after it) they fall off. timestamp is in
+      // SECONDS from the DB, but be robust to ms too.
+      const startOfTodayMs = new Date().setHours(0, 0, 0, 0);
+      const todayCleanups = cleanups.filter((c: any) => {
+        const tsMs = c.timestamp && c.timestamp < 1e12 ? c.timestamp * 1000 : c.timestamp;
+        return tsMs >= startOfTodayMs;
+      });
+
+      // Inject into map if available (always inject — an empty array clears
+      // yesterday's corridors when today has no walks yet).
+      if (webviewRef.current) {
         webviewRef.current.injectJavaScript(`
-          if (window.addHistoricalRoutes) { window.addHistoricalRoutes(${JSON.stringify(simplifyCleanupRoutes(JSON.parse(cleanupJson)))}); }
+          if (window.addHistoricalRoutes) { window.addHistoricalRoutes(${JSON.stringify(simplifyCleanupRoutes(todayCleanups))}); }
           true;
         `);
       }
@@ -385,6 +767,9 @@ export default function MapScreen() {
       if (settings && settings.team_name) {
         setUserTeam(settings.team_name);
       }
+      setNeighborhood(settings?.neighborhood || '');
+      setCommunitySharing(settings?.community_sharing_enabled !== false);
+      setCommunityAutoPost(!!settings?.community_auto_post);
 
       // Calculate superlative if no team
       if (!settings?.team_name) {
@@ -396,7 +781,55 @@ export default function MapScreen() {
     }
   };
 
+  // Opt-in: upload the cleanup photo to Storage and create a community post.
+  const shareToCommunity = async () => {
+    console.log('📸 shareToCommunity tapped', { hasPhoto: !!photoUri, posting });
+    if (!photoUri || posting) return;
+
+    // Public posting requires a verified email (anti-abuse). Re-check live in
+    // case they verified since launch, then gate.
+    const authSvc = getAuthService();
+    if (!authSvc.isEmailVerified() && !(await authSvc.refreshEmailVerified())) {
+      Alert.alert(
+        'Verify your email first',
+        'Posting to the community needs a verified email address. We can resend the verification link.',
+        [
+          { text: 'Not now', style: 'cancel' },
+          { text: 'Resend email', onPress: () => authSvc.resendVerification().catch(() => {}) },
+        ]
+      );
+      return;
+    }
+
+    setPosting(true);
+    try {
+      const db = await getDatabase();
+      const post = await db.createPost({ caption: communityCaption.trim(), neighborhood, photoUri });
+      if (post) {
+        setShowCommunityCompose(false);
+        setCommunityCaption('');
+        Alert.alert('Posted', 'Your cleanup is on the community feed.');
+      } else {
+        Alert.alert('Could not post', 'Something went wrong sharing your photo. Please try again.');
+      }
+    } catch (error: any) {
+      console.error('Failed to share to community:', error);
+      // Surface the real reason so we can diagnose (e.g. storage/unauthorized,
+      // permission-denied, network) instead of a generic message.
+      const detail = error?.code || error?.message || 'unknown error';
+      Alert.alert('Could not post', `Sharing failed: ${detail}`);
+    } finally {
+      setPosting(false);
+    }
+  };
+
   const startCleanup = async () => {
+    // Re-entry guard: this fn is async and doesn't flip isListening until after
+    // GPS + listener setup, so rapid taps in that window were double-starting the
+    // background session and motion listener (the duplicate logs). Block it.
+    if (startingRef.current || isListening) return;
+    startingRef.current = true;
+    try {
     setPickupCount(0);
     setElapsedSeconds(0);
     setSessionRoute([]);
@@ -414,19 +847,21 @@ export default function MapScreen() {
         // Trigger high-frequency GPS mode when pickup detected
         lastPickupTimeRef.current = Date.now();
         highFrequencyEndRef.current = Date.now() + 30000; // 30s of high frequency
-        console.log('🎯 Pickup detected - HIGH FREQUENCY GPS for 30s');
+        console.log('Pickup detected - HIGH FREQUENCY GPS for 30s');
 
         // Record pickup location from the detector's existing GPS watcher —
         // requesting a fresh fix per pickup was up to ~90 radio hits per walk
         {
           try {
+            // Prefer the detector's GPS fix; fall back to the map's latest fix
+            // (via ref, not the stale closure) so pins aren't lost when the
+            // detector's watcher hasn't locked yet (early/indoor sessions — the
+            // "Pickup locations: 0" we kept seeing in logs).
             const last = MotionDetector.getLastLocation();
-            if (!last) throw new Error('no fix yet');
-            const pickupLoc = {
-              lat: last.latitude,
-              lon: last.longitude,
-              timestamp: Date.now(),
-            };
+            const lat = last?.latitude ?? currentLocationRef.current?.lat;
+            const lon = last?.longitude ?? currentLocationRef.current?.lon;
+            if (lat == null || lon == null) throw new Error('no fix yet');
+            const pickupLoc = { lat, lon, timestamp: Date.now() };
 
             setPickupLocations((prev) => [...prev, pickupLoc]);
 
@@ -435,7 +870,7 @@ export default function MapScreen() {
               webviewRef.current.injectJavaScript(`
                 try {
                   if (window.addPickup) {
-                    window.addPickup(${last.latitude}, ${last.longitude});
+                    window.addPickup(${lat}, ${lon});
                   }
                 } catch(e) {
                   console.error('Pickup marker error:', e);
@@ -445,7 +880,7 @@ export default function MapScreen() {
             }
 
             const db = await getDatabase();
-            await db.addPickupLocation(last.latitude, last.longitude);
+            await db.addPickupLocation(lat, lon);
           } catch (error) {
             console.error('Pickup location error:', error);
           }
@@ -456,16 +891,26 @@ export default function MapScreen() {
     setIsListening(true);
 
     // Black box: drop a sentinel to disk so a screen-off crash leaves a trail
-    // (recovered at next launch). Cleared on a clean Stop below.
-    beginSessionTrace({ batterySaver });
+    // (recovered at next launch). Cleared on a clean Stop below. The build label
+    // tells us dev/Expo-Go vs a real build when reading recovered reports.
+    beginSessionTrace({
+      batterySaver,
+      build: `${__DEV__ ? 'dev' : 'release'}/${Constants.executionEnvironment ?? '?'}/v${Constants.expoConfig?.version ?? '?'}`,
+    });
 
     // Real builds: register background location so the session survives
     // screen-off. Expo Go: falls back to foreground (keep screen on).
     startBackgroundSession().then((mode) => {
+      setSessionMode(mode);
       if (mode === 'foreground') {
-        console.log('💡 Screen-off not available in this build — Pocket Mode (🌙) keeps the session safe');
+        console.log('💡 Foreground-only (Expo Go or "Always" location not granted) — keeping screen on for this walk.');
+      } else {
+        console.log('🌙 Background session active — screen may sleep; no keep-awake or Pocket Mode needed.');
       }
     });
+    } finally {
+      startingRef.current = false;
+    }
   };
 
   const stopCleanup = () => {
@@ -482,7 +927,7 @@ export default function MapScreen() {
     setSelfReportedWeight('');
 
     // Debug logging
-    console.log('📍 Session stopped');
+    console.log('Session stopped');
     console.log(`Route points: ${sessionRoute.length}`);
     console.log(`Pickup locations: ${pickupLocations.length}`);
     if (sessionRoute.length > 0) {
@@ -528,6 +973,21 @@ export default function MapScreen() {
         ? sessionRoute.reduce((sum, p) => sum + p.lon, 0) / sessionRoute.length
         : -74.006;
 
+      // Reverse-geocode the walk's center → reliable city + neighborhood NAME
+      // (the local board this walk counts toward; rolls up to city + global).
+      let area = { city: '', neighborhood: '' };
+      try {
+        const g = (await Location.reverseGeocodeAsync({ latitude: centerLat, longitude: centerLon }))[0];
+        if (g) {
+          const city = g.city || g.subregion || g.region || '';
+          // Same name resolution as the header: Apple sub-locality → OSM → city,
+          // so a saved walk / community post carries the real neighborhood name.
+          let neighborhood = g.district || '';
+          if (!neighborhood) neighborhood = await osmNeighborhood(centerLat, centerLon);
+          area = { city, neighborhood: neighborhood || city };
+        }
+      } catch {}
+
       await db.addCleanup({
         timestamp: Date.now(),
         location_lat: centerLat,
@@ -537,8 +997,12 @@ export default function MapScreen() {
         bag_size: '30',
         weight_lb: finalWeight,
         duration_seconds: elapsedSeconds,
-        team: 'solo',
+        // Record the user's actual team so it counts toward the team leaderboard
+        // (falls back to 'solo' when they're not on a team).
+        team: userTeam || 'solo',
         fitness_tracked: false,
+        city: area.city,
+        neighborhood: area.neighborhood,
         route_points: JSON.stringify(simplifyRoute(privacyTrimRoute(sessionRoute)).map(p => [p.lat, p.lon])),
         motion_log: JSON.stringify(MotionDetector.getSessionEvents()),
       } as any);
@@ -546,11 +1010,12 @@ export default function MapScreen() {
       const updatedStats = await db.getCleanupStats();
       setStats(updatedStats);
 
-      // Mark walked street segments as cleaned (shared coverage, all users)
+      // Mark walked street segments AND any park walked through as cleaned.
       if (sessionRoute.length > 0) {
         const marked = await markRouteCleaned(sessionRoute, currentUser.uid);
-        if (marked > 0) {
-          loadStreetCoverage(centerLat, centerLon); // refresh the layer
+        const parksMarked = await markParksCleaned(sessionRoute, currentUser.uid);
+        if (marked > 0 || parksMarked > 0) {
+          loadStreetCoverage(centerLat, centerLon); // refresh segments + parks
         }
       }
 
@@ -565,6 +1030,18 @@ export default function MapScreen() {
           calories: workout.calories_burned,
           itemsCollected: pickupCount,
         });
+      }
+
+      // Auto-post the cleanup photo to community if the user opted in (and a
+      // photo was added). Requires a verified email; silently skips otherwise.
+      if (communityAutoPost && communitySharing && photoUri) {
+        const authSvc = getAuthService();
+        if (authSvc.isEmailVerified() || (await authSvc.refreshEmailVerified())) {
+          const post = await db.createPost({ caption: '', neighborhood, photoUri });
+          if (post) console.log('✅ Auto-posted cleanup photo to community');
+        } else {
+          console.log('ℹ️ Auto-post skipped — email not verified');
+        }
       }
     } catch (error) {
       console.error('Failed to save cleanup:', error);
@@ -603,7 +1080,7 @@ export default function MapScreen() {
 
   const exportSession = async () => {
     const coverage = calculateCoverage();
-    const detectedWeight = (pickupCount * calFactor).toFixed(2);
+    const detectedWeight = (pickupCount * calFactor).toFixed(1);
     const selfReported = selfReportedWeight || detectedWeight;
 
     const exportData = `
@@ -657,7 +1134,7 @@ ${pickupLocations.length > 15 ? `  ... and ${pickupLocations.length - 15} more d
 
 t(s) | peak(g) | dur(ms) | peakT(ms) | gyro | peaks | m/s | conf | result
 ${MotionDetector.getSessionEvents().map((e) =>
-  `${String(e.t).padStart(4)} | ${e.peak.toFixed(2).padStart(7)} | ${String(e.duration).padStart(7)} | ${String(e.peakTime).padStart(9)} | ${e.gyro.toFixed(2).padStart(4)} | ${String(e.peaks).padStart(5)} | ${(e.speed >= 0 ? e.speed.toFixed(1) : ' ? ').padStart(3)} | ${String(e.confidence).padStart(4)} | ${e.counted ? '✅ counted' : e.accepted ? '🔁 cooldown' : '⛔ ' + e.reason}`
+  `${String(e.t).padStart(4)} | ${e.peak.toFixed(2).padStart(7)} | ${String(e.duration).padStart(7)} | ${String(e.peakTime).padStart(9)} | ${e.gyro.toFixed(2).padStart(4)} | ${String(e.peaks).padStart(5)} | ${(e.speed >= 0 ? e.speed.toFixed(1) : ' ? ').padStart(3)} | ${String(e.confidence).padStart(4)} | ${e.counted ? 'counted' : e.accepted ? '🔁 cooldown' : '⛔ ' + e.reason}`
 ).join('\n') || '  (no motion events recorded)'}
 
 ═══════════════════════════════════════════════════════════
@@ -676,43 +1153,83 @@ Generated by Pick App - Share this with the development team
 
     try {
       // Copy to clipboard using React Native Clipboard
-      await Clipboard.setString(exportData);
+      await Clipboard.setStringAsync(exportData);
       Alert.alert(
-        '✅ Copied!',
+        'Copied!',
         'Session data copied to clipboard. Paste in email, Notes, or Drive.'
       );
     } catch (error) {
       console.error('Copy failed:', error);
       Alert.alert(
-        '❌ Copy Failed',
+        'Copy Failed',
         'Could not copy to clipboard. Try again.'
       );
     }
   };
 
   return (
-    <SafeAreaView edges={['top', 'left', 'right']} style={[styles.container, isListening && styles.containerFullscreen]}>
-      {/* Header - Show when NOT cleaning */}
-      {!isListening && (
-        <View style={styles.header}>
-          <View>
-            {user && <Text style={styles.userName}>{user.displayName}</Text>}
-            {coverageStats && coverageStats.totalSegments > 0 && (
-              <Text style={styles.coverageText}>
-                🛣️ {coverageStats.freshPct}% of nearby streets fresh
+    <View style={styles.container}>
+      {/* Header - Show when NOT cleaning and not in a neighborhood level */}
+      {!isListening && !activeLevel && !activating && (
+        <View style={[styles.header, { paddingTop: insets.top + 8 }]}>
+          <View style={{ flex: 1, minWidth: 0 }}>
+            <Text style={styles.userName} numberOfLines={1}>
+              {selectedHood?.name || currentArea.neighborhood || currentArea.city || user?.displayName || 'Your area'}
+            </Text>
+            {(selectedHood ? selectedHood.total : coverageStats?.totalSegments) ? (
+              <Text style={styles.coverageText} numberOfLines={1}>
+                {(selectedHood ? selectedHood.toGo : coverageStats?.toGo) === 0
+                  ? 'All green here — nicely done'
+                  : `${selectedHood ? selectedHood.toGo : coverageStats?.toGo} block${(selectedHood ? selectedHood.toGo : coverageStats?.toGo) === 1 ? '' : 's'} to go`}
+                {cityRollup ? `  ·  ${cityRollup.city} ${cityRollup.freshPct}%` : ''}
               </Text>
+            ) : (
+              <Text style={styles.coverageText}>{selectedHood ? 'Scoring…' : 'Tap a neighborhood to focus it'}</Text>
             )}
           </View>
-          {(userTeam || superlative) && (
-            <Text style={styles.teamOrSuperlative}>{userTeam || superlative}</Text>
+          {((selectedHood && selectedHood.total > 0) || (coverageStats && coverageStats.totalSegments > 0)) && (
+            <View style={styles.completionPill}>
+              <Text style={styles.completionPct}>{selectedHood ? selectedHood.freshPct : coverageStats?.freshPct}%</Text>
+              <Text style={styles.completionLbl}>green</Text>
+            </View>
           )}
+        </View>
+      )}
+
+      {/* Level reveal — the 2s "entering the neighborhood" beat */}
+      {activating && (
+        <View style={styles.levelReveal} pointerEvents="none">
+          <ActivityIndicator size="large" color="#fff" />
+          <Text style={styles.levelRevealSub}>Entering</Text>
+          <Text style={styles.levelRevealName}>{activating}</Text>
+        </View>
+      )}
+
+      {/* Level header — the active neighborhood's stats + exit */}
+      {!isListening && activeLevel && !activating && (
+        <View style={[styles.header, { paddingTop: insets.top + 8 }]}>
+          <TouchableOpacity onPress={exitLevel} style={styles.levelBack} accessibilityLabel="Back to all neighborhoods">
+            <Text style={styles.levelBackIcon}>‹</Text>
+          </TouchableOpacity>
+          <View style={{ flex: 1, minWidth: 0 }}>
+            <Text style={styles.userName} numberOfLines={1}>{activeLevel.name}</Text>
+            <Text style={styles.coverageText} numberOfLines={1}>
+              {activeLevel.toGo === 0
+                ? 'Complete — all green'
+                : `${activeLevel.toGo} to go${activeLevel.untouched > 0 ? `  ·  ${activeLevel.untouched} never cleaned` : ''}`}
+            </Text>
+          </View>
+          <View style={styles.completionPill}>
+            <Text style={styles.completionPct}>{activeLevel.freshPct}%</Text>
+            <Text style={styles.completionLbl}>done</Text>
+          </View>
         </View>
       )}
 
 
       {/* Top Bar - Only during cleanup */}
       {isListening && (
-        <View style={styles.topBarWhite}>
+        <View style={[styles.topBarWhite, { top: insets.top + 8 }]}>
           <View style={styles.topBarStat}>
             <Text style={styles.topBarValue}>{formatTime(elapsedSeconds)}</Text>
             <Text style={styles.topBarLabel}>Time</Text>
@@ -725,10 +1242,32 @@ Generated by Pick App - Share this with the development team
             <Text style={styles.topBarValue}>{(pickupCount * calFactor).toFixed(1)} lb</Text>
             <Text style={styles.topBarLabel}>Est. Weight</Text>
           </View>
+          <TouchableOpacity
+            style={styles.coverageToggle}
+            accessibilityLabel={coverageVisible ? 'Hide area coverage' : 'Show area coverage'}
+            onPress={() => {
+              const v = !coverageVisible;
+              setCoverageVisible(v);
+              webviewRef.current?.injectJavaScript(
+                `if (window.setCoverageVisible) { window.setCoverageVisible(${v}); } true;`
+              );
+            }}
+          >
+            <Icon name="route" size={18} color={coverageVisible ? COLORS.sage : COLORS.mutedSage} />
+          </TouchableOpacity>
           <TouchableOpacity style={styles.pocketButton} onPress={() => setPocketMode(true)}>
-            <Text style={styles.pocketButtonText}>🌙</Text>
             <Text style={styles.pocketButtonLabel}>Pocket</Text>
           </TouchableOpacity>
+        </View>
+      )}
+
+      {/* Completion focus while picking — which hood you're filling in */}
+      {isListening && activeLevel && (
+        <View style={[styles.pickingBanner, { top: insets.top + 72 }]} pointerEvents="none">
+          <Text style={styles.pickingBannerText} numberOfLines={1}>
+            {activeLevel.name} · {activeLevel.freshPct}% done
+            {activeLevel.toGo > 0 ? ` · ${activeLevel.toGo} to go` : ' · complete!'}
+          </Text>
         </View>
       )}
 
@@ -778,21 +1317,22 @@ Generated by Pick App - Share this with the development team
                 }
               }}
             >
-              <Text style={styles.mapButtonText}>🗺️</Text>
+              <Icon name="route" size={20} color={COLORS.sage} />
             </TouchableOpacity>
             <TouchableOpacity
               style={styles.mapButton}
               onPress={() => setShowScaleInfo(true)}
             >
-              <Text style={styles.mapButtonText}>ℹ️</Text>
+              <Icon name="target" size={20} color={COLORS.sage} />
             </TouchableOpacity>
           </View>
         )}
 
-        {currentLocation ? (
+        {(currentLocation && (appActive || !isListening)) ? (
           <WebView
             ref={webviewRef}
             originWhitelist={['*']}
+            onMessage={handleMapMessage}
             onLoad={() => {
               // Set initial location if available
               if (currentLocation && webviewRef.current) {
@@ -802,7 +1342,7 @@ Generated by Pick App - Share this with the development team
                 `);
               }
               setMapReady(true);
-              console.log('✅ Map ready');
+              console.log('Map ready');
             }}
             source={{
               html: `<!DOCTYPE html>
@@ -815,13 +1355,35 @@ Generated by Pick App - Share this with the development team
   <style>
     body { margin: 0; padding: 0; }
     #map { position: absolute; top: 0; bottom: 0; width: 100%; }
+    /* Zoom control sits above the floating Start button, lowered closer to it */
+    .leaflet-bottom.leaflet-right { margin-bottom: 96px; margin-right: 8px; }
+    /* Attribution anchored to the very bottom-left corner of the map */
+    .leaflet-bottom.leaflet-left { margin-bottom: 0; margin-left: 0; }
+    .leaflet-control-attribution { font-size: 10px; padding: 1px 5px; background: rgba(255,255,255,0.7) !important; }
+    .leaflet-control-zoom { border: none !important; box-shadow: 0 2px 8px rgba(27,46,26,0.18) !important; border-radius: 12px !important; overflow: hidden; }
+    .leaflet-control-zoom a { width: 38px !important; height: 38px !important; line-height: 38px !important; color: #2D5016 !important; font-size: 20px !important; font-weight: 600 !important; background: #fff !important; }
+    .leaflet-control-zoom a:hover { background: #EEF3E6 !important; }
   </style>
 </head>
 <body>
   <div id="map"></div>
   <script>
-    // Initialize map with NYC default, will be updated via JavaScript injection
-    let map = L.map('map').setView([40.7128, -74.0060], 19);
+    // Initialize map with NYC default, will be updated via JavaScript injection.
+    // Always north-up; activated neighborhoods are highlighted with a spotlight
+    // dim-mask (below) rather than rotation.
+    let map = L.map('map', { zoomControl: false }).setView([40.7128, -74.0060], 16);
+    L.control.zoom({ position: 'bottomright' }).addTo(map);
+    map.attributionControl.setPosition('bottomleft');
+    // Report pan/zoom to the app so it can load coverage for the new area.
+    map.on('moveend', function() {
+      try {
+        var c = map.getCenter();
+        var bb = map.getBounds();
+        if (window.ReactNativeWebView) {
+          window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'moveend', lat: c.lat, lon: c.lng, zoom: map.getZoom(), b: [bb.getSouth(), bb.getWest(), bb.getNorth(), bb.getEast()] }));
+        }
+      } catch (e) {}
+    });
     L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png', {
       attribution: '© OpenStreetMap © CARTO',
       subdomains: 'abcd',
@@ -845,8 +1407,10 @@ Generated by Pick App - Share this with the development team
 
     window.updateLocation = function(lat, lon) {
       userMarker.setLatLng([lat, lon]);
-      // Recenter only on real movement — constant micro-pans stream fresh
-      // tiles for hours and were a long-walk memory killer
+      // In level mode the map is LOCKED to the neighborhood — the dot moves, the
+      // frame doesn't. Otherwise recenter only on real movement (constant
+      // micro-pans stream fresh tiles for hours — a long-walk memory killer).
+      if (levelLocked) return;
       var dist = map.distance(map.getCenter(), [lat, lon]);
       if (dist > 30) {
         map.setView([lat, lon], map.getZoom() || 18);
@@ -855,7 +1419,7 @@ Generated by Pick App - Share this with the development team
 
     window.redrawRoute = function(coords) {
       if (!coords || coords.length === 0) {
-        console.log('❌ No coords to draw');
+        console.log('No coords to draw');
         return;
       }
       // Remove old polyline and draw the swath — a solid bar, not a thread
@@ -867,12 +1431,12 @@ Generated by Pick App - Share this with the development team
         lineCap: 'round',
         lineJoin: 'round'
       }).addTo(map);
-      console.log('✅ Route redrawn: ' + coords.length + ' points');
+      console.log('Route redrawn: ' + coords.length + ' points');
     };
 
     window.addRoutePoint = function(lat, lon) {
       routePolyline.addLatLng([lat, lon]);
-      console.log('📍 Route point added: ' + lat.toFixed(4) + ', ' + lon.toFixed(4));
+      console.log('Route point added: ' + lat.toFixed(4) + ', ' + lon.toFixed(4));
     };
 
     window.addPickup = function(lat, lon) {
@@ -887,8 +1451,8 @@ Generated by Pick App - Share this with the development team
     };
 
     window.setInitialLocation = function(lat, lon) {
-      map.setView([lat, lon], 19);
-      console.log('📍 Map init: ' + lat.toFixed(4) + ', ' + lon.toFixed(4));
+      map.setView([lat, lon], 16);
+      console.log('Map init: ' + lat.toFixed(4) + ', ' + lon.toFixed(4));
     };
 
     // Walks render as freshness-colored route corridors, not center-point blobs.
@@ -939,46 +1503,201 @@ Generated by Pick App - Share this with the development team
           }).addTo(historicalGroup);
         }
       });
+      historicalGroup.bringToBack();
     };
 
     // Street-segment coverage layer (shared across ALL users).
     // Grey dashes = never cleaned; green→red = freshness since last clean.
-    let segmentGroup = L.featureGroup([]).addTo(map);
-    window.renderSegments = function(segments) {
-      segmentGroup.clearLayers();
-      segments.forEach(function(seg) {
-        let color, opacity, dash;
-        if (seg.daysOld === null || seg.daysOld === undefined) {
-          color = '#8E8E93'; opacity = 0.45; dash = '4 7'; // never cleaned
-        } else if (seg.daysOld <= 5) {
-          color = '#34C759'; opacity = 0.8; dash = '';
-        } else if (seg.daysOld <= 9) {
-          color = '#FFCC00'; opacity = 0.75; dash = '';
-        } else if (seg.daysOld <= 13) {
-          color = '#FF9500'; opacity = 0.7; dash = '';
-        } else {
-          color = '#FF3B30'; opacity = 0.65; dash = '';
-        }
-        L.polyline(seg.coords, {
-          color: color,
-          weight: 4,
-          opacity: opacity,
-          dashArray: dash,
-          lineCap: 'round',
-          lineJoin: 'round'
-        }).addTo(segmentGroup);
+    // Two coverage sublayers:
+    //  - todoGroup: the grey "never cleaned" dashes. Numerous and ambient, so
+    //    they stay bubble-scoped (replaced each fetch, skipped when zoomed out)
+    //    to protect WebView memory.
+    //  - cleanedGroup: your colored progress. Few in number and the whole point,
+    //    so they ACCUMULATE across fetches (keyed by segment id) and persist
+    //    when you pan or zoom out instead of blinking away with the fetch bubble.
+    let todoGroup = L.featureGroup([]).addTo(map);
+    let cleanedGroup = L.featureGroup([]).addTo(map);
+    var cleanedById = {};
+    var CLEANED_CAP = 4000; // hard ceiling so a marathon session can't grow unbounded
+
+    function segFresh(daysOld) {
+      if (daysOld <= 5) return ['#34C759', 0.8];
+      if (daysOld <= 9) return ['#FFCC00', 0.75];
+      if (daysOld <= 13) return ['#FF9500', 0.7];
+      return ['#FF3B30', 0.65];
+    }
+
+    function redrawCleaned() {
+      cleanedGroup.clearLayers();
+      var ids = Object.keys(cleanedById);
+      if (ids.length > CLEANED_CAP) {
+        ids.slice(0, ids.length - CLEANED_CAP).forEach(function(k) { delete cleanedById[k]; });
+        ids = Object.keys(cleanedById);
+      }
+      ids.forEach(function(id) {
+        var s = cleanedById[id];
+        var c = segFresh(s.daysOld);
+        L.polyline(s.coords, { color: c[0], weight: 4, opacity: c[1], lineCap: 'round', lineJoin: 'round' }).addTo(cleanedGroup);
       });
-      segmentGroup.bringToBack();
-      console.log('🛣️ Rendered ' + segments.length + ' street segments');
+    }
+
+    window.renderSegments = function(segments) {
+      todoGroup.clearLayers();
+      var cleanedTouched = false;
+      segments.forEach(function(seg) {
+        if (seg.daysOld === null || seg.daysOld === undefined) {
+          L.polyline(seg.coords, { color: '#C7CAC1', weight: 4, opacity: 0.35, dashArray: '2 9', lineCap: 'round', lineJoin: 'round' }).addTo(todoGroup);
+        } else {
+          cleanedById[seg.id] = { coords: seg.coords, daysOld: seg.daysOld };
+          cleanedTouched = true;
+        }
+      });
+      if (cleanedTouched) redrawCleaned();
+      // z-order: grey furthest back, green just above it, both under routes/markers
+      cleanedGroup.bringToBack();
+      todoGroup.bringToBack();
+      console.log('Segments: ' + segments.length + ' in view, ' + Object.keys(cleanedById).length + ' cleaned retained');
     };
 
     window.clearSegments = function() {
-      segmentGroup.clearLayers();
+      todoGroup.clearLayers();
+      cleanedGroup.clearLayers();
+      cleanedById = {};
+    };
+
+    // Neighborhood outlines layer: every hood in view drawn as a tappable
+    // polygon. Tap → focus it (highlight + score). Stored by name so we can
+    // re-tint the selected one after a redraw.
+    let boundaryGroup = L.featureGroup([]).addTo(map);
+    var hoodLayers = {};
+    var selectedHoodName = null;
+    // Recognizable but light: a soft sage line, transparent (but tappable) fill.
+    var HOOD_BASE = { color: '#6F7D64', weight: 1.5, opacity: 0.6, fill: true, fillColor: '#6F7D64', fillOpacity: 0.0, lineJoin: 'round' };
+    var HOOD_SEL = { color: '#2D5016', weight: 2.5, opacity: 0.85, fill: true, fillColor: '#2D5016', fillOpacity: 0.06, lineJoin: 'round' };
+
+    window.renderNeighborhoods = function(list) {
+      if (!list || !list.length) return;
+      list.forEach(function(h) {
+        if (hoodLayers[h.name]) return; // already drawn
+        var poly = L.polygon(h.ring, HOOD_BASE).addTo(boundaryGroup);
+        poly.on('click', function() {
+          if (window.ReactNativeWebView) {
+            window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'hoodTap', name: h.name }));
+          }
+        });
+        hoodLayers[h.name] = poly;
+      });
+      boundaryGroup.bringToBack();
+    };
+
+    window.highlightNeighborhood = function(name) {
+      if (selectedHoodName && hoodLayers[selectedHoodName]) hoodLayers[selectedHoodName].setStyle(HOOD_BASE);
+      selectedHoodName = name;
+      var layer = hoodLayers[name];
+      if (layer) { layer.setStyle(HOOD_SEL); layer.bringToBack(); }
+    };
+
+    // ---- Level mode: the whole hood as a bounded "level" you fill in ----
+    // North-up. The selected hood is the lit "stage": a dim veil covers the rest
+    // of the city with the neighborhood cut out (spotlight). Pane 350 sits above
+    // tiles but below all vector overlays + the user dot, so streets and your
+    // position stay bright.
+    let levelGroup = L.featureGroup([]).addTo(map);
+    let spotlightGroup = L.featureGroup([]).addTo(map);
+    var levelLocked = false;
+    if (!map.getPane('maskPane')) {
+      var mp = map.createPane('maskPane');
+      mp.style.zIndex = 350;
+      mp.style.pointerEvents = 'none';
+    }
+    var WORLD_RING = [[-85, -180], [-85, 180], [85, 180], [85, -180]];
+
+    function levelColor(daysOld) {
+      if (daysOld === null || daysOld === undefined) return ['#BFC4B8', 4, 0.85]; // untouched — soft warm gray, blank territory to claim
+      if (daysOld <= 5) return ['#34C759', 5, 0.95];
+      if (daysOld <= 9) return ['#FFCC00', 5, 0.9];
+      if (daysOld <= 13) return ['#FF9500', 5, 0.9];
+      return ['#FF3B30', 5, 0.9];
+    }
+
+    function drawSpotlight(ring) {
+      spotlightGroup.clearLayers();
+      // Veil = world rectangle with the neighborhood as a hole → only the city
+      // OUTSIDE the hood is dimmed.
+      L.polygon([WORLD_RING, ring], { pane: 'maskPane', stroke: false, fillColor: '#0E140C', fillOpacity: 0.58, interactive: false }).addTo(spotlightGroup);
+      L.polygon(ring, { pane: 'maskPane', fill: false, color: '#2D5016', weight: 2.5, opacity: 0.95, lineJoin: 'round', interactive: false }).addTo(spotlightGroup);
+    }
+
+    window.enterLevel = function(ring) {
+      levelLocked = true;
+      try { todoGroup.clearLayers(); cleanedGroup.clearLayers(); } catch (e) {}
+      levelGroup.clearLayers();
+      drawSpotlight(ring);
+      try {
+        map.fitBounds(L.latLngBounds(ring), {
+          paddingTopLeft: [12, 92],     // clear the level header up top
+          paddingBottomRight: [12, 28], // tight margins → fill the screen
+          animate: true, duration: 1.1, maxZoom: 18
+        });
+      } catch (e) {}
+    };
+
+    var levelLayersById = {};
+    window.renderLevel = function(list) {
+      levelGroup.clearLayers();
+      levelLayersById = {};
+      if (!list) return;
+      list.forEach(function(s) {
+        var c = levelColor(s.daysOld);
+        var pl = L.polyline(s.coords, { color: c[0], weight: c[1], opacity: c[2], lineCap: 'round', lineJoin: 'round' }).addTo(levelGroup);
+        if (s.id) levelLayersById[s.id] = pl;
+      });
+    };
+
+    // Live recolor a single street to fresh-green as you cover it on a walk.
+    window.markLevelClean = function(id) {
+      var pl = levelLayersById[id];
+      if (pl) pl.setStyle({ color: '#34C759', weight: 5, opacity: 0.95 });
+    };
+
+    window.exitLevel = function() {
+      levelLocked = false;
+      levelGroup.clearLayers();
+      spotlightGroup.clearLayers();
+    };
+
+    // Parks: filled polygons colored by freshness, drawn under the route.
+    let parkGroup = L.featureGroup([]).addTo(map);
+    window.renderParks = function(parks) {
+      parkGroup.clearLayers();
+      parks.forEach(function(park) {
+        let color, fill;
+        if (park.daysOld === null || park.daysOld === undefined) {
+          color = '#8E8E93'; fill = 0.10; // never cleaned
+        } else if (park.daysOld <= 5) {
+          color = '#34C759'; fill = 0.28;
+        } else if (park.daysOld <= 9) {
+          color = '#FFCC00'; fill = 0.24;
+        } else if (park.daysOld <= 13) {
+          color = '#FF9500'; fill = 0.20;
+        } else {
+          color = '#FF3B30'; fill = 0.18;
+        }
+        L.polygon(park.polygon, {
+          color: color,
+          weight: 1.5,
+          opacity: 0.7,
+          fillColor: color,
+          fillOpacity: fill,
+        }).addTo(parkGroup);
+      });
+      parkGroup.bringToBack();
+      console.log('Rendered ' + parks.length + ' parks');
     };
 
     window.showNeighborhoodCoverage = function(cleanups) {
       if (!cleanups || cleanups.length === 0) return;
-      console.log('🗺️ Showing neighborhood coverage: ' + cleanups.length + ' cleanups');
+      console.log('Showing neighborhood coverage: ' + cleanups.length + ' cleanups');
       console.log('First cleanup keys: ' + (cleanups.length > 0 ? Object.keys(cleanups[0]).join(', ') : 'none'));
 
       let linesDrawn = 0;
@@ -1018,12 +1737,26 @@ Generated by Pick App - Share this with the development team
           }
         }
       });
-      console.log('✅ Drew ' + linesDrawn + ' route lines');
+      console.log('Drew ' + linesDrawn + ' route lines');
     };
 
     window.clearNeighborhoodCoverage = function() {
       neighborhoodGroup.clearLayers();
-      console.log('✅ Neighborhood coverage cleared');
+      console.log('Neighborhood coverage cleared');
+    };
+
+    // Show/hide the past-coverage underlay (street freshness shading + dimmed
+    // past routes) without destroying it — used by the in-walk coverage toggle.
+    window.setCoverageVisible = function(visible) {
+      [cleanedGroup, todoGroup, boundaryGroup, historicalGroup].forEach(function(g) {
+        if (!g) return;
+        if (visible) {
+          if (!map.hasLayer(g)) map.addLayer(g);
+          g.bringToBack();
+        } else if (map.hasLayer(g)) {
+          map.removeLayer(g);
+        }
+      });
     };
   </script>
 </body>
@@ -1034,27 +1767,29 @@ Generated by Pick App - Share this with the development team
           />
         ) : (
           <View style={styles.mapPlaceholder}>
-            <Text style={styles.mapIcon}>📍</Text>
-            <Text style={styles.mapText}>Getting location...</Text>
+            <Icon name="pin" size={40} color={COLORS.sage} />
+            <Text style={[styles.mapText, { marginTop: 8 }]}>Getting location…</Text>
           </View>
         )}
       </View>
 
       {/* Main Controls - Always at bottom */}
-      <View style={[styles.controls, isListening && styles.controlsCompact]}>
+      <View style={[styles.controls, { paddingBottom: insets.bottom + 2 }, isListening && styles.controlsCompact]}>
         {!isListening ? (
           <TouchableOpacity
             style={[styles.button, styles.buttonStart]}
             onPress={startCleanup}
           >
-            <Text style={styles.buttonTextLarge}>▶ START CLEANUP</Text>
+            <Icon name="route" size={20} color="#fff" />
+            <Text style={styles.buttonTextLarge}>Start cleanup</Text>
           </TouchableOpacity>
         ) : (
           <TouchableOpacity
             style={[styles.button, styles.buttonStop]}
             onPress={stopCleanup}
           >
-            <Text style={styles.buttonTextLarge}>⏹ STOP SESSION</Text>
+            <View style={styles.stopSquare} />
+            <Text style={styles.buttonTextLarge}>Stop &amp; save</Text>
           </TouchableOpacity>
         )}
       </View>
@@ -1064,7 +1799,7 @@ Generated by Pick App - Share this with the development team
         <View style={styles.modalOverlay}>
           <View style={styles.scaleInfoModal}>
             <View style={styles.scaleInfoHeader}>
-              <Text style={styles.scaleInfoTitle}>🗺️ Cleanliness Scale (NYC)</Text>
+              <Text style={styles.scaleInfoTitle}>Cleanliness scale (NYC)</Text>
               <TouchableOpacity onPress={() => setShowScaleInfo(false)}>
                 <Text style={styles.scaleInfoClose}>✕</Text>
               </TouchableOpacity>
@@ -1122,9 +1857,11 @@ Generated by Pick App - Share this with the development team
 
       {/* Session Summary Modal */}
       <Modal visible={showSummary} transparent animationType="slide">
-        <View style={styles.modalContainer}>
+        <KeyboardAvoidingView style={styles.modalContainer} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
+          {/* Tap the dimmed area to dismiss the (done-less) decimal keypad */}
+          <TouchableOpacity style={StyleSheet.absoluteFill} activeOpacity={1} onPress={() => Keyboard.dismiss()} />
           <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>📊 Session Summary</Text>
+            <Text style={styles.modalTitle}>Session summary</Text>
 
             <View style={styles.summaryBox}>
               <Text style={styles.summaryLabel}>Detected by Motion:</Text>
@@ -1139,7 +1876,7 @@ Generated by Pick App - Share this with the development team
                 </View>
               </View>
               <Text style={styles.summaryEstimate}>
-                Est. Weight: {(pickupCount * calFactor).toFixed(2)} lb · ≈{formatBags(weightToBags(pickupCount * calFactor))}
+                Est. Weight: {(pickupCount * calFactor).toFixed(1)} lb · ≈{formatBags(weightToBags(pickupCount * calFactor))}
                 {calSampleCount >= 2 ? ` (calibrated · ${calSampleCount} weigh-ins)` : ''}
               </Text>
             </View>
@@ -1154,7 +1891,7 @@ Generated by Pick App - Share this with the development team
                   onPress={() => setWeightInputMode('weight')}
                 >
                   <Text style={[styles.modeButtonText, weightInputMode === 'weight' && styles.modeButtonTextActive]}>
-                    ⚖️ Weight
+                    Weight
                   </Text>
                 </TouchableOpacity>
                 <TouchableOpacity
@@ -1162,7 +1899,7 @@ Generated by Pick App - Share this with the development team
                   onPress={() => setWeightInputMode('bag')}
                 >
                   <Text style={[styles.modeButtonText, weightInputMode === 'bag' && styles.modeButtonTextActive]}>
-                    🛍️ Bag Size
+                    Bag size
                   </Text>
                 </TouchableOpacity>
               </View>
@@ -1179,8 +1916,8 @@ Generated by Pick App - Share this with the development team
                   />
                   <Text style={styles.comparisonText}>
                     {selfReportedWeight
-                      ? `Estimated ${(pickupCount * calFactor).toFixed(2)} lb, scale says ${parseFloat(selfReportedWeight).toFixed(2)} lb — saving improves calibration ⚖️`
-                      : `⚠️ Subtract your bucket/bag weight first! Each net weigh-in tunes the lb/pickup factor (currently ${calFactor.toFixed(3)})`}
+                      ? `Estimated ${(pickupCount * calFactor).toFixed(1)} lb, scale says ${parseFloat(selfReportedWeight).toFixed(2)} lb — saving improves calibration`
+                      : `Subtract your bucket/bag weight first. Each net weigh-in tunes the lb/pickup factor (currently ${calFactor.toFixed(3)})`}
                   </Text>
                 </>
               ) : (
@@ -1194,10 +1931,10 @@ Generated by Pick App - Share this with the development team
                         onPress={() => setBagSize(size as any)}
                       >
                         <Text style={[styles.bagOptionText, bagSize === size && styles.bagOptionTextActive]}>
-                          {size === 'small' ? '📦 Small\n(13-15 gal)' :
-                           size === 'medium' ? '📦 Medium\n(30-35 gal)' :
-                           size === 'large' ? '📦 Large\n(45-60 gal)' :
-                           '📦 XL\n(60+ gal)'}
+                          {size === 'small' ? 'Small\n(13-15 gal)' :
+                           size === 'medium' ? 'Medium\n(30-35 gal)' :
+                           size === 'large' ? 'Large\n(45-60 gal)' :
+                           'XL\n(60+ gal)'}
                         </Text>
                       </TouchableOpacity>
                     ))}
@@ -1233,11 +1970,31 @@ Generated by Pick App - Share this with the development team
                   </View>
 
                   <Text style={styles.comparisonText}>
-                    Detected {(pickupCount * calFactor).toFixed(2)} lb, you estimate {calculateBagWeight(bagSize, bagFullness).toFixed(2)} lb
+                    Detected {(pickupCount * calFactor).toFixed(1)} lb, you estimate {calculateBagWeight(bagSize, bagFullness).toFixed(2)} lb
                   </Text>
                 </>
               )}
             </View>
+
+            {/* Photo intake */}
+            {photoUri ? (
+              <View style={styles.photoWrap}>
+                <Image source={{ uri: photoUri }} style={styles.photoPreview} />
+                <TouchableOpacity style={styles.photoRemove} onPress={() => setPhotoUri(null)}>
+                  <Icon name="close" size={16} color="#fff" sw={2.2} />
+                </TouchableOpacity>
+              </View>
+            ) : (
+              <TouchableOpacity style={styles.addPhoto} onPress={pickPhoto}>
+                <View style={styles.addPhotoWell}>
+                  <Icon name="camera" size={22} color={COLORS.sage} sw={1.7} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.addPhotoTitle}>Add a photo</Text>
+                  <Text style={styles.addPhotoSub}>Show the spot you cleaned up</Text>
+                </View>
+              </TouchableOpacity>
+            )}
 
             <View style={styles.buttonRow}>
               <TouchableOpacity
@@ -1246,6 +2003,7 @@ Generated by Pick App - Share this with the development team
                   setShowSummary(false);
                   setPickupCount(0);
                   setElapsedSeconds(0);
+                  setPhotoUri(null);
                 }}
               >
                 <Text style={styles.cancelButtonText}>Cancel</Text>
@@ -1254,11 +2012,11 @@ Generated by Pick App - Share this with the development team
                 style={[styles.summaryButton, styles.saveButton]}
                 onPress={saveSummary}
               >
-                <Text style={styles.saveButtonText}>✅ Save & Log</Text>
+                <Text style={styles.saveButtonText}>Save & log</Text>
               </TouchableOpacity>
             </View>
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
 
       {/* Session Results Modal */}
@@ -1266,15 +2024,12 @@ Generated by Pick App - Share this with the development team
         <SafeAreaView style={styles.resultsContainer}>
           <ScrollView contentContainerStyle={styles.resultsContent}>
             <View style={styles.resultsHeader}>
-              <Text style={styles.resultsTitle}>🎉 Session Complete</Text>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.resultsTitle}>Cleanup saved</Text>
+                <Text style={styles.resultsSavedNote}>Already logged to your impact — this is just your recap.</Text>
+              </View>
               <TouchableOpacity
-                onPress={() => {
-                  setShowResults(false);
-                  setPickupCount(0);
-                  setElapsedSeconds(0);
-                  setSessionRoute([]);
-                  setPickupLocations([]);
-                }}
+                onPress={finishSession}
               >
                 <Text style={styles.closeButton}>✕</Text>
               </TouchableOpacity>
@@ -1282,7 +2037,7 @@ Generated by Pick App - Share this with the development team
 
             {/* Coverage Stats */}
             <View style={styles.resultsSection}>
-              <Text style={styles.resultsSubtitle}>📍 Coverage & Activity</Text>
+              <Text style={styles.resultsSubtitle}>Coverage & activity</Text>
               <View style={styles.statsGrid}>
                 <View style={styles.resultStatBox}>
                   <Text style={styles.resultStatValue}>
@@ -1303,7 +2058,7 @@ Generated by Pick App - Share this with the development team
 
             {/* Pickup Heatmap - Show actual map with route + pickups */}
             <View style={styles.resultsSection}>
-              <Text style={styles.resultsSubtitle}>🔥 Pickup Map</Text>
+              <Text style={styles.resultsSubtitle}>Pickup map</Text>
               {pickupLocations.length > 0 && sessionRoute.length > 0 ? (
                 <View style={styles.heatmapBox}>
                   <Text style={styles.heatmapTitle}>
@@ -1317,7 +2072,7 @@ Generated by Pick App - Share this with the development team
                     scrollEnabled={false}
                     originWhitelist={['*']}
                     onLoad={() => {
-                      console.log('🗺️ Heatmap WebView loaded');
+                      console.log('Heatmap WebView loaded');
                       // Wait a moment for Leaflet to load, then inject data
                       setTimeout(() => {
                         if (heatmapWebviewRef.current) {
@@ -1328,7 +2083,7 @@ Generated by Pick App - Share this with the development team
                               if (window.L && window.drawRoute && window.drawPickups) {
                                 window.drawRoute(${JSON.stringify(routeCoords)});
                                 window.drawPickups(${JSON.stringify(pickupLocations)});
-                                console.log('✅ Heatmap data injected');
+                                console.log('Heatmap data injected');
                               } else {
                                 console.log('⏳ Waiting for Leaflet: L=' + (typeof window.L) + ', drawRoute=' + (typeof window.drawRoute));
                               }
@@ -1357,7 +2112,7 @@ Generated by Pick App - Share this with the development team
   <div id="map"></div>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
   <script>
-    console.log('✅ HTML + Leaflet script loaded');
+    console.log('HTML + Leaflet script loaded');
 
     let mapInstance = null;
     let ready = false;
@@ -1365,12 +2120,12 @@ Generated by Pick App - Share this with the development team
     // Wait for Leaflet to be available
     function waitForLeaflet(callback, attempts = 0) {
       if (typeof L !== 'undefined' && document.getElementById('map')) {
-        console.log('✅ Leaflet ready');
+        console.log('Leaflet ready');
         callback();
       } else if (attempts < 20) {
         setTimeout(() => waitForLeaflet(callback, attempts + 1), 100);
       } else {
-        console.error('❌ Leaflet failed to load');
+        console.error('Leaflet failed to load');
       }
     }
 
@@ -1385,7 +2140,7 @@ Generated by Pick App - Share this with the development team
           keepBuffer: 1
         }).addTo(mapInstance);
         ready = true;
-        console.log('✅ Map initialized');
+        console.log('Map initialized');
       } catch(e) {
         console.error('Map init failed: ' + e.toString());
       }
@@ -1409,7 +2164,7 @@ Generated by Pick App - Share this with the development team
       }).addTo(mapInstance);
       const group = L.featureGroup(coords.map(c => L.marker(c)));
       mapInstance.fitBounds(group.getBounds().pad(0.1));
-      console.log('✅ Route drawn');
+      console.log('Route drawn');
     };
 
     window.drawPickups = function(pickups) {
@@ -1426,10 +2181,10 @@ Generated by Pick App - Share this with the development team
           fillOpacity: 0.9
         }).bindPopup('Pickup #' + (i+1)).addTo(mapInstance);
       });
-      console.log('✅ Pickups drawn');
+      console.log('Pickups drawn');
     };
 
-    console.log('✅ Functions defined');
+    console.log('Functions defined');
   </script>
 </body>
 </html>`,
@@ -1437,8 +2192,8 @@ Generated by Pick App - Share this with the development team
                   />
 
                   <Text style={styles.heatmapData}>
-                    🔴 Red markers = pickup locations{'\n'}
-                    🟢 Green line = your route
+                    Red markers = pickup locations{'\n'}
+                    Green line = your route
                   </Text>
                 </View>
               ) : (
@@ -1448,7 +2203,7 @@ Generated by Pick App - Share this with the development team
 
             {/* Route Summary */}
             <View style={styles.resultsSection}>
-              <Text style={styles.resultsSubtitle}>🗺️ Route Taken</Text>
+              <Text style={styles.resultsSubtitle}>Route taken</Text>
               <View style={styles.routeBox}>
                 <Text style={styles.routeLabel}>Starting Point</Text>
                 <Text style={styles.routeCoords}>
@@ -1467,13 +2222,38 @@ Generated by Pick App - Share this with the development team
               </View>
             </View>
 
+            {/* Photo hero (if added) */}
+            {photoUri && (
+              <View style={styles.resultsSection}>
+                <Image source={{ uri: photoUri }} style={styles.resultsPhoto} />
+              </View>
+            )}
+
+            {/* Share your impact */}
+            <View style={styles.resultsSection}>
+              <Text style={styles.resultsSubtitle}>Share your impact</Text>
+              <TouchableOpacity style={styles.shareCta} onPress={() => setShowShare(true)}>
+                <Icon name="share" size={20} color="#fff" sw={2} />
+                <Text style={styles.shareCtaText}>Share your cleanup</Text>
+              </TouchableOpacity>
+              {photoUri && communitySharing && !communityAutoPost && (
+                <TouchableOpacity style={styles.communityCta} onPress={() => setShowCommunityCompose(true)}>
+                  <Icon name="camera" size={20} color={COLORS.sage} sw={2} />
+                  <Text style={styles.communityCtaText}>Share to community</Text>
+                </TouchableOpacity>
+              )}
+              {photoUri && communitySharing && communityAutoPost && (
+                <Text style={styles.autoPostNote}>Auto-posted to community. Manage it from the Community tab.</Text>
+              )}
+            </View>
+
             {/* Action Buttons */}
             <View style={styles.resultsActions}>
               <TouchableOpacity
                 style={[styles.resultButton, styles.resultButtonExport]}
                 onPress={exportSession}
               >
-                <Text style={styles.resultButtonExportText}>📋 Export Session</Text>
+                <Text style={styles.resultButtonExportText}>Export session</Text>
               </TouchableOpacity>
             </View>
 
@@ -1481,29 +2261,98 @@ Generated by Pick App - Share this with the development team
               <TouchableOpacity
                 style={[styles.resultButton, styles.resultButtonSecondary]}
                 onPress={() => {
-                  setShowResults(false);
+                  finishSession(); // also exits the level so the map isn't left stuck
                   router.push('/(tabs)/activity');
                 }}
               >
-                <Text style={styles.resultButtonSecondaryText}>📊 View All Sessions</Text>
+                <Text style={styles.resultButtonSecondaryText}>View all sessions</Text>
               </TouchableOpacity>
               <TouchableOpacity
                 style={[styles.resultButton, styles.resultButtonPrimary]}
-                onPress={() => {
-                  setShowResults(false);
-                  setPickupCount(0);
-                  setElapsedSeconds(0);
-                  setSessionRoute([]);
-                  setPickupLocations([]);
-                }}
+                onPress={finishSession}
               >
-                <Text style={styles.resultButtonPrimaryText}>✅ Done</Text>
+                <Text style={styles.resultButtonPrimaryText}>Done</Text>
               </TouchableOpacity>
             </View>
           </ScrollView>
+
+          {/* Share-to-community composer — rendered INSIDE the results modal as
+              an overlay (a separate Modal would stack behind it on iOS, so its
+              taps never registered). */}
+          {showCommunityCompose && (
+            <KeyboardAvoidingView
+              style={styles.composeOverlay}
+              behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+            >
+              <TouchableOpacity style={styles.composeBackdrop} activeOpacity={1} onPress={() => Keyboard.dismiss()} />
+              <View style={styles.composeSheet}>
+                <Text style={styles.composeTitle}>Share to community</Text>
+                {photoUri && <Image source={{ uri: photoUri }} style={styles.composePhoto} />}
+                <TextInput
+                  style={styles.composeInput}
+                  placeholder="Add a caption (optional)"
+                  placeholderTextColor={COLORS.mutedSage}
+                  value={communityCaption}
+                  onChangeText={setCommunityCaption}
+                  multiline
+                  maxLength={280}
+                  editable={!posting}
+                  returnKeyType="done"
+                  blurOnSubmit
+                  onSubmitEditing={() => Keyboard.dismiss()}
+                />
+                <Text style={styles.composeHint}>
+                  Shows your neighborhood{neighborhood ? ` (${neighborhood})` : ''} and caption — never your exact location.
+                </Text>
+                <View style={styles.composeActions}>
+                  <TouchableOpacity
+                    style={[styles.composeBtn, styles.composeCancel]}
+                    onPress={() => {
+                      Keyboard.dismiss();
+                      setShowCommunityCompose(false);
+                    }}
+                    disabled={posting}
+                  >
+                    <Text style={styles.composeCancelText}>Cancel</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.composeBtn, styles.composePost]}
+                    onPress={() => {
+                      Keyboard.dismiss();
+                      shareToCommunity();
+                    }}
+                    disabled={posting}
+                  >
+                    {posting ? <ActivityIndicator color="#fff" /> : <Text style={styles.composePostText}>Post</Text>}
+                  </TouchableOpacity>
+                </View>
+              </View>
+            </KeyboardAvoidingView>
+          )}
         </SafeAreaView>
       </Modal>
-    </SafeAreaView>
+
+      <ShareComposer
+        visible={showShare}
+        onClose={() => setShowShare(false)}
+        pieces={pickupCount}
+        weightLb={
+          selfReportedWeight
+            ? parseFloat(selfReportedWeight)
+            : weightInputMode === 'bag'
+              ? calculateBagWeight(bagSize, bagFullness)
+              : pickupCount * calFactor
+        }
+        distanceMi={parseFloat(String(calculateCoverage().distance || '0')) * 0.621371}
+        photoUri={photoUri}
+        fullName={user?.displayName || 'You'}
+        initials={((user?.displayName || 'You').trim().split(/\s+/).map((s: string) => s[0]).slice(0, 2).join('') || 'Y').toUpperCase()}
+        team={userTeam || ''}
+        hood={activeLevel?.name || user?.neighborhood || ''}
+        hoodPct={activeLevel?.freshPct}
+        inviteUrl={`https://pick.app/join?ref=${user?.uid || ''}`}
+      />
+    </View>
   );
 }
 
@@ -1517,32 +2366,84 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.cream,
   },
   header: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    zIndex: 5,
     paddingHorizontal: SPACING.lg,
-    paddingVertical: SPACING.md,
-    backgroundColor: COLORS.white,
-    borderBottomWidth: 1,
-    borderBottomColor: COLORS.border,
+    paddingBottom: SPACING.md,
+    backgroundColor: 'transparent',
     flexDirection: 'row',
     justifyContent: 'space-between',
-    alignItems: 'center',
+    alignItems: 'flex-start',
   },
   userName: {
-    fontSize: 20,
+    fontSize: 24,
     fontWeight: '700',
+    letterSpacing: -0.3,
     color: COLORS.darkSage,
+    textShadowColor: 'rgba(245,245,240,0.95)',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 6,
   },
   coverageText: {
-    fontSize: 11,
-    color: '#666',
-    marginTop: 2,
-  },
-  teamOrSuperlative: {
     fontSize: 12,
+    color: COLORS.sage,
+    fontWeight: '600',
+    marginTop: 2,
+    textShadowColor: 'rgba(245,245,240,0.95)',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 6,
+  },
+  completionPill: {
+    backgroundColor: COLORS.white,
+    borderRadius: 16,
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    alignItems: 'center',
+    marginLeft: 10,
+    shadowColor: COLORS.sage,
+    shadowOpacity: 0.18,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 3 },
+    elevation: 3,
+  },
+  completionPct: { fontSize: 18, fontWeight: '700', color: COLORS.sage, letterSpacing: -0.3 },
+  completionLbl: { fontSize: 9, fontWeight: '600', color: COLORS.mutedSage, textTransform: 'uppercase', letterSpacing: 0.3 },
+  levelReveal: {
+    position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
+    backgroundColor: 'rgba(27,46,26,0.82)',
+    alignItems: 'center', justifyContent: 'center', zIndex: 50,
+  },
+  levelRevealSub: { color: 'rgba(255,255,255,0.75)', fontSize: 13, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 1.5, marginTop: 18 },
+  levelRevealName: { color: '#fff', fontSize: 26, fontWeight: '700', letterSpacing: -0.4, marginTop: 4, textAlign: 'center', paddingHorizontal: 24 },
+  levelBack: {
+    width: 34, height: 34, borderRadius: 17, backgroundColor: COLORS.white,
+    alignItems: 'center', justifyContent: 'center', marginRight: 8,
+    shadowColor: COLORS.sage, shadowOpacity: 0.18, shadowRadius: 6, shadowOffset: { width: 0, height: 2 }, elevation: 3,
+  },
+  levelBackIcon: { fontSize: 26, fontWeight: '700', color: COLORS.sage, marginTop: -4 },
+  pickingBanner: {
+    position: 'absolute', alignSelf: 'center', zIndex: 20,
+    backgroundColor: 'rgba(27,46,26,0.88)', borderRadius: 14,
+    paddingVertical: 6, paddingHorizontal: 14, maxWidth: '90%',
+  },
+  pickingBannerText: { color: '#fff', fontSize: 13, fontWeight: '600', letterSpacing: 0.2 },
+  teamOrSuperlative: {
+    fontSize: 13,
     fontWeight: '600',
     color: COLORS.sage,
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-    textAlign: 'right',
+    overflow: 'hidden',
+    backgroundColor: COLORS.white,
+    paddingVertical: 8,
+    paddingHorizontal: 13,
+    borderRadius: 999,
+    shadowColor: '#1B2E1A',
+    shadowOpacity: 0.12,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 3,
   },
   topBar: {
     flexDirection: 'row',
@@ -1555,29 +2456,44 @@ const styles = StyleSheet.create({
     borderBottomColor: '#333',
   },
   topBarWhite: {
+    position: 'absolute',
+    left: 16,
+    right: 16,
+    zIndex: 6,
     flexDirection: 'row',
     justifyContent: 'space-around',
     alignItems: 'center',
-    backgroundColor: COLORS.white,
+    backgroundColor: COLORS.darkSage,
     paddingVertical: 16,
     paddingHorizontal: SPACING.lg,
-    borderBottomWidth: 1,
-    borderBottomColor: COLORS.border,
-    gap: 20,
+    borderRadius: 16,
+    gap: 16,
+    shadowColor: COLORS.darkSage,
+    shadowOpacity: 0.25,
+    shadowRadius: 14,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 6,
   },
   topBarStat: {
     alignItems: 'center',
   },
   topBarValue: {
-    fontSize: 24,
+    fontSize: 22,
     fontWeight: '700',
-    color: COLORS.darkSage,
+    color: '#fff',
     marginBottom: 4,
   },
   topBarLabel: {
-    fontSize: 12,
-    color: COLORS.mutedSage,
+    fontSize: 11,
+    color: '#A8B896',
     fontWeight: '500',
+  },
+  coverageToggle: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+    marginRight: 2,
   },
   pocketButton: {
     alignItems: 'center',
@@ -1618,20 +2534,17 @@ const styles = StyleSheet.create({
     bottom: 40,
   },
   mapContainer: {
-    flex: 1,
-    marginHorizontal: 16,
-    marginVertical: 12,
-    marginBottom: 0,
-    borderRadius: 12,
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    zIndex: 0,
     overflow: 'hidden',
     backgroundColor: '#fff',
   },
   mapContainerExpanded: {
-    marginHorizontal: 16,
-    marginVertical: 12,
-    marginBottom: 0,
-    borderRadius: 12,
-    backgroundColor: '#fff',
+    borderRadius: 0,
   },
   mapPlaceholder: {
     flex: 1,
@@ -1738,15 +2651,18 @@ const styles = StyleSheet.create({
     backgroundColor: '#fff',
   },
   controls: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    zIndex: 5,
     paddingHorizontal: 16,
     paddingTop: 8,
-    paddingBottom: 8,
     gap: 12,
   },
   controlsCompact: {
     paddingHorizontal: 16,
     paddingTop: 8,
-    paddingBottom: 8,
   },
   timerDisplay: {
     backgroundColor: '#fff',
@@ -1771,22 +2687,39 @@ const styles = StyleSheet.create({
     fontWeight: '500',
   },
   button: {
-    paddingVertical: 14,
-    borderRadius: 12,
+    flexDirection: 'row',
+    gap: 10,
+    paddingVertical: 17,
+    borderRadius: 16,
     alignItems: 'center',
     justifyContent: 'center',
   },
   buttonStart: {
     backgroundColor: COLORS.sage,
+    shadowColor: COLORS.sage,
+    shadowOpacity: 0.32,
+    shadowRadius: 14,
+    shadowOffset: { width: 0, height: 10 },
+    elevation: 8,
   },
   buttonStop: {
     backgroundColor: COLORS.error,
+    shadowColor: COLORS.error,
+    shadowOpacity: 0.3,
+    shadowRadius: 14,
+    shadowOffset: { width: 0, height: 10 },
+    elevation: 8,
+  },
+  stopSquare: {
+    width: 12,
+    height: 12,
+    borderRadius: 3,
+    backgroundColor: '#fff',
   },
   buttonTextLarge: {
-    fontSize: 20,
+    fontSize: 16,
     fontWeight: '700',
     color: '#fff',
-    letterSpacing: 0.5,
   },
   modalContainer: {
     flex: 1,
@@ -1902,6 +2835,11 @@ const styles = StyleSheet.create({
     fontSize: 28,
     fontWeight: '700',
     color: COLORS.darkSage,
+  },
+  resultsSavedNote: {
+    fontSize: 13,
+    color: COLORS.mutedSage,
+    marginTop: 2,
   },
   closeButton: {
     fontSize: 24,
@@ -2153,8 +3091,8 @@ const styles = StyleSheet.create({
   },
   mapControls: {
     position: 'absolute',
-    top: 12,
-    right: 12,
+    top: 112,
+    right: 16,
     flexDirection: 'column',
     gap: 8,
     zIndex: 10,
@@ -2269,4 +3207,96 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: '#fff',
   },
+  // Photo intake (summary)
+  addPhoto: {
+    marginTop: 4,
+    marginBottom: 16,
+    backgroundColor: '#fff',
+    borderWidth: 1.5,
+    borderStyle: 'dashed',
+    borderColor: '#C4CDBA',
+    borderRadius: 16,
+    padding: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 13,
+  },
+  addPhotoWell: {
+    width: 42,
+    height: 42,
+    borderRadius: 12,
+    backgroundColor: '#EEF3E6',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  addPhotoTitle: { fontSize: 14, fontWeight: '700', color: COLORS.darkSage },
+  addPhotoSub: { fontSize: 12, color: COLORS.mutedSage, marginTop: 2 },
+  photoWrap: {
+    position: 'relative',
+    marginTop: 4,
+    marginBottom: 16,
+    borderRadius: 16,
+    overflow: 'hidden',
+  },
+  photoPreview: { width: '100%', height: 160, backgroundColor: '#EEF3E6' },
+  photoRemove: {
+    position: 'absolute',
+    top: 10,
+    right: 10,
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: 'rgba(27,46,26,0.55)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  // Results photo + share CTA
+  resultsPhoto: { width: '100%', height: 180, borderRadius: 16, backgroundColor: '#EEF3E6' },
+  shareCta: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 10,
+    backgroundColor: COLORS.sage,
+    borderRadius: 16,
+    paddingVertical: 16,
+  },
+  shareCtaText: { color: '#fff', fontSize: 16, fontWeight: '700' },
+  communityCta: {
+    marginTop: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 14,
+    borderRadius: 14,
+    backgroundColor: '#fff',
+    borderWidth: 1.5,
+    borderColor: COLORS.sage,
+  },
+  communityCtaText: { color: COLORS.sage, fontSize: 16, fontWeight: '700' },
+  autoPostNote: { marginTop: 10, fontSize: 13, color: COLORS.mutedSage, textAlign: 'center' },
+  composeOverlay: { ...StyleSheet.absoluteFillObject, justifyContent: 'flex-end', zIndex: 50 },
+  composeBackdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(27,46,26,0.45)' },
+  composeSheet: { backgroundColor: COLORS.cream, borderTopLeftRadius: 28, borderTopRightRadius: 28, padding: 22, paddingBottom: 34 },
+  composeTitle: { fontSize: 20, fontWeight: '700', color: COLORS.darkSage, marginBottom: 14 },
+  composePhoto: { width: '100%', aspectRatio: 1.4, borderRadius: 14, backgroundColor: COLORS.light, marginBottom: 14 },
+  composeInput: {
+    backgroundColor: '#fff',
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    padding: 14,
+    fontSize: 15,
+    color: COLORS.darkSage,
+    minHeight: 70,
+    textAlignVertical: 'top',
+  },
+  composeHint: { fontSize: 12, color: COLORS.mutedSage, marginTop: 10, lineHeight: 17 },
+  composeActions: { flexDirection: 'row', gap: 12, marginTop: 18 },
+  composeBtn: { flex: 1, borderRadius: 14, paddingVertical: 14, alignItems: 'center', justifyContent: 'center' },
+  composeCancel: { backgroundColor: '#fff', borderWidth: 1, borderColor: COLORS.border },
+  composeCancelText: { color: COLORS.darkSage, fontSize: 15, fontWeight: '700' },
+  composePost: { backgroundColor: COLORS.sage },
+  composePostText: { color: '#fff', fontSize: 15, fontWeight: '700' },
 });

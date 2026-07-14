@@ -1,0 +1,25 @@
+rules_version = '2';
+
+// PICK Firebase Storage Security Rules
+//
+// Community cleanup photos live under cleanup_photos/{uid}/. Each user writes
+// only to their own folder (images only, size-capped); any signed-in user can
+// read (the community feed). Deploy: firebase deploy --only storage
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    match /cleanup_photos/{userId}/{fileName} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null
+        && request.auth.uid == userId
+        && request.resource.size < 8 * 1024 * 1024
+        && request.resource.contentType.matches('image/.*');
+      allow delete: if request.auth != null && request.auth.uid == userId;
+    }
+
+    // Everything else: denied
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}
