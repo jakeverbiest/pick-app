@@ -190,11 +190,11 @@ export default function ActivityScreen() {
   const totalCleanups = (stats?.total_cleanups as number) || 0;
   const cleanupDays = (stats?.cleanup_days as number) || 0;
 
-  // Bags collected in the last 7 days, computed from real cleanups.
+  // Pickups in the last 7 days, computed from real cleanups.
   const weekAgo = Date.now() / 1000 - 7 * 24 * 3600;
   const weekDelta = cleanups
     .filter((c) => c.timestamp >= weekAgo)
-    .reduce((sum, c) => sum + cleanupBags(c), 0);
+    .reduce((sum, c) => sum + (c.items_count || 0), 0);
 
   const milestonePct = Math.min(1, totalCleanups / MILESTONE);
 
@@ -205,24 +205,24 @@ export default function ActivityScreen() {
 
         {/* cumulative hero */}
         <View style={styles.hero}>
-          <Text style={styles.heroLabel}>Total collected</Text>
+          <Text style={styles.heroLabel}>Total pickups</Text>
           <View style={styles.heroRow}>
-            <Text style={styles.heroNum}>{formatBagsShort(totalBags)}</Text>
-            <Text style={styles.heroUnit}>{formatBagsShort(totalBags) === '1' ? 'bag' : 'bags'}</Text>
+            <Text style={styles.heroNum}>{totalPickups}</Text>
+            <Text style={styles.heroUnit}>pieces</Text>
           </View>
           {weekDelta > 0 && (
             <View style={styles.trendPill}>
               <Icon name="trend" size={14} color={C.accent} sw={2.2} />
-              <Text style={styles.trendText}>+{formatBags(weekDelta)} this week</Text>
+              <Text style={styles.trendText}>+{weekDelta} this week</Text>
             </View>
           )}
         </View>
 
-        {/* stat tiles */}
+        {/* stat tiles — bags stays small here; it headlines on the end screen and team boards */}
         <View style={styles.tiles}>
           <Tile value={String(totalCleanups)} label="CLEANUPS" />
           <Tile value={String(cleanupDays)} label="DAYS" />
-          <Tile value={String(totalPickups)} label="PICKUPS" />
+          <Tile value={formatBagsShort(totalBags)} label="BAGS" />
         </View>
 
         {/* milestone */}

@@ -22,7 +22,7 @@ import * as Clipboard from 'expo-clipboard';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Icon } from './Icon';
 import { C, PLATFORM_ACCENT, radius, shadow } from './theme';
-import { formatBags } from '../services/impactMetrics';
+import { formatBags, formatKitchenBags } from '../services/impactMetrics';
 
 type Platform = 'bluesky' | 'instagram' | 'facebook' | 'copy';
 
@@ -72,7 +72,9 @@ export function ShareComposer({
   inviteUrl: string;
 }) {
   const insets = useSafeAreaInsets();
-  const bagsText = formatBags(bags);
+  // Posts name the full unit ("kitchen trash bag") so strangers can picture it;
+  // the compact chip uses the short form.
+  const bagsText = formatKitchenBags(bags);
   const base = useMemo(() => presets(pieces, bagsText, hood, hoodPct, inviteUrl), [pieces, bagsText, hood, hoodPct, inviteUrl]);
 
   // Frictionless network growth: one tap shares just the invite link via the OS
@@ -97,7 +99,7 @@ export function ShareComposer({
 
   const chips: { key: 'pieces' | 'bags' | 'distance'; text: string }[] = [
     { key: 'pieces', text: `${pieces} pieces` },
-    { key: 'bags', text: bagsText },
+    { key: 'bags', text: formatBags(bags) },
     { key: 'distance', text: `${distanceMi.toFixed(1)} mi` },
   ];
   const activeChips = chips.filter((c) => includeStats[c.key]);

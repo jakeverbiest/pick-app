@@ -66,8 +66,8 @@ export default function ProfileScreen() {
             <Text style={styles.statLabel}>Cleanups</Text>
           </View>
           <View style={styles.statCard}>
-            <Text style={styles.statValue}>{formatBagsShort((stats?.total_bags || 0) as number)}</Text>
-            <Text style={styles.statLabel}>Bags Collected</Text>
+            <Text style={styles.statValue}>{(stats?.total_pickups || 0) as number}</Text>
+            <Text style={styles.statLabel}>Pickups</Text>
           </View>
           <View style={styles.statCard}>
             <Text style={styles.statValue}>{badges.length}</Text>

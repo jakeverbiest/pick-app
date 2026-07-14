@@ -86,6 +86,12 @@ export function formatBags(bags: number): string {
   return `about ${whole > 0 ? whole : ''}${frac} bag${halves > 1 ? 's' : ''}`;
 }
 
+/** Spelled-out variant for headline/share moments — names the standard unit
+ *  ("about ½ a kitchen trash bag") so anyone can picture it. */
+export function formatKitchenBags(bags: number): string {
+  return formatBags(bags).replace(/bag(s?)$/, 'kitchen trash bag$1');
+}
+
 /** Compact variant for tight UI slots (live stat bar): "<¼", "½", "1½", "12". */
 export function formatBagsShort(bags: number): string {
   if (bags <= 0) return '0';
