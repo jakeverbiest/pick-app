@@ -15,13 +15,6 @@ export default function TabLayout() {
       <Tabs.Screen name="leaderboard" />
       <Tabs.Screen name="community" />
       <Tabs.Screen name="settings" />
-
-      {/* Registered routes that are not bottom tabs */}
-      <Tabs.Screen name="goals" options={{ href: null }} />
-      <Tabs.Screen name="index" options={{ href: null }} />
-      <Tabs.Screen name="history" options={{ href: null }} />
-      <Tabs.Screen name="profile" options={{ href: null }} />
-      <Tabs.Screen name="explore" options={{ href: null }} />
     </Tabs>
   );
 }
