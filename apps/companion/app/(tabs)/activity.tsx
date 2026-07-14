@@ -11,7 +11,7 @@ import { getCoverageStats } from '../../src/services/streetSegments';
 import { Icon, IconName } from '../../src/pick/Icon';
 import { C, radius, shadow } from '../../src/pick/theme';
 import { Card, ProgressBar } from '../../src/pick/ui';
-import { cleanupBags, formatBags, formatBagsShort } from '../../src/services/impactMetrics';
+import { cleanupBags, formatBagsShort } from '../../src/services/impactMetrics';
 
 const MILESTONE = 50;
 
@@ -198,6 +198,13 @@ export default function ActivityScreen() {
 
   const milestonePct = Math.min(1, totalCleanups / MILESTONE);
 
+  // "since June 2026" — anchor the all-time total to the first cleanup.
+  const firstTs = cleanups.length ? Math.min(...cleanups.map((c) => c.timestamp || Infinity)) : null;
+  const sinceLabel =
+    firstTs && isFinite(firstTs)
+      ? new Date(firstTs * 1000).toLocaleDateString('en-US', { month: 'long', year: 'numeric' })
+      : null;
+
   return (
     <SafeAreaView style={styles.root} edges={['top']}>
       <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
@@ -205,24 +212,33 @@ export default function ActivityScreen() {
 
         {/* cumulative hero */}
         <View style={styles.hero}>
-          <Text style={styles.heroLabel}>Total pickups</Text>
+          <Text style={styles.heroLabel}>Total pickups{sinceLabel ? ` since ${sinceLabel}` : ''}</Text>
           <View style={styles.heroRow}>
             <Text style={styles.heroNum}>{totalPickups}</Text>
             <Text style={styles.heroUnit}>pieces</Text>
+            {weekDelta > 0 && (
+              <View style={styles.trendPill}>
+                <Icon name="trend" size={14} color={C.accent} sw={2.2} />
+                <Text style={styles.trendText}>+{weekDelta} this week</Text>
+              </View>
+            )}
           </View>
-          {weekDelta > 0 && (
-            <View style={styles.trendPill}>
-              <Icon name="trend" size={14} color={C.accent} sw={2.2} />
-              <Text style={styles.trendText}>+{weekDelta} this week</Text>
-            </View>
-          )}
         </View>
 
         {/* stat tiles — bags stays small here; it headlines on the end screen and team boards */}
         <View style={styles.tiles}>
           <Tile value={String(totalCleanups)} label="CLEANUPS" />
-          <Tile value={String(cleanupDays)} label="DAYS" />
-          <Tile value={formatBagsShort(totalBags)} label="BAGS" />
+          <Tile value={String(cleanupDays)} label="ACTIVE DAYS" />
+          <Tile
+            value={formatBagsShort(totalBags)}
+            label="BAGS"
+            onPress={() =>
+              Alert.alert(
+                'What counts as a bag?',
+                'One bag = a standard 13-gallon kitchen trash bag — roughly 200 pickups of typical street litter. When you report your bag at the end of a cleanup, your report is used instead of the estimate.'
+              )
+            }
+          />
         </View>
 
         {/* milestone */}
@@ -241,10 +257,11 @@ export default function ActivityScreen() {
           </Text>
         </Card>
 
-        {/* neighborhood coverage (real) */}
+        {/* street coverage — scoped to a 600m radius around the CURRENT GPS fix,
+            not a selected neighborhood; the heading and hint say so honestly. */}
         {coverage && (
           <Card style={{ marginTop: 12 }}>
-            <Text style={styles.cardHeading}>Neighborhood streets</Text>
+            <Text style={styles.cardHeading}>Streets around you</Text>
             <View style={[styles.tiles, { marginTop: 14 }]}>
               <MiniStat value={`${coverage.freshPct}%`} label="FRESH" />
               <MiniStat value={`${coverage.everCleanedPct}%`} label="EVER CLEANED" />
@@ -253,7 +270,7 @@ export default function ActivityScreen() {
             <View style={{ marginTop: 14 }}>
               <ProgressBar pct={Math.max(0.01, coverage.everCleanedPct / 100)} height={8} />
             </View>
-            <Text style={styles.milestoneHint}>{coverage.everCleanedPct}% of your neighborhood touched so far.</Text>
+            <Text style={styles.milestoneHint}>{coverage.everCleanedPct}% of the streets near your current location have ever been cleaned.</Text>
           </Card>
         )}
 
@@ -291,7 +308,7 @@ export default function ActivityScreen() {
                 <View style={{ flex: 1 }}>
                   <Text style={styles.recentPlace}>{formatDate(c.timestamp)}</Text>
                   <Text style={styles.recentSub}>
-                    {c.items_count} pieces · {formatTime(c.duration_seconds)} · {formatBags(cleanupBags(c))}
+                    {c.items_count} pieces · {formatTime(c.duration_seconds)}
                   </Text>
                 </View>
                 <Pressable style={styles.rowBtn} onPress={() => openEdit(c)} hitSlop={6}>
@@ -344,12 +361,12 @@ export default function ActivityScreen() {
   );
 }
 
-function Tile({ value, label }: { value: string; label: string }) {
+function Tile({ value, label, onPress }: { value: string; label: string; onPress?: () => void }) {
   return (
-    <View style={styles.tile}>
+    <Pressable style={styles.tile} onPress={onPress} disabled={!onPress}>
       <Text style={styles.tileNum}>{value}</Text>
       <Text style={styles.tileLabel}>{label}</Text>
-    </View>
+    </Pressable>
   );
 }
 
