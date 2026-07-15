@@ -22,7 +22,6 @@ export default function CommunityScreen() {
   const [posts, setPosts] = useState<Post[]>([]);
   const [uid, setUid] = useState('');
   const [loading, setLoading] = useState(true);
-  const [verified, setVerified] = useState(true);
 
   const load = useCallback(async () => {
     try {
@@ -30,7 +29,6 @@ export default function CommunityScreen() {
       const db = await getDatabase();
       const user = getAuthService().getCurrentUser();
       setUid(user?.uid || '');
-      setVerified(getAuthService().isEmailVerified());
       setPosts(await db.getPosts(50));
     } catch (error) {
       console.error('Failed to load community feed:', error);
@@ -79,38 +77,11 @@ export default function CommunityScreen() {
     ]);
   };
 
-  const resendVerification = () => {
-    getAuthService()
-      .resendVerification()
-      .then(() => Alert.alert('Email sent', 'Check your inbox for the verification link.'))
-      .catch(() => Alert.alert('Error', 'Could not resend right now. Try again shortly.'));
-  };
-
-  const refreshVerification = async () => {
-    const v = await getAuthService().refreshEmailVerified();
-    setVerified(v);
-    Alert.alert(v ? 'Verified' : 'Not yet', v ? 'Thanks — you can post now.' : 'We still see your email as unverified. Tap the link in the email, then try again.');
-  };
-
   return (
     <SafeAreaView style={styles.root} edges={['top']}>
       <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
         <Text style={styles.h1}>Community</Text>
         <Text style={styles.sub}>Cleanups from your neighbors.</Text>
-
-        {!verified && (
-          <View style={styles.verifyBanner}>
-            <Text style={styles.verifyText}>Verify your email to post to the community.</Text>
-            <View style={styles.verifyActions}>
-              <Pressable onPress={resendVerification} hitSlop={6}>
-                <Text style={styles.verifyBtn}>Resend</Text>
-              </Pressable>
-              <Pressable onPress={refreshVerification} hitSlop={6}>
-                <Text style={styles.verifyBtn}>I verified</Text>
-              </Pressable>
-            </View>
-          </View>
-        )}
 
         {loading ? (
           <View style={styles.center}>

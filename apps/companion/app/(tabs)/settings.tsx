@@ -97,6 +97,7 @@ export default function SettingsScreen() {
   const [adoptOpen, setAdoptOpen] = useState(false);
   const [adoptions, setAdoptions] = useState<Adoption[]>([]);
   const [adoptBusy, setAdoptBusy] = useState(false);
+  const [reminderDays, setReminderDays] = useState(DEFAULT_THRESHOLD_DAYS);
   const [feedbackText, setFeedbackText] = useState('');
   const [sendingFeedback, setSendingFeedback] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
@@ -473,9 +474,9 @@ export default function SettingsScreen() {
   const doAdopt = async () => {
     setAdoptBusy(true);
     try {
-      const a = await adoptCurrentStreet();
+      const a = await adoptCurrentStreet(reminderDays);
       setAdoptions((prev) => [a, ...prev]);
-      Alert.alert('Street adopted', `We'll email you if ${a.label} goes ${a.thresholdDays} days without a cleanup nearby.`);
+      Alert.alert('Block adopted', `We'll email you if ${a.label} goes ${a.thresholdDays} days without a cleanup nearby.`);
     } catch (e: any) {
       Alert.alert('Could not adopt', e?.message || 'Please try again.');
     } finally {
@@ -581,8 +582,10 @@ export default function SettingsScreen() {
           <View style={styles.divider} />
           <Pressable style={styles.rowLink} onPress={openAdopt}>
             <View style={{ flex: 1, paddingRight: 12 }}>
-              <Text style={styles.rowLinkLabel}>Adopt a street</Text>
-              <Text style={styles.rowLinkSub}>Get an email when your block goes too long uncleaned</Text>
+              <Text style={styles.rowLinkLabel}>Adopt a block</Text>
+              <Text style={styles.rowLinkSub}>
+                {adoptions.length > 0 ? `${adoptions.length} adopted · get emailed when one goes stale` : 'Get an email when a block you care about goes too long uncleaned'}
+              </Text>
             </View>
             <Text style={styles.chev}>▸</Text>
           </Pressable>
@@ -952,16 +955,17 @@ export default function SettingsScreen() {
         </KeyboardAvoidingView>
       </Modal>
 
-      {/* Adopt a street */}
+      {/* Adopt a block */}
       <Modal visible={adoptOpen} transparent animationType="slide" onRequestClose={() => setAdoptOpen(false)}>
         <View style={styles.fbOverlay}>
           <Pressable style={styles.fbBackdrop} onPress={() => setAdoptOpen(false)} />
           <View style={styles.fbSheet}>
-            <Text style={styles.fbTitle}>Adopt a street</Text>
+            <Text style={styles.fbTitle}>Adopt a block</Text>
             <Text style={styles.fbSub}>
-              Claim a spot you care about. We'll email you if it goes {DEFAULT_THRESHOLD_DAYS} days without a
-              cleanup nearby — your nudge to go tidy it.
+              Claim blocks you care about — adopt as many as you like. We'll email you when one goes too long
+              without a cleanup nearby.
             </Text>
+
             {adoptions.length > 0 && (
               <View style={{ marginBottom: 14 }}>
                 {adoptions.map((a) => (
@@ -977,12 +981,28 @@ export default function SettingsScreen() {
                 ))}
               </View>
             )}
+
+            <View style={styles.reminderRow}>
+              <Text style={styles.reminderLabel}>Remind me after</Text>
+              <View style={styles.pillRow}>
+                {[3, 7, 14].map((d) => (
+                  <Pressable
+                    key={d}
+                    style={[styles.pill, reminderDays === d && styles.pillActive]}
+                    onPress={() => setReminderDays(d)}
+                  >
+                    <Text style={[styles.pillText, reminderDays === d && styles.pillTextActive]}>{d}d</Text>
+                  </Pressable>
+                ))}
+              </View>
+            </View>
+
             <TouchableOpacity
               style={[styles.fbBtn, styles.fbSend, { width: '100%' }, adoptBusy && { opacity: 0.7 }]}
               onPress={doAdopt}
               disabled={adoptBusy}
             >
-              <Text style={styles.fbSendText}>{adoptBusy ? 'Finding your street…' : 'Adopt the street I’m on'}</Text>
+              <Text style={styles.fbSendText}>{adoptBusy ? 'Finding your block…' : 'Adopt the block I’m on'}</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -1283,6 +1303,8 @@ const styles = StyleSheet.create({
   adoptRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 11, borderBottomWidth: 1, borderBottomColor: C.border2 },
   adoptName: { fontSize: 15, fontWeight: '700', color: C.dark },
   adoptMeta: { fontSize: 12, color: C.muted, marginTop: 1 },
+  reminderRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 },
+  reminderLabel: { fontSize: 14, fontWeight: '600', color: C.dark },
   qrWrap: { backgroundColor: '#fff', padding: 16, borderRadius: 18, marginTop: 16, marginBottom: 12, ...shadow.card },
   inviteUrl: { fontSize: 12, color: C.muted, marginBottom: 16, maxWidth: '100%' },
 });

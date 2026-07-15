@@ -139,6 +139,23 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
+    // --- Community posts: the shared photo feed. Any signed-in user can read;
+    //     authors create and delete their own; a like only ever changes the
+    //     liked_by array (so you can't rewrite someone else's post). ---
+    match /posts/{postId} {
+      allow read: if signedIn();
+      allow create: if isOwner(request.resource.data.uid);
+      allow update: if signedIn()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['liked_by']);
+      allow delete: if isOwner(resource.data.uid);
+    }
+
+    // --- Feedback: create-only from clients (read only in the Firebase console). ---
+    match /feedback/{feedbackId} {
+      allow create: if signedIn();
+      allow read, update, delete: if false;
+    }
+
     // Everything else: denied
     match /{document=**} {
       allow read, write: if false;
