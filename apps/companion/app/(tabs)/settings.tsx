@@ -947,8 +947,8 @@ export default function SettingsScreen() {
           <View style={styles.fbSheet}>
             <Text style={styles.fbTitle}>Your blocks</Text>
             <Text style={styles.fbSub}>
-              On the Map, <Text style={{ fontWeight: '700', color: C.dark }}>press and hold a block</Text> to
-              adopt it. We'll email you if one goes too long without a cleanup nearby.
+              On the Map, tap the <Text style={{ fontWeight: '700', color: C.dark }}>Adopt</Text> button (the pin),
+              then tap a block. We'll email you if one goes too long without a cleanup nearby.
             </Text>
 
             {adoptions.length > 0 ? (
@@ -966,7 +966,7 @@ export default function SettingsScreen() {
                 ))}
               </View>
             ) : (
-              <Text style={styles.adoptEmpty}>No blocks adopted yet — press and hold one on the Map.</Text>
+              <Text style={styles.adoptEmpty}>No blocks adopted yet — use the Adopt button on the Map.</Text>
             )}
           </View>
         </View>
