@@ -1109,6 +1109,29 @@ export default function MapScreen() {
     const estBags = itemsToBags(pickupCount);
     const reported = bagReported ? reportedBags(bagSize, bagFullness) : null;
 
+    // Instant "why picks did/didn't count" tally for tuning.
+    const _evs = MotionDetector.getSessionEvents();
+    const _counted = _evs.filter((e) => e.counted).length;
+    const _cooldown = _evs.filter((e) => e.accepted && !e.counted).length;
+    const _rejected = _evs.filter((e) => !e.accepted);
+    const _byReason: Record<string, number> = {};
+    _rejected.forEach((e) => {
+      const k = String(e.reason || 'other').split(':')[0].split('(')[0].trim();
+      _byReason[k] = (_byReason[k] || 0) + 1;
+    });
+    const tallyBlock = `═══════════════════════════════════════════════════════════
+  REASON TALLY (why picks did / didn't count)
+═══════════════════════════════════════════════════════════
+
+Total motion events recorded: ${_evs.length}
+Counted (what you saw):       ${_counted}
+Suppressed by cooldown:       ${_cooldown}
+Rejected:                     ${_rejected.length}
+${Object.entries(_byReason).map(([k, v]) => `  • ${k}: ${v}`).join('\n') || '  (none)'}
+Note: pickups gentler than the recording gate never create an event, so they
+don't appear here — those are the invisible misses.
+`;
+
     const exportData = `
 ═══════════════════════════════════════════════════════════
   📊 PICK APP - SESSION EXPORT
@@ -1154,6 +1177,7 @@ Pickup Locations: ${pickupLocations.length}
 ${pickupLocations.slice(0, 15).map((p, i) => `  ${i + 1}. ${p.lat.toFixed(6)}, ${p.lon.toFixed(6)} (${new Date(p.timestamp).toLocaleTimeString()})`).join('\n')}
 ${pickupLocations.length > 15 ? `  ... and ${pickupLocations.length - 15} more detections` : ''}
 
+${tallyBlock}
 ═══════════════════════════════════════════════════════════
   MOTION EVENT LOG (flight recorder — every event, incl. rejected)
 ═══════════════════════════════════════════════════════════
