@@ -25,6 +25,7 @@ import {
 } from '../../src/services/crashRecorder';
 import { stopBackgroundSession } from '../../src/services/backgroundSession';
 import { TeamSection } from '../../src/pick/TeamSection';
+import { adoptCurrentStreet, listMyAdoptions, removeAdoption, Adoption, DEFAULT_THRESHOLD_DAYS } from '../../src/services/adoptions';
 
 // Beta invite (TestFlight public link) + the public community dashboard.
 const TESTFLIGHT_URL = 'https://testflight.apple.com/join/6753UhuM';
@@ -93,6 +94,9 @@ export default function SettingsScreen() {
   const [email, setEmail] = useState('');
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [inviteOpen, setInviteOpen] = useState(false);
+  const [adoptOpen, setAdoptOpen] = useState(false);
+  const [adoptions, setAdoptions] = useState<Adoption[]>([]);
+  const [adoptBusy, setAdoptBusy] = useState(false);
   const [feedbackText, setFeedbackText] = useState('');
   const [sendingFeedback, setSendingFeedback] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
@@ -459,6 +463,42 @@ export default function SettingsScreen() {
     Linking.openURL(DASHBOARD_URL).catch(() => Alert.alert('Could not open', DASHBOARD_URL));
   };
 
+  const openAdopt = async () => {
+    setAdoptOpen(true);
+    try {
+      setAdoptions(await listMyAdoptions());
+    } catch {}
+  };
+
+  const doAdopt = async () => {
+    setAdoptBusy(true);
+    try {
+      const a = await adoptCurrentStreet();
+      setAdoptions((prev) => [a, ...prev]);
+      Alert.alert('Street adopted', `We'll email you if ${a.label} goes ${a.thresholdDays} days without a cleanup nearby.`);
+    } catch (e: any) {
+      Alert.alert('Could not adopt', e?.message || 'Please try again.');
+    } finally {
+      setAdoptBusy(false);
+    }
+  };
+
+  const doRemoveAdoption = (id: string) => {
+    Alert.alert('Remove street?', 'Stop getting reminders for this one.', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Remove',
+        style: 'destructive',
+        onPress: async () => {
+          try {
+            await removeAdoption(id);
+            setAdoptions((prev) => prev.filter((a) => a.id !== id));
+          } catch {}
+        },
+      },
+    ]);
+  };
+
   if (loading) {
     return (
       <SafeAreaView style={styles.container}>
@@ -535,6 +575,14 @@ export default function SettingsScreen() {
             <View style={{ flex: 1, paddingRight: 12 }}>
               <Text style={styles.rowLinkLabel}>Invite a friend</Text>
               <Text style={styles.rowLinkSub}>Share a QR code or link to join the beta</Text>
+            </View>
+            <Text style={styles.chev}>▸</Text>
+          </Pressable>
+          <View style={styles.divider} />
+          <Pressable style={styles.rowLink} onPress={openAdopt}>
+            <View style={{ flex: 1, paddingRight: 12 }}>
+              <Text style={styles.rowLinkLabel}>Adopt a street</Text>
+              <Text style={styles.rowLinkSub}>Get an email when your block goes too long uncleaned</Text>
             </View>
             <Text style={styles.chev}>▸</Text>
           </Pressable>
@@ -904,6 +952,42 @@ export default function SettingsScreen() {
         </KeyboardAvoidingView>
       </Modal>
 
+      {/* Adopt a street */}
+      <Modal visible={adoptOpen} transparent animationType="slide" onRequestClose={() => setAdoptOpen(false)}>
+        <View style={styles.fbOverlay}>
+          <Pressable style={styles.fbBackdrop} onPress={() => setAdoptOpen(false)} />
+          <View style={styles.fbSheet}>
+            <Text style={styles.fbTitle}>Adopt a street</Text>
+            <Text style={styles.fbSub}>
+              Claim a spot you care about. We'll email you if it goes {DEFAULT_THRESHOLD_DAYS} days without a
+              cleanup nearby — your nudge to go tidy it.
+            </Text>
+            {adoptions.length > 0 && (
+              <View style={{ marginBottom: 14 }}>
+                {adoptions.map((a) => (
+                  <View key={a.id} style={styles.adoptRow}>
+                    <View style={{ flex: 1, paddingRight: 10 }}>
+                      <Text style={styles.adoptName} numberOfLines={1}>{a.label}</Text>
+                      <Text style={styles.adoptMeta}>Remind after {a.thresholdDays} days</Text>
+                    </View>
+                    <TouchableOpacity onPress={() => doRemoveAdoption(a.id)} hitSlop={8}>
+                      <Icon name="trash" size={18} color={C.danger} sw={1.9} />
+                    </TouchableOpacity>
+                  </View>
+                ))}
+              </View>
+            )}
+            <TouchableOpacity
+              style={[styles.fbBtn, styles.fbSend, { width: '100%' }, adoptBusy && { opacity: 0.7 }]}
+              onPress={doAdopt}
+              disabled={adoptBusy}
+            >
+              <Text style={styles.fbSendText}>{adoptBusy ? 'Finding your street…' : 'Adopt the street I’m on'}</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
       {/* Invite a friend — QR + share */}
       <Modal visible={inviteOpen} transparent animationType="slide" onRequestClose={() => setInviteOpen(false)}>
         <View style={styles.fbOverlay}>
@@ -1196,6 +1280,9 @@ const styles = StyleSheet.create({
     padding: 22, paddingBottom: 34, alignItems: 'center',
   },
   inviteSub: { fontSize: 13, color: C.muted, marginTop: 2, marginBottom: 4, textAlign: 'center' },
+  adoptRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 11, borderBottomWidth: 1, borderBottomColor: C.border2 },
+  adoptName: { fontSize: 15, fontWeight: '700', color: C.dark },
+  adoptMeta: { fontSize: 12, color: C.muted, marginTop: 1 },
   qrWrap: { backgroundColor: '#fff', padding: 16, borderRadius: 18, marginTop: 16, marginBottom: 12, ...shadow.card },
   inviteUrl: { fontSize: 12, color: C.muted, marginBottom: 16, maxWidth: '100%' },
 });

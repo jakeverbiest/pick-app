@@ -124,6 +124,21 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    // --- Adopt-a-street: each picker's adopted spots, private to the owner.
+    //     The scheduled Cloud Function (admin SDK) reads them all and stamps
+    //     lastNotified; clients only touch their own. ---
+    match /adoptions/{adoptionId} {
+      allow read, delete: if isOwner(resource.data.userId);
+      allow create: if isOwner(request.resource.data.userId);
+      allow update: if isOwner(resource.data.userId);
+    }
+
+    // --- Mail: outbound email queue for the "Trigger Email" extension. Written
+    //     ONLY by Cloud Functions (admin SDK); no client access. ---
+    match /mail/{mailId} {
+      allow read, write: if false;
+    }
+
     // Everything else: denied
     match /{document=**} {
       allow read, write: if false;

@@ -21,7 +21,7 @@
  */
 
 const { onDocumentWritten } = require('firebase-functions/v2/firestore');
-const { onCall, HttpsError } = require('firebase-functions/v2/https');
+const { onCall, HttpsError, onRequest } = require('firebase-functions/v2/https');
 const { onSchedule } = require('firebase-functions/v2/scheduler');
 const { initializeApp } = require('firebase-admin/app');
 const { getFirestore } = require('firebase-admin/firestore');
@@ -304,4 +304,209 @@ exports.rebuildPublicStats = onCall(async (request) => {
     throw new HttpsError('unauthenticated', 'Sign in to rebuild public stats.');
   }
   return rebuildPublicStats();
+});
+
+// ==========================================================================
+// LOAD-TEST SEEDING — create/delete a batch of SIMULATED pickers to see how a
+// busy app looks (full leaderboard, populated dashboard + map). Everything is
+// tagged `sim: true` so it can be wiped in one call. TEMPORARY — delete these
+// two functions after testing.
+//
+// Trigger from a browser (gate with the secret):
+//   seed:   https://us-central1-pick-app-74c2e.cloudfunctions.net/seedTesters?key=SECRET&count=150
+//   delete: https://us-central1-pick-app-74c2e.cloudfunctions.net/clearTesters?key=SECRET
+// ==========================================================================
+
+const SEED_SECRET = 'pick-sim-8f3k2z9q'; // change me; required as ?key= on both endpoints
+const SIM_CITIES = [
+  { city: 'New York', lat: 40.6782, lon: -73.9442 },
+  { city: 'Atlanta', lat: 33.749, lon: -84.388 },
+  { city: 'Beacon', lat: 41.5048, lon: -73.9696 },
+  { city: 'Hickory', lat: 35.7332, lon: -81.3412 },
+];
+const SIM_NAMES = ['Alex', 'Sam', 'Jordan', 'Casey', 'Riley', 'Taylor', 'Morgan', 'Jamie', 'Avery', 'Quinn', 'Drew', 'Reese', 'Skyler', 'Parker', 'Rowan', 'Emerson', 'Charlie', 'Finley', 'Sage', 'Harper'];
+const SIM_TEAMS = ['Test Crew A', 'Test Crew B', 'solo', 'solo']; // ~half solo
+
+async function seedTesters(count) {
+  const now = Date.now();
+  let batch = db.batch();
+  let ops = 0;
+  let cleanups = 0;
+  const flush = async () => { if (ops) { await batch.commit(); batch = db.batch(); ops = 0; } };
+
+  for (let i = 0; i < count; i++) {
+    const uid = `sim_${now}_${i}`;
+    const c = SIM_CITIES[i % SIM_CITIES.length];
+    const name = `${SIM_NAMES[i % SIM_NAMES.length]} ${String(i + 1).padStart(3, '0')}`;
+    const team = SIM_TEAMS[i % SIM_TEAMS.length];
+    const nC = 1 + Math.floor(Math.random() * 4);
+    let tp = 0, tb = 0;
+    const days = new Set();
+    for (let j = 0; j < nC; j++) {
+      const ts = now - Math.floor(Math.random() * 7 * 86400 * 1000); // within last 7 days
+      const pk = 20 + Math.floor(Math.random() * 280);
+      const bg = pk / PICKUPS_PER_BAG;
+      tp += pk; tb += bg;
+      days.add(new Date(ts).toISOString().slice(0, 10));
+      batch.set(db.collection('cleanups').doc(), {
+        userId: uid, timestamp: ts,
+        location_lat: c.lat + (Math.random() - 0.5) * 0.05,
+        location_lon: c.lon + (Math.random() - 0.5) * 0.05,
+        items_count: pk, bags_est: Math.round(bg * 1000) / 1000,
+        duration_seconds: 300 + Math.floor(Math.random() * 1500),
+        team, city: c.city, neighborhood: '', sim: true,
+      });
+      ops++; cleanups++;
+      if (ops >= 450) await flush();
+    }
+    batch.set(db.collection('user_stats').doc(uid), {
+      uid, display_name: name, team,
+      total_pickups: tp, total_bags: Math.round(tb * 100) / 100,
+      total_cleanups: nC, active_days: days.size,
+      hidden: false, sim: true, updated_at: now,
+    });
+    ops++;
+    if (ops >= 450) await flush();
+  }
+  await flush();
+  await rebuildPublicStats();
+  return { seeded: count, cleanups };
+}
+
+async function deleteWhereSim(collName) {
+  const col = db.collection(collName);
+  let removed = 0;
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    const snap = await col.where('sim', '==', true).limit(400).get();
+    if (snap.empty) break;
+    const batch = db.batch();
+    snap.forEach((d) => batch.delete(d.ref));
+    await batch.commit();
+    removed += snap.size;
+    if (snap.size < 400) break;
+  }
+  return removed;
+}
+
+async function clearTesters() {
+  const deletedCleanups = await deleteWhereSim('cleanups');
+  const deletedUsers = await deleteWhereSim('user_stats');
+  // Remove the sim teams' aggregate rows too (they won't self-clean if never re-touched).
+  await Promise.all(['Test Crew A', 'Test Crew B'].map((t) =>
+    db.collection('team_stats').doc(teamDocId(t)).delete().catch(() => {})
+  ));
+  await rebuildPublicStats();
+  return { deletedCleanups, deletedUsers };
+}
+
+exports.seedTesters = onRequest(async (req, res) => {
+  if (req.query.key !== SEED_SECRET) { res.status(403).send('forbidden'); return; }
+  const count = Math.min(500, Math.max(1, parseInt(req.query.count, 10) || 150));
+  try {
+    res.json({ ok: true, ...(await seedTesters(count)) });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: String((e && e.message) || e) });
+  }
+});
+
+exports.clearTesters = onRequest(async (req, res) => {
+  if (req.query.key !== SEED_SECRET) { res.status(403).send('forbidden'); return; }
+  try {
+    res.json({ ok: true, ...(await clearTesters()) });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: String((e && e.message) || e) });
+  }
+});
+
+// ==========================================================================
+// ADOPT A STREET — daily check: if an adopted spot has had no cleanup within
+// `radiusM` in the last `thresholdDays`, email the picker a nudge. Emails are
+// sent by the Firebase "Trigger Email" extension, which watches the `mail`
+// collection — we just write the message there. (Install + configure that
+// extension with an SMTP/SendGrid sender for emails to actually go out.)
+// ==========================================================================
+
+const ADOPT_SCAN_WINDOW_DAYS = 60; // ignore cleanups older than this when scanning
+
+function distMeters(aLat, aLon, bLat, bLon) {
+  const R = 6371000;
+  const dLat = ((bLat - aLat) * Math.PI) / 180;
+  const dLon = ((bLon - aLon) * Math.PI) / 180;
+  const la1 = (aLat * Math.PI) / 180;
+  const la2 = (bLat * Math.PI) / 180;
+  const x = Math.sin(dLat / 2) ** 2 + Math.cos(la1) * Math.cos(la2) * Math.sin(dLon / 2) ** 2;
+  return 2 * R * Math.asin(Math.min(1, Math.sqrt(x)));
+}
+
+function esc(s) {
+  return String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+}
+
+async function checkAdoptions() {
+  const now = Date.now();
+  const adSnap = await db.collection('adoptions').get();
+  if (adSnap.empty) return { checked: 0, emailed: 0 };
+
+  const cutoff = now - ADOPT_SCAN_WINDOW_DAYS * 86400 * 1000;
+  const clSnap = await db.collection('cleanups').where('timestamp', '>=', cutoff).get();
+  const recent = [];
+  clSnap.forEach((d) => {
+    const c = d.data();
+    recent.push({ lat: c.location_lat, lon: c.location_lon, ts: toMillis(c.timestamp) });
+  });
+
+  let emailed = 0;
+  for (const docSnap of adSnap.docs) {
+    const a = docSnap.data();
+    if (!a.email || !Number.isFinite(a.lat) || !Number.isFinite(a.lon)) continue;
+    const thresh = num(a.thresholdDays) || 7;
+    const radius = num(a.radiusM) || 150;
+    const windowStart = now - thresh * 86400 * 1000;
+
+    let fresh = false;
+    let lastNearTs = 0;
+    for (const c of recent) {
+      if (!Number.isFinite(c.lat) || !Number.isFinite(c.lon)) continue;
+      if (distMeters(a.lat, a.lon, c.lat, c.lon) <= radius) {
+        if (c.ts > lastNearTs) lastNearTs = c.ts;
+        if (c.ts >= windowStart) { fresh = true; break; }
+      }
+    }
+    if (fresh) continue; // cleaned recently — no nudge
+
+    // Don't spam: at most one email per threshold window.
+    const lastNotified = num(a.lastNotified);
+    if (lastNotified && now - lastNotified < thresh * 86400 * 1000) continue;
+
+    const daysSince = lastNearTs ? Math.floor((now - lastNearTs) / 86400000) : null;
+    const sinceText = daysSince != null ? `${daysSince} days ago` : `a while ago`;
+
+    await db.collection('mail').add({
+      to: [a.email],
+      message: {
+        subject: `${a.label} could use a pick`,
+        text: `Hi! ${a.label} hasn't had a cleanup nearby in over ${thresh} days (last one was ${sinceText}). If you're passing by, pop your phone in your pocket and give it a quick pick. — PICK`,
+        html: `<p>Hi!</p><p><strong>${esc(a.label)}</strong> hasn't had a cleanup nearby in over ${thresh} days (last one was ${sinceText}).</p><p>If you're passing by, pop your phone in your pocket and give it a quick pick.</p><p>— PICK</p>`,
+      },
+    });
+    await docSnap.ref.update({ lastNotified: now, lastNearTs });
+    emailed++;
+  }
+  return { checked: adSnap.size, emailed };
+}
+
+/** Daily scan for stale adopted streets. */
+exports.scheduledAdoptionCheck = onSchedule('every 24 hours', async () => {
+  await checkAdoptions();
+});
+
+/** Manual trigger for testing the adoption check (gated by the same secret). */
+exports.runAdoptionCheck = onRequest(async (req, res) => {
+  if (req.query.key !== SEED_SECRET) { res.status(403).send('forbidden'); return; }
+  try {
+    res.json({ ok: true, ...(await checkAdoptions()) });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: String((e && e.message) || e) });
+  }
 });
