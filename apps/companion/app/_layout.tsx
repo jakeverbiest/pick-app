@@ -5,9 +5,11 @@ import { useEffect } from 'react';
 import 'react-native-reanimated';
 import * as SplashScreen from 'expo-splash-screen';
 
+import * as Location from 'expo-location';
+
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { useAppInitialization } from '@/src/hooks/useAppInitialization';
-import { prefetchNycHoods } from '@/src/services/neighborhoods';
+import { prefetchHoodsNear } from '@/src/services/neighborhoods';
 import { LoadingView, ErrorView } from '@/src/pick/LoadingView';
 
 // Keep the native splash up until our own branded loading view is on screen,
@@ -25,9 +27,16 @@ export default function RootLayout() {
   // Hand off from the native splash to our branded view on first render.
   useEffect(() => {
     SplashScreen.hideAsync().catch(() => {});
-    // Warm the NYC neighborhoods layer during login/safety, so the map's hood
-    // outlines (and the first hood tap) don't wait on a 1.5MB download.
-    prefetchNycHoods();
+    // Warm the neighborhoods layer for the city the user is actually in, from a
+    // cached location fix (no permission prompt), so the map's hood outlines and
+    // first tap don't wait on the GeoJSON download. Unknown location (fresh
+    // install, or outside a covered city) downloads nothing — the map's
+    // on-view load covers it lazily once you're there.
+    Location.getLastKnownPositionAsync()
+      .then((pos) => {
+        if (pos) prefetchHoodsNear(pos.coords.latitude, pos.coords.longitude);
+      })
+      .catch(() => {});
   }, []);
 
   // Show error screen if initialization fails

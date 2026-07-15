@@ -10,7 +10,7 @@ import MotionDetector from '../../src/services/motionDetection';
 import PickupAggregator from '../../src/services/pickupAggregator';
 import { itemsToBags, reportedBags, formatBags, formatKitchenBags } from '../../src/services/impactMetrics';
 import { getCoverage, markRouteCleaned, getParkCoverage, markParksCleaned, getTileStats, tileId, getCoverageForRing, routeCoverageFraction } from '../../src/services/streetSegments';
-import { osmNeighborhood, getNycHoodsInBounds, polygonStats, HoodShape } from '../../src/services/neighborhoods';
+import { osmNeighborhood, getHoodsInBounds, polygonStats, HoodShape } from '../../src/services/neighborhoods';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import Constants from 'expo-constants';
@@ -354,7 +354,7 @@ export default function MapScreen() {
   // Draw all neighborhood outlines intersecting the current view as a tappable
   // layer. Rings are stashed so a tap can score that hood from coverage.
   const loadHoodsInView = (b: [number, number, number, number]) => {
-    getNycHoodsInBounds(b[0], b[1], b[2], b[3]).then((hoods: HoodShape[]) => {
+    getHoodsInBounds(b[0], b[1], b[2], b[3]).then((hoods: HoodShape[]) => {
       if (!hoods.length) return;
       hoods.forEach((h) => { hoodRingsRef.current[h.name] = h.ring; });
       const payload = hoods.map((h) => ({ name: h.name, ring: h.ring }));

@@ -77,51 +77,93 @@ function geojsonToRing(g: any): [number, number][] | null {
 
 export interface BoundaryResult {
   poly: [number, number][] | null;
-  source: 'nyc' | 'osm' | 'none';
-  name: string; // authoritative neighborhood name when the shape carries one (NYC)
+  source: 'city' | 'osm' | 'none';
+  name: string; // authoritative neighborhood name when the shape carries one (registered city)
 }
 
-// NYC bounding box — only attempt the NYC fine-neighborhood source inside it.
-function inNYC(lat: number, lon: number): boolean {
-  return lat >= 40.49 && lat <= 40.92 && lon >= -74.27 && lon <= -73.68;
+// ---------- city registry: per-city fine-neighborhood sources ----------
+//
+// Each city plugs in a bounding box (a cheap gate before we attempt its
+// source), a GeoJSON URL, a disk-cache filename, and the property keys that
+// carry the neighborhood NAME. Everything below this list is city-agnostic:
+// add a city here and it gets the same outline layer, tap-to-activate levels,
+// boundary lookup, and point containment that NYC has.
+interface CitySource {
+  id: string;
+  inBox: (lat: number, lon: number) => boolean;
+  url: string;
+  file: string;
+  nameKeys: string[]; // property keys to try, most-authoritative first
 }
 
-// NYC fine neighborhoods (Pediacities, ~310 hoods — Carroll Gardens ≠ Cobble
-// Hill, unlike the merged NTAs). Fetched once from a static GeoJSON, held in
-// memory for the session, then matched client-side with point-in-polygon. We do
-// NOT persist the ~1.5MB blob (too big for AsyncStorage); instead the resolved
-// per-tile polygon is cached (see neighborhoodBoundary), so the big file is
-// fetched at most once per session and only when a new tile isn't cached yet.
-let nycHoodsCache: any[] | null = null;
-let nycHoodsInflight: Promise<any[]> | null = null;
-const NYC_HOODS_URL =
-  'https://raw.githubusercontent.com/HodgesWardElliott/custom-nyc-neighborhoods/master/custom-pedia-cities-nyc-Mar2018.geojson';
-// Too big for AsyncStorage, so it goes to a plain file — fetched ONCE per
-// install instead of once per session (the ~1.5MB download was a visible chunk
-// of every cold start, and all of the first one).
-const NYC_HOODS_FILE = FileSystem.documentDirectory + 'nyc-hoods.json';
+const CITY_SOURCES: CitySource[] = [
+  {
+    id: 'nyc',
+    // NYC bounding box.
+    inBox: (lat, lon) => lat >= 40.49 && lat <= 40.92 && lon >= -74.27 && lon <= -73.68,
+    // Fine neighborhoods (Pediacities, ~310 hoods — Carroll Gardens ≠ Cobble
+    // Hill, unlike the merged NTAs).
+    url: 'https://raw.githubusercontent.com/HodgesWardElliott/custom-nyc-neighborhoods/master/custom-pedia-cities-nyc-Mar2018.geojson',
+    file: FileSystem.documentDirectory + 'nyc-hoods.json',
+    nameKeys: ['neighborhood', 'name', 'ntaname', 'NTAName'],
+  },
+  {
+    id: 'atl',
+    // Atlanta bounding box (city proper, padded).
+    inBox: (lat, lon) => lat >= 33.6 && lat <= 33.93 && lon >= -84.62 && lon <= -84.24,
+    // The City of Atlanta's 248 official neighborhoods — fine-grained, the true
+    // analog to NYC's Pediacities hoods (not the coarser NSA groupings).
+    // Queried live from the city GIS as GeoJSON; all 248 fit in one request.
+    // maxAllowableOffset simplifies the polygons server-side (~30m tolerance):
+    // without it, exporting full-resolution rings for all 248 hoods takes 3min+
+    // and the layer never loads on device. At neighborhood scale the
+    // simplification is invisible (and we decimate rings again on our side).
+    url: "https://gis.atlantaga.gov/dpcd/rest/services/AdministrativeArea/GeopoliticalArea/MapServer/1/query?where=GEOTYPE%3D'Neighborhood'&outFields=NAME&outSR=4326&maxAllowableOffset=0.0003&f=geojson",
+    file: FileSystem.documentDirectory + 'atl-hoods.json',
+    nameKeys: ['NAME', 'name'],
+  },
+];
 
-async function loadNycHoods(): Promise<any[]> {
-  if (nycHoodsCache) return nycHoodsCache;
+/** The city whose bounding box contains the point, if any. */
+function cityForPoint(lat: number, lon: number): CitySource | null {
+  return CITY_SOURCES.find((c) => c.inBox(lat, lon)) ?? null;
+}
+
+/** First non-empty NAME property, trying the city's keys in priority order. */
+function hoodName(props: any, keys: string[]): string {
+  const p = props || {};
+  for (const k of keys) if (p[k]) return String(p[k]);
+  return '';
+}
+
+// Per-city in-memory + inflight caches. The GeoJSON is fetched at most once per
+// install — persisted to a plain file (too big for AsyncStorage), then held in
+// memory for the session and matched client-side with point-in-polygon. The
+// ~1.5MB download was a visible chunk of every cold start, and all of the first.
+const hoodsCache: Record<string, any[]> = {};
+const hoodsInflight: Record<string, Promise<any[]> | null> = {};
+
+async function loadHoods(city: CitySource): Promise<any[]> {
+  if (hoodsCache[city.id]) return hoodsCache[city.id];
   // Coalesce concurrent callers (outline layer + a hood tap) into one load.
-  if (nycHoodsInflight) return nycHoodsInflight;
-  nycHoodsInflight = (async () => {
+  if (hoodsInflight[city.id]) return hoodsInflight[city.id]!;
+  hoodsInflight[city.id] = (async () => {
     try {
-      const raw = await FileSystem.readAsStringAsync(NYC_HOODS_FILE);
+      const raw = await FileSystem.readAsStringAsync(city.file);
       const features = JSON.parse(raw);
       if (Array.isArray(features) && features.length) {
-        nycHoodsCache = features;
+        hoodsCache[city.id] = features;
         return features;
       }
     } catch {} // no file yet — first run
     try {
-      const res = await fetch(NYC_HOODS_URL, { headers: { Accept: 'application/json' } });
+      const res = await fetch(city.url, { headers: { Accept: 'application/json' } });
       if (res.ok) {
         const fc: any = await res.json();
         const features = fc?.features ?? [];
         if (features.length) {
-          nycHoodsCache = features;
-          FileSystem.writeAsStringAsync(NYC_HOODS_FILE, JSON.stringify(features)).catch(() => {});
+          hoodsCache[city.id] = features;
+          FileSystem.writeAsStringAsync(city.file, JSON.stringify(features)).catch(() => {});
         }
         return features;
       }
@@ -129,16 +171,20 @@ async function loadNycHoods(): Promise<any[]> {
     return [];
   })();
   try {
-    return await nycHoodsInflight;
+    return await hoodsInflight[city.id]!;
   } finally {
-    nycHoodsInflight = null;
+    hoodsInflight[city.id] = null;
   }
 }
 
-/** Fire-and-forget warm-up: call early (login/splash) so the hoods layer is
- *  already on disk/memory by the time the map wants it. */
-export function prefetchNycHoods(): void {
-  void loadNycHoods();
+/** Fire-and-forget warm-up for the city at a location — call once we know
+ *  roughly where the user is (e.g. a cached fix at launch) so the map's hood
+ *  outlines and first tap don't wait on the GeoJSON download. Downloads ONLY
+ *  the city the point falls in, and nothing when it's outside every registered
+ *  city, so a user never pulls a city's data they aren't in. */
+export function prefetchHoodsNear(lat: number, lon: number): void {
+  const city = cityForPoint(lat, lon);
+  if (city) void loadHoods(city);
 }
 
 /** Does a GeoJSON Polygon/MultiPolygon contain the point? (outer rings only) */
@@ -154,19 +200,19 @@ function geomContains(g: any, lat: number, lon: number): boolean {
   return false;
 }
 
-async function nycFineNeighborhood(
+/** The fine neighborhood (name + ring) containing a point, from whichever
+ *  city's registered source covers it. Null outside every registered city. */
+async function fineNeighborhood(
   lat: number,
   lon: number
 ): Promise<{ name: string; poly: [number, number][] } | null> {
-  const features = await loadNycHoods();
+  const city = cityForPoint(lat, lon);
+  if (!city) return null;
+  const features = await loadHoods(city);
   for (const f of features) {
     if (geomContains(f.geometry, lat, lon)) {
       const ring = geojsonToRing(f.geometry);
-      if (ring) {
-        const p = f.properties || {};
-        const name = p.neighborhood || p.name || p.ntaname || p.NTAName || '';
-        return { name, poly: ring };
-      }
+      if (ring) return { name: hoodName(f.properties, city.nameKeys), poly: ring };
     }
   }
   return null;
@@ -194,10 +240,10 @@ async function osmBoundaryByName(name: string, city: string): Promise<[number, n
 }
 
 /**
- * The real neighborhood outline + authoritative name. In NYC: the fine
- * Pediacities neighborhood (small, single hood). Elsewhere: OSM by name.
- * Returns null where neither has a shape, so we draw nothing rather than a fake
- * box. Cached per tile, including the "none" answer.
+ * The real neighborhood outline + authoritative name. In a registered city
+ * (NYC, Atlanta): the fine official neighborhood (small, single hood).
+ * Elsewhere: OSM by name. Returns null where neither has a shape, so we draw
+ * nothing rather than a fake box. Cached per tile, including the "none" answer.
  */
 export async function neighborhoodBoundary(
   lat: number,
@@ -217,13 +263,11 @@ export async function neighborhoodBoundary(
   let poly: [number, number][] | null = null;
   let source: BoundaryResult['source'] = 'none';
   let outName = '';
-  if (inNYC(lat, lon)) {
-    const fine = await nycFineNeighborhood(lat, lon);
-    if (fine?.poly) {
-      poly = fine.poly;
-      source = 'nyc';
-      outName = fine.name;
-    }
+  const fine = await fineNeighborhood(lat, lon);
+  if (fine?.poly) {
+    poly = fine.poly;
+    source = 'city';
+    outName = fine.name;
   }
   if (!poly) {
     poly = await osmBoundaryByName(name, city);
@@ -265,22 +309,25 @@ function decimate(ring: [number, number][], max = 160): [number, number][] {
   return out;
 }
 
-/** Every neighborhood whose shape intersects the current map view. */
-export async function getNycHoodsInBounds(
+/** Every neighborhood whose shape intersects the current map view. Uses the
+ *  registered source for whichever city the view is centered on (NYC, Atlanta);
+ *  returns [] when the view isn't over a registered city. */
+export async function getHoodsInBounds(
   minLat: number,
   minLon: number,
   maxLat: number,
   maxLon: number
 ): Promise<HoodShape[]> {
-  const features = await loadNycHoods();
+  const city = cityForPoint((minLat + maxLat) / 2, (minLon + maxLon) / 2);
+  if (!city) return [];
+  const features = await loadHoods(city);
   const out: HoodShape[] = [];
   for (const f of features) {
     const ring = geojsonToRing(f.geometry);
     if (!ring) continue;
     const [a, b, c, d] = ringBBox(ring);
     if (c < minLat || a > maxLat || d < minLon || b > maxLon) continue; // no bbox overlap
-    const p = f.properties || {};
-    const name = p.neighborhood || p.name || p.ntaname || '';
+    const name = hoodName(f.properties, city.nameKeys);
     if (name) out.push({ name, ring: decimate(ring) });
   }
   return out;
@@ -306,10 +353,10 @@ export function polygonStats(
 }
 
 /** The neighborhood (name + ring) containing a point — for auto-activating the
- *  level you're standing in when you start a cleanup. NYC only; null elsewhere. */
+ *  level you're standing in when you start a cleanup. Works in any registered
+ *  city (NYC, Atlanta); null elsewhere. */
 export async function hoodContaining(lat: number, lon: number): Promise<HoodShape | null> {
-  if (!inNYC(lat, lon)) return null;
-  const fine = await nycFineNeighborhood(lat, lon);
+  const fine = await fineNeighborhood(lat, lon);
   if (fine?.poly && fine.name) return { name: fine.name, ring: fine.poly };
   return null;
 }
