@@ -1,4 +1,4 @@
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert, TextInput, Modal, KeyboardAvoidingView, Platform, Keyboard } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Pressable, Alert, TextInput, Modal, KeyboardAvoidingView, Platform, Keyboard } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
 import Constants from 'expo-constants';
 import * as Updates from 'expo-updates';
@@ -14,6 +14,8 @@ import { HEALTH_SYNC_KEY, setHealthSyncEnabled } from '../../src/services/health
 import { PRIVACY_POLICY_TEXT, TERMS_OF_SERVICE_TEXT } from '../../src/constants/legal';
 import { FitnessApp } from '../../src/types';
 import { COLORS, SPACING, RADIUS } from '../../src/constants/colors';
+import { C, radius, shadow } from '../../src/pick/theme';
+import { Icon, IconName } from '../../src/pick/Icon';
 import {
   getCrashReports,
   clearCrashReports,
@@ -38,6 +40,35 @@ function otaBuildStamp(): string {
   }
 }
 
+// Grouped-card header: small line icon + uppercase label.
+function GroupHead({ icon, label, danger }: { icon?: IconName; label: string; danger?: boolean }) {
+  return (
+    <View style={styles.groupHead}>
+      {icon ? <Icon name={icon} size={15} color={danger ? C.danger : C.primary} sw={1.9} /> : null}
+      <Text style={[styles.groupTitle, danger && { color: C.danger }]}>{label}</Text>
+    </View>
+  );
+}
+
+// One switch row — used across Privacy & sharing and Integrations.
+function Toggle({ label, sub, value, onPress }: { label: string; sub?: string; value: boolean; onPress: () => void }) {
+  return (
+    <View style={styles.toggleRow}>
+      <View style={{ flex: 1, paddingRight: 12 }}>
+        <Text style={styles.toggleLabel}>{label}</Text>
+        {sub ? <Text style={styles.toggleSubtext}>{sub}</Text> : null}
+      </View>
+      <TouchableOpacity
+        style={[styles.toggleButton, value && styles.toggleButtonActive]}
+        onPress={onPress}
+        activeOpacity={0.9}
+      >
+        <View style={[styles.toggleThumb, value && styles.toggleThumbActive]} />
+      </TouchableOpacity>
+    </View>
+  );
+}
+
 export default function SettingsScreen() {
   const router = useRouter();
   const [displayName, setDisplayName] = useState('');
@@ -46,11 +77,9 @@ export default function SettingsScreen() {
   const [distanceUnit, setDistanceUnit] = useState('mi');
   const [enabledFitnessApps, setEnabledFitnessApps] = useState<FitnessApp[]>([]);
   const [fitnessRecommendation, setFitnessRecommendation] = useState('');
-  const [batterySaver, setBatterySaver] = useState(true);
   const [teamName, setTeamName] = useState('');
   const [isEditing, setIsEditing] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [devMode, setDevMode] = useState(false);
   const [legalDoc, setLegalDoc] = useState<'privacy' | 'terms' | null>(null);
   const [carryMode, setCarryMode] = useState<CarryMode>('auto');
   const [healthSync, setHealthSync] = useState(true);
@@ -61,6 +90,7 @@ export default function SettingsScreen() {
   const [feedbackText, setFeedbackText] = useState('');
   const [sendingFeedback, setSendingFeedback] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [fitnessOpen, setFitnessOpen] = useState(false);
   const [leaderboardHidden, setLeaderboardHidden] = useState(false);
   const [communitySharing, setCommunitySharing] = useState(true);
   const [communityAutoPost, setCommunityAutoPost] = useState(false);
@@ -203,7 +233,6 @@ export default function SettingsScreen() {
 
       if (!currentUser) return;
 
-
       // Update database
       const db = await getDatabase();
       await db.updateUserSettings(currentUser.uid, {
@@ -341,551 +370,467 @@ export default function SettingsScreen() {
     }
   };
 
+  const confirmLogout = () => {
+    Alert.alert('Log out', 'Are you sure you want to log out?', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Log out',
+        style: 'destructive',
+        onPress: async () => {
+          try {
+            await getAuthService().logout();
+            router.replace('/auth/login');
+          } catch (error) {
+            Alert.alert('Error', 'Failed to logout.');
+          }
+        },
+      },
+    ]);
+  };
+
+  const confirmClearData = () => {
+    Alert.alert(
+      'Clear all data',
+      'This will permanently delete all your cleanups, stats, and badges. This cannot be undone.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete All Data',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              const db = await getDatabase();
+              await db.clearAllData();
+              Alert.alert('Data Cleared', 'All data has been deleted.');
+              loadSettings();
+            } catch (error) {
+              Alert.alert('Error', 'Failed to clear data.');
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  const confirmDeleteAccount = () => {
+    Alert.alert(
+      'Delete account?',
+      'This permanently deletes your account AND all your data — cleanups, stats, badges. There is no undo.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete Forever',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await getAuthService().deleteAccount();
+              router.replace('/auth/signup');
+            } catch (error: any) {
+              Alert.alert('Could not delete account', error.message);
+            }
+          },
+        },
+      ]
+    );
+  };
+
   if (loading) {
     return (
       <SafeAreaView style={styles.container}>
         <View style={styles.centerContent}>
           <Text style={styles.title}>You</Text>
-          <Text style={styles.subtitle}>Loading...</Text>
+          <Text style={styles.subtitle}>Loading…</Text>
         </View>
       </SafeAreaView>
     );
   }
 
-  return (
-    <SafeAreaView style={styles.container}>
-      <ScrollView contentContainerStyle={styles.scrollContent}>
-        {/* Header */}
-        <View style={styles.header}>
-          <Text style={styles.title}>You</Text>
-          {!isEditing && (
-            <TouchableOpacity onPress={() => setIsEditing(true)}>
-              <Text style={styles.editButton}>Edit</Text>
-            </TouchableOpacity>
-          )}
-        </View>
+  const initial = (displayName || 'You').trim().charAt(0).toUpperCase() || 'Y';
+  const connectedFitness = enabledFitnessApps.length;
+  const teamLabel = teamName && teamName.toLowerCase() !== 'solo' ? teamName : 'Solo picker';
 
-        {/* Profile Section */}
-        <View style={styles.section}>
-          <View style={styles.settingRow}>
-            <Text style={styles.label}>Display Name</Text>
+  return (
+    <SafeAreaView style={styles.container} edges={['top']}>
+      <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+
+        {/* ---------- Identity header ---------- */}
+        <View style={styles.profileCard}>
+          <View style={styles.avatar}>
+            <Text style={styles.avatarInitial}>{initial}</Text>
+          </View>
+          <View style={{ flex: 1, minWidth: 0 }}>
             {isEditing ? (
               <TextInput
-                style={styles.input}
+                style={styles.profileNameInput}
                 value={displayName}
                 onChangeText={setDisplayName}
                 placeholder="Your name"
+                placeholderTextColor={C.muted}
               />
             ) : (
-              <Text style={styles.value}>{displayName}</Text>
+              <Text style={styles.profileName} numberOfLines={1}>{displayName || 'Your name'}</Text>
             )}
+            <Text style={styles.profileMeta} numberOfLines={1}>
+              {teamLabel}{neighborhood ? '  ·  ' + neighborhood : ''}
+            </Text>
           </View>
-
-          <View style={styles.settingRow}>
-            <Text style={styles.label}>Neighborhood / Zone</Text>
-            {isEditing ? (
-              <TextInput
-                style={styles.input}
-                value={neighborhood}
-                onChangeText={setNeighborhood}
-                placeholder="Your zone"
-              />
-            ) : (
-              <Text style={styles.value}>{neighborhood}</Text>
-            )}
-          </View>
-
-          <View style={styles.settingRow}>
-            <Text style={styles.label}>Email</Text>
-            <Text style={styles.valueDisabled}>jlverbie@gmail.com</Text>
-          </View>
+          {!isEditing && (
+            <Pressable hitSlop={10} onPress={() => setIsEditing(true)}>
+              <Text style={styles.editButton}>Edit</Text>
+            </Pressable>
+          )}
         </View>
 
-        {/* Units Section */}
+        {/* Editable extras + save/cancel — only in edit mode */}
+        {isEditing && (
+          <View style={styles.section}>
+            <Text style={styles.fieldLabel}>Home area (optional)</Text>
+            <TextInput
+              style={styles.input}
+              value={neighborhood}
+              onChangeText={setNeighborhood}
+              placeholder="Your neighborhood"
+              placeholderTextColor={C.muted}
+            />
+            <View style={styles.actionButtons}>
+              <TouchableOpacity style={[styles.button, styles.buttonCancel]} onPress={() => setIsEditing(false)}>
+                <Text style={styles.buttonText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={[styles.button, styles.buttonSave]} onPress={saveSettings}>
+                <Text style={styles.buttonTextWhite}>Save changes</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        )}
+
+        {/* ---------- Preferences ---------- */}
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Units</Text>
-
-          <View style={styles.unitsGrid}>
-            {/* Distance Units */}
-            <TouchableOpacity
-              style={[
-                styles.unitGridButton,
-                distanceUnit === 'mi' && styles.unitButtonActive,
-              ]}
-              onPress={() => setDistanceUnit('mi')}
-            >
-              <Text
-                style={[
-                  styles.unitButtonText,
-                  distanceUnit === 'mi' && styles.unitButtonTextActive,
-                ]}
-              >
-                mi
-              </Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={[
-                styles.unitGridButton,
-                distanceUnit === 'km' && styles.unitButtonActive,
-              ]}
-              onPress={() => setDistanceUnit('km')}
-            >
-              <Text
-                style={[
-                  styles.unitButtonText,
-                  distanceUnit === 'km' && styles.unitButtonTextActive,
-                ]}
-              >
-                km
-              </Text>
-            </TouchableOpacity>
+          <GroupHead icon="target" label="Preferences" />
+          <View style={styles.prefRow}>
+            <Text style={styles.prefLabel}>Distance units</Text>
+            <View style={styles.pillRow}>
+              {(['mi', 'km'] as const).map((u) => (
+                <Pressable
+                  key={u}
+                  style={[styles.pill, distanceUnit === u && styles.pillActive]}
+                  onPress={() => setDistanceUnit(u)}
+                >
+                  <Text style={[styles.pillText, distanceUnit === u && styles.pillTextActive]}>{u}</Text>
+                </Pressable>
+              ))}
+            </View>
           </View>
         </View>
 
-        {/* Advanced settings toggle */}
+        {/* ---------- Privacy & sharing ---------- */}
+        <View style={styles.section}>
+          <GroupHead icon="user" label="Privacy & sharing" />
+          <Toggle
+            label="Show me on the leaderboard"
+            sub="Your name and totals appear on the individual leaderboard. Off keeps you private."
+            value={!leaderboardHidden}
+            onPress={toggleLeaderboardVisibility}
+          />
+          <View style={styles.divider} />
+          <Toggle
+            label="Share cleanups to community"
+            sub="Shows the “Share to community” option after a cleanup. Nothing is ever posted automatically."
+            value={communitySharing}
+            onPress={toggleCommunitySharing}
+          />
+          {communitySharing && (
+            <>
+              <View style={styles.divider} />
+              <Toggle
+                label="Auto-post photos"
+                sub="When you add a photo to a cleanup, post it to the community on save — no extra tap."
+                value={communityAutoPost}
+                onPress={toggleCommunityAutoPost}
+              />
+            </>
+          )}
+        </View>
+
+        {/* ---------- Team ---------- */}
+        {uid ? <TeamSection userId={uid} currentTeam={teamName} onChange={setTeamName} /> : null}
+
+        {/* ---------- Integrations ---------- */}
+        <View style={styles.section}>
+          <GroupHead icon="link" label="Integrations" />
+          <Toggle
+            label="Log cleanups to Apple Health"
+            sub="Each cleanup becomes a walking workout — counts toward your rings and exercise minutes."
+            value={healthSync}
+            onPress={toggleHealthSync}
+          />
+          <View style={styles.divider} />
+          <Pressable style={styles.rowLink} onPress={() => setFitnessOpen((v) => !v)}>
+            <View style={{ flex: 1, paddingRight: 12 }}>
+              <Text style={styles.rowLinkLabel}>Fitness apps</Text>
+              <Text style={styles.rowLinkSub}>
+                {connectedFitness > 0 ? `${connectedFitness} connected` : 'None connected'}
+                {!isEditing ? ' · tap Edit to change' : ''}
+              </Text>
+            </View>
+            <Text style={styles.chev}>{fitnessOpen ? '▾' : '▸'}</Text>
+          </Pressable>
+
+          {fitnessOpen && (
+            <>
+              <View style={styles.fitnessGrid}>
+                {Object.entries(FITNESS_APPS).map(([appKey, appConfig]) => {
+                  const app = appKey as FitnessApp;
+                  const isEnabled = enabledFitnessApps.includes(app);
+                  const platformLabel =
+                    appConfig.platform === 'ios'
+                      ? 'iOS'
+                      : appConfig.platform === 'android'
+                      ? 'Android'
+                      : 'iOS & Android';
+
+                  return (
+                    <TouchableOpacity
+                      key={app}
+                      style={[styles.fitnessButton, isEnabled && styles.unitButtonActive]}
+                      onPress={() => isEditing && toggleFitnessApp(app)}
+                      disabled={!isEditing}
+                      activeOpacity={0.8}
+                    >
+                      <Text
+                        style={[styles.fitnessName, isEnabled && styles.unitButtonTextActive]}
+                        numberOfLines={1}
+                      >
+                        {appConfig.name}
+                      </Text>
+                      <Text style={[styles.fitnessPlatform, isEnabled && styles.fitnessPlatformActive]}>
+                        {platformLabel}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+
+              <View style={styles.recommendationBox}>
+                <Text style={styles.recommendationLabel}>Smart deduplication</Text>
+                <Text style={styles.recommendationText}>{fitnessRecommendation}</Text>
+              </View>
+
+              <View style={styles.configBox}>
+                <Text style={styles.configTitle}>Recommended configurations</Text>
+                {RECOMMENDED_CONFIGS.map((config, index) => (
+                  <View key={index} style={styles.configItem}>
+                    <Text style={styles.configName}>{config.name}</Text>
+                    <Text style={styles.configDesc}>{config.description}</Text>
+                  </View>
+                ))}
+              </View>
+            </>
+          )}
+        </View>
+
+        {/* ---------- Support ---------- */}
+        <View style={styles.section}>
+          <GroupHead icon="flag" label="Support" />
+          <Pressable style={styles.rowLink} onPress={() => setFeedbackOpen(true)}>
+            <Text style={styles.rowLinkLabel}>Send feedback</Text>
+            <Text style={styles.rowLinkValue}>Bugs & ideas →</Text>
+          </Pressable>
+          <View style={styles.divider} />
+          <Pressable style={styles.rowLink} onPress={() => setLegalDoc('privacy')}>
+            <Text style={styles.rowLinkLabel}>Privacy policy</Text>
+            <Text style={styles.rowLinkValue}>View →</Text>
+          </Pressable>
+          <View style={styles.divider} />
+          <Pressable style={styles.rowLink} onPress={() => setLegalDoc('terms')}>
+            <Text style={styles.rowLinkLabel}>Terms of service</Text>
+            <Text style={styles.rowLinkValue}>View →</Text>
+          </Pressable>
+          <View style={styles.divider} />
+          <View style={styles.rowLink}>
+            <Text style={styles.rowLinkLabel}>Version</Text>
+            <Text style={styles.rowLinkValue} numberOfLines={1}>
+              {Constants.expoConfig?.version ?? '1.0.0'} · {otaBuildStamp()}
+            </Text>
+          </View>
+        </View>
+
+        {/* ---------- Advanced (collapsed) ---------- */}
         <TouchableOpacity
           style={styles.advancedToggle}
           onPress={() => setAdvancedOpen((v) => !v)}
           activeOpacity={0.7}
         >
-          <Text style={styles.advancedToggleText}>
-            {advancedOpen ? 'Hide advanced settings' : 'Show advanced settings'}
-          </Text>
+          <Text style={styles.advancedToggleText}>{advancedOpen ? 'Hide advanced' : 'Advanced settings'}</Text>
           <Text style={styles.advancedChevron}>{advancedOpen ? '▾' : '▸'}</Text>
         </TouchableOpacity>
 
-        {/* Carry Mode (advanced) */}
         {advancedOpen && (
-        <>
-        {/* Carry Mode Section (advanced) */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Carry Mode</Text>
-          <Text style={styles.sectionSubtext}>
-            Where the phone rides during cleanup. Auto figures it out from how the phone moves.
-          </Text>
+          <>
+            {/* Carry mode */}
+            <View style={styles.section}>
+              <GroupHead icon="pin" label="Carry mode" />
+              <Text style={styles.sectionSubtext}>
+                Where the phone rides during cleanup. Auto figures it out from how the phone moves.
+              </Text>
+              <View style={styles.pillRow}>
+                {(['auto', 'pocket', 'hand'] as CarryMode[]).map((mode) => (
+                  <Pressable
+                    key={mode}
+                    style={[styles.pill, carryMode === mode && styles.pillActive]}
+                    onPress={() => selectCarryMode(mode)}
+                  >
+                    <Text style={[styles.pillText, carryMode === mode && styles.pillTextActive]}>
+                      {mode === 'auto' ? 'Auto' : mode === 'pocket' ? 'Pocket' : 'In hand'}
+                    </Text>
+                  </Pressable>
+                ))}
+              </View>
+            </View>
 
-          <View style={styles.unitsGrid}>
-            {(['auto', 'pocket', 'hand'] as CarryMode[]).map((mode) => (
-              <TouchableOpacity
-                key={mode}
-                style={[styles.unitGridButton, carryMode === mode && styles.unitButtonActive]}
-                onPress={() => selectCarryMode(mode)}
-              >
-                <Text style={[styles.unitButtonText, carryMode === mode && styles.unitButtonTextActive]}>
-                  {mode === 'auto' ? 'Auto' : mode === 'pocket' ? 'Pocket' : 'In hand'}
-                </Text>
+            {/* Diagnostics */}
+            <View style={styles.section}>
+              <GroupHead icon="bolt" label="Diagnostics" />
+              <Text style={styles.sectionSubtext}>
+                If a cleanup crashes with the screen off, PICK saves a black-box trace here showing how
+                far the walk got. Share it with the developer to help fix long-walk crashes.
+              </Text>
+
+              {crashReports.length === 0 ? (
+                <Text style={styles.value}>No crash reports — clean so far</Text>
+              ) : (
+                <>
+                  {crashReports.map((r, i) => {
+                    const mins = Math.floor(r.elapsedSec / 60);
+                    const secs = r.elapsedSec % 60;
+                    return (
+                      <View
+                        key={r.startedAt + '-' + i}
+                        style={{
+                          backgroundColor: COLORS.cream,
+                          borderRadius: RADIUS.md,
+                          padding: SPACING.md,
+                          marginTop: SPACING.sm,
+                          borderLeftWidth: 3,
+                          borderLeftColor: '#FF3B30',
+                        }}
+                      >
+                        <Text style={{ fontWeight: '700', color: COLORS.darkSage }}>
+                          {new Date(r.startedAt).toLocaleString()}
+                        </Text>
+                        <Text style={{ color: COLORS.mutedSage, marginTop: 2 }}>
+                          Survived {mins}m {secs}s · {r.routePoints} route pts · {r.pickups} pickups ·{' '}
+                          {r.motionEvents} motion events
+                        </Text>
+                        <Text style={{ color: COLORS.mutedSage, marginTop: 2, fontSize: 12 }}>
+                          Battery saver {r.batterySaver ? 'on' : 'off'} · detected {r.gapSec}s after last
+                          heartbeat
+                        </Text>
+                      </View>
+                    );
+                  })}
+
+                  <TouchableOpacity style={[styles.button, styles.buttonDev]} onPress={copyCrashReports}>
+                    <Text style={styles.buttonText}>Copy reports to share</Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity style={[styles.button, styles.buttonDev]} onPress={clearReports}>
+                    <Text style={styles.buttonText}>Clear crash reports</Text>
+                  </TouchableOpacity>
+                </>
+              )}
+
+              <TouchableOpacity style={[styles.button, styles.buttonDev, { marginTop: SPACING.sm }]} onPress={forceStopTracking}>
+                <Text style={styles.buttonText}>Force-stop background tracking</Text>
               </TouchableOpacity>
-            ))}
-          </View>
-        </View>
-        </>
+              <Text style={[styles.sectionSubtext, { marginTop: SPACING.xs, marginBottom: 0 }]}>
+                Use this if the iOS location arrow stays on when no cleanup is running.
+              </Text>
+            </View>
+
+            {/* Developer mode */}
+            <View style={styles.section}>
+              <GroupHead icon="bag" label="Developer mode" />
+              <Text style={styles.sectionSubtext}>
+                For testing neighborhood view without multiple cleanup sessions.
+              </Text>
+              <TouchableOpacity
+                style={[styles.button, styles.buttonDev]}
+                onPress={() => {
+                  Alert.alert(
+                    'Populate Mock Data',
+                    'Add 5 mock cleanups at different ages to test the neighborhood view.\n\n• Today (Fresh)\n• 2 days (Fresh)\n• 7 days (Dusty)\n• 11 days (Attention)\n• 16 days (Not counted)',
+                    [
+                      { text: 'Cancel', style: 'cancel' },
+                      { text: 'Add Mock Data', onPress: populateMockData },
+                    ]
+                  );
+                }}
+              >
+                <Text style={styles.buttonText}>Add 5 mock cleanups</Text>
+              </TouchableOpacity>
+            </View>
+
+            {geoDebug ? (
+              <View style={styles.section}>
+                <GroupHead label="Geo debug" />
+                <Text style={{ fontSize: 11, color: C.muted }} numberOfLines={3}>{geoDebug}</Text>
+              </View>
+            ) : null}
+          </>
         )}
 
-        {/* Apple Health Section */}
+        {/* ---------- Account ---------- */}
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Apple Health</Text>
-
-          <View style={styles.toggleRow}>
-            <View style={{ flex: 1, paddingRight: 12 }}>
-              <Text style={styles.toggleLabel}>Log cleanups as workouts</Text>
-              <Text style={styles.toggleSubtext}>
-                Each cleanup becomes a walking workout — counts toward your rings and exercise minutes. (adidas Running closed its API in 2025, so Health is where the credit lives.)
-              </Text>
-            </View>
-            <TouchableOpacity
-              style={[styles.toggleButton, healthSync && styles.toggleButtonActive]}
-              onPress={toggleHealthSync}
-            >
-              <View style={[styles.toggleThumb, healthSync && styles.toggleThumbActive]} />
-            </TouchableOpacity>
+          <GroupHead icon="user" label="Account" />
+          <View style={styles.rowLink}>
+            <Text style={styles.rowLinkLabel}>Email</Text>
+            <Text style={styles.rowLinkValue} numberOfLines={1}>{email || '—'}</Text>
           </View>
-        </View>
-
-        {/* Team Section — directory + create/join/leave */}
-        {uid ? <TeamSection userId={uid} currentTeam={teamName} onChange={setTeamName} /> : null}
-
-        {/* Leaderboard visibility */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Leaderboard</Text>
-          <View style={styles.toggleRow}>
-            <View style={{ flex: 1, paddingRight: 12 }}>
-              <Text style={styles.toggleLabel}>Show me on the leaderboard</Text>
-              <Text style={styles.toggleSubtext}>
-                When on, your display name and totals appear on the individual leaderboard so others can see your impact. Turn off to stay private — only you will see your numbers.
-              </Text>
-            </View>
-            <TouchableOpacity
-              style={[styles.toggleButton, !leaderboardHidden && styles.toggleButtonActive]}
-              onPress={toggleLeaderboardVisibility}
-            >
-              <View style={[styles.toggleThumb, !leaderboardHidden && styles.toggleThumbActive]} />
-            </TouchableOpacity>
-          </View>
-        </View>
-
-        {/* Community sharing */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Community</Text>
-          <View style={styles.toggleRow}>
-            <View style={{ flex: 1, paddingRight: 12 }}>
-              <Text style={styles.toggleLabel}>Share cleanups to community</Text>
-              <Text style={styles.toggleSubtext}>
-                Shows the “Share to community” option after a cleanup so you can post a photo. Turn off to hide it entirely — nothing is ever posted automatically.
-              </Text>
-            </View>
-            <TouchableOpacity
-              style={[styles.toggleButton, communitySharing && styles.toggleButtonActive]}
-              onPress={toggleCommunitySharing}
-            >
-              <View style={[styles.toggleThumb, communitySharing && styles.toggleThumbActive]} />
-            </TouchableOpacity>
-          </View>
-
-          {communitySharing && (
-            <View style={[styles.toggleRow, { marginTop: 14 }]}>
-              <View style={{ flex: 1, paddingRight: 12 }}>
-                <Text style={styles.toggleLabel}>Auto-post photos</Text>
-                <Text style={styles.toggleSubtext}>
-                  When you add a photo to a cleanup, post it to the community automatically on save — no extra tap. Off by default; you can always delete a post.
-                </Text>
-              </View>
-              <TouchableOpacity
-                style={[styles.toggleButton, communityAutoPost && styles.toggleButtonActive]}
-                onPress={toggleCommunityAutoPost}
-              >
-                <View style={[styles.toggleThumb, communityAutoPost && styles.toggleThumbActive]} />
-              </TouchableOpacity>
-            </View>
-          )}
-        </View>
-
-        {/* Fitness Apps Section */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Fitness Apps</Text>
-          <Text style={styles.sectionSubtext}>
-            Track cleanups as exercise in your favorite fitness apps
-          </Text>
-
-          {/* App toggles — same pill style as Units, no emoji */}
-          <View style={styles.fitnessGrid}>
-            {Object.entries(FITNESS_APPS).map(([appKey, appConfig]) => {
-              const app = appKey as FitnessApp;
-              const isEnabled = enabledFitnessApps.includes(app);
-              const platformLabel =
-                appConfig.platform === 'ios'
-                  ? 'iOS'
-                  : appConfig.platform === 'android'
-                  ? 'Android'
-                  : 'iOS & Android';
-
-              return (
-                <TouchableOpacity
-                  key={app}
-                  style={[styles.fitnessButton, isEnabled && styles.unitButtonActive]}
-                  onPress={() => isEditing && toggleFitnessApp(app)}
-                  disabled={!isEditing}
-                  activeOpacity={0.8}
-                >
-                  <Text
-                    style={[styles.fitnessName, isEnabled && styles.unitButtonTextActive]}
-                    numberOfLines={1}
-                  >
-                    {appConfig.name}
-                  </Text>
-                  <Text style={[styles.fitnessPlatform, isEnabled && styles.fitnessPlatformActive]}>
-                    {platformLabel}
-                  </Text>
-                </TouchableOpacity>
-              );
-            })}
-          </View>
-
-          {/* Recommendation Box */}
-          <View style={styles.recommendationBox}>
-            <Text style={styles.recommendationLabel}>Smart deduplication</Text>
-            <Text style={styles.recommendationText}>{fitnessRecommendation}</Text>
-          </View>
-
-          {/* Recommended Configs */}
-          <View style={styles.configBox}>
-            <Text style={styles.configTitle}>Recommended Configurations</Text>
-            {RECOMMENDED_CONFIGS.map((config, index) => (
-              <View key={index} style={styles.configItem}>
-                <Text style={styles.configName}>{config.name}</Text>
-                <Text style={styles.configDesc}>{config.description}</Text>
-              </View>
-            ))}
-          </View>
-        </View>
-
-        {/* Diagnostics (advanced) */}
-        {advancedOpen && (
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Diagnostics</Text>
-          <Text style={styles.sectionSubtext}>
-            If a cleanup crashes with the screen off, PICK saves a black-box trace here showing how
-            far the walk got. Share it with the developer to help fix long-walk crashes.
-          </Text>
-
-          {crashReports.length === 0 ? (
-            <View style={styles.settingRow}>
-              <Text style={styles.label}>Crash reports</Text>
-              <Text style={styles.value}>None — clean so far</Text>
-            </View>
-          ) : (
-            <>
-              {crashReports.map((r, i) => {
-                const mins = Math.floor(r.elapsedSec / 60);
-                const secs = r.elapsedSec % 60;
-                return (
-                  <View
-                    key={r.startedAt + '-' + i}
-                    style={{
-                      backgroundColor: COLORS.cream,
-                      borderRadius: RADIUS.md,
-                      padding: SPACING.md,
-                      marginTop: SPACING.sm,
-                      borderLeftWidth: 3,
-                      borderLeftColor: '#FF3B30',
-                    }}
-                  >
-                    <Text style={{ fontWeight: '700', color: COLORS.darkSage }}>
-                      {new Date(r.startedAt).toLocaleString()}
-                    </Text>
-                    <Text style={{ color: COLORS.mutedSage, marginTop: 2 }}>
-                      Survived {mins}m {secs}s · {r.routePoints} route pts · {r.pickups} pickups ·{' '}
-                      {r.motionEvents} motion events
-                    </Text>
-                    <Text style={{ color: COLORS.mutedSage, marginTop: 2, fontSize: 12 }}>
-                      Battery saver {r.batterySaver ? 'on' : 'off'} · detected {r.gapSec}s after last
-                      heartbeat
-                    </Text>
-                  </View>
-                );
-              })}
-
-              <TouchableOpacity style={[styles.button, styles.buttonDev]} onPress={copyCrashReports}>
-                <Text style={styles.buttonText}>Copy reports to share</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity style={[styles.button, styles.buttonDev]} onPress={clearReports}>
-                <Text style={styles.buttonText}>Clear crash reports</Text>
-              </TouchableOpacity>
-            </>
-          )}
-
-          <TouchableOpacity style={[styles.button, styles.buttonDev]} onPress={forceStopTracking}>
-            <Text style={styles.buttonText}>Force-stop background tracking</Text>
-          </TouchableOpacity>
-          <Text style={[styles.sectionSubtext, { marginTop: SPACING.xs }]}>
-            Use this if the iOS location arrow stays on when no cleanup is running.
-          </Text>
-        </View>
-        )}
-
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Feedback</Text>
-          <Text style={styles.sectionSubtext}>Found a bug or have an idea? Tell Jake directly.</Text>
-          <TouchableOpacity style={styles.feedbackButton} onPress={() => setFeedbackOpen(true)}>
-            <Text style={styles.feedbackButtonText}>Send feedback</Text>
-          </TouchableOpacity>
-        </View>
-
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>About</Text>
-
-          <View style={styles.settingRow}>
-            <Text style={styles.label}>App Version</Text>
-            <Text style={styles.value}>{Constants.expoConfig?.version ?? '1.0.0'}</Text>
-          </View>
-
-          <View style={styles.settingRow}>
-            <Text style={styles.label}>Update</Text>
-            <Text style={styles.value}>{otaBuildStamp()}</Text>
-          </View>
-
-          <View style={styles.settingRow}>
-            <Text style={styles.label}>Status</Text>
+          <View style={styles.divider} />
+          <View style={styles.rowLink}>
+            <Text style={styles.rowLinkLabel}>Status</Text>
             <Text style={styles.valueBeta}>Beta</Text>
           </View>
-
-          {geoDebug ? (
-            <View style={styles.settingRow}>
-              <Text style={styles.label}>Geo debug</Text>
-              <Text style={[styles.value, { flex: 1, textAlign: 'right', fontSize: 11 }]} numberOfLines={2}>{geoDebug}</Text>
-            </View>
-          ) : null}
-
-          <TouchableOpacity style={styles.settingRow} onPress={() => setLegalDoc('privacy')}>
-            <Text style={styles.label}>Privacy Policy</Text>
-            <Text style={styles.legalLink}>View →</Text>
+          <TouchableOpacity style={styles.neutralBtn} onPress={confirmLogout} activeOpacity={0.85}>
+            <Text style={styles.neutralBtnText}>Log out</Text>
           </TouchableOpacity>
-
-          <TouchableOpacity style={styles.settingRow} onPress={() => setLegalDoc('terms')}>
-            <Text style={styles.label}>Terms of Service</Text>
-            <Text style={styles.legalLink}>View →</Text>
-          </TouchableOpacity>
-
-          <Text style={styles.aboutText}>
-            Pick is a motion detection app for tracking trash pickups autonomously. Data is stored
-            locally on your device and synced to fitness apps when enabled.
-          </Text>
         </View>
 
-        {/* Legal Document Viewer */}
-        <Modal visible={legalDoc !== null} animationType="slide">
-          <SafeAreaView style={styles.container}>
-            <View style={styles.legalHeader}>
-              <Text style={styles.legalTitle}>
-                {legalDoc === 'privacy' ? 'Privacy Policy' : 'Terms of Service'}
-              </Text>
-              <TouchableOpacity onPress={() => setLegalDoc(null)}>
-                <Text style={styles.legalClose}>✕</Text>
-              </TouchableOpacity>
-            </View>
-            <ScrollView contentContainerStyle={styles.legalContent}>
-              <Text style={styles.legalText}>
-                {legalDoc === 'privacy' ? PRIVACY_POLICY_TEXT : TERMS_OF_SERVICE_TEXT}
-              </Text>
-            </ScrollView>
-          </SafeAreaView>
-        </Modal>
+        {/* ---------- Danger zone ---------- */}
+        <View style={styles.section}>
+          <GroupHead icon="trash" label="Danger zone" danger />
+          <TouchableOpacity style={styles.dangerButton} onPress={confirmClearData}>
+            <Text style={styles.dangerButtonText}>Clear all data</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={[styles.dangerButton, { marginBottom: 0 }]} onPress={confirmDeleteAccount}>
+            <Text style={styles.dangerButtonText}>Delete account</Text>
+          </TouchableOpacity>
+        </View>
 
-        {/* Action Buttons */}
-        {isEditing && (
-          <View style={styles.actionButtons}>
-            <TouchableOpacity style={[styles.button, styles.buttonCancel]} onPress={() => setIsEditing(false)}>
-              <Text style={styles.buttonText}>Cancel</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={[styles.button, styles.buttonSave]} onPress={saveSettings}>
-              <Text style={styles.buttonTextWhite}>Save Changes</Text>
+        <Text style={styles.aboutText}>
+          Pick is a motion-detection app for tracking trash pickups autonomously. Data is stored
+          locally on your device and synced to fitness apps when enabled.
+        </Text>
+      </ScrollView>
+
+      {/* Legal document viewer */}
+      <Modal visible={legalDoc !== null} animationType="slide">
+        <SafeAreaView style={styles.container}>
+          <View style={styles.legalHeader}>
+            <Text style={styles.legalTitle}>
+              {legalDoc === 'privacy' ? 'Privacy Policy' : 'Terms of Service'}
+            </Text>
+            <TouchableOpacity onPress={() => setLegalDoc(null)}>
+              <Text style={styles.legalClose}>✕</Text>
             </TouchableOpacity>
           </View>
-        )}
-
-        {/* Developer Mode (advanced) */}
-        {advancedOpen && (
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Developer Mode</Text>
-          <Text style={styles.sectionSubtext}>
-            For testing neighborhood view without multiple cleanup sessions
-          </Text>
-
-          <TouchableOpacity
-            style={[styles.button, styles.buttonDev]}
-            onPress={() => {
-              Alert.alert(
-                'Populate Mock Data',
-                'Add 5 mock cleanups at different ages to test the neighborhood view.\n\n• Today (Fresh)\n• 2 days (Fresh)\n• 7 days (Dusty)\n• 11 days (Attention)\n• 16 days (Not counted)',
-                [
-                  { text: 'Cancel', style: 'cancel' },
-                  {
-                    text: 'Add Mock Data',
-                    onPress: populateMockData,
-                  },
-                ]
-              );
-            }}
-          >
-            <Text style={styles.buttonText}>Add 5 mock cleanups</Text>
-          </TouchableOpacity>
-        </View>
-        )}
-
-        {/* Danger Zone */}
-        <View style={styles.section}>
-          <Text style={[styles.sectionTitle, { color: '#FF3B30' }]}>
-            Danger Zone
-          </Text>
-
-          <TouchableOpacity
-            style={styles.dangerButton}
-            onPress={() => {
-              Alert.alert(
-                'Clear All Data',
-                'This will permanently delete all your cleanups, stats, and badges. This cannot be undone.',
-                [
-                  { text: 'Cancel', style: 'cancel' },
-                  {
-                    text: 'Delete All Data',
-                    style: 'destructive',
-                    onPress: async () => {
-                      try {
-                        const db = await getDatabase();
-                        await db.clearAllData();
-                        Alert.alert('Data Cleared', 'All data has been deleted.');
-                        loadSettings();
-                      } catch (error) {
-                        Alert.alert('Error', 'Failed to clear data.');
-                      }
-                    },
-                  },
-                ]
-              );
-            }}
-          >
-            <Text style={styles.dangerButtonText}>Clear All Data</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={[styles.dangerButton, { marginBottom: 12 }]}
-            onPress={() => {
-              Alert.alert(
-                'Delete Account?',
-                'This permanently deletes your account AND all your data — cleanups, stats, badges. There is no undo.',
-                [
-                  { text: 'Cancel', style: 'cancel' },
-                  {
-                    text: 'Delete Forever',
-                    style: 'destructive',
-                    onPress: async () => {
-                      try {
-                        const authService = getAuthService();
-                        await authService.deleteAccount();
-                        router.replace('/auth/signup');
-                      } catch (error: any) {
-                        Alert.alert('Could not delete account', error.message);
-                      }
-                    },
-                  },
-                ]
-              );
-            }}
-          >
-            <Text style={styles.dangerButtonText}>Delete Account</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={styles.logoutButton}
-            onPress={() => {
-              Alert.alert(
-                'Logout',
-                'Are you sure you want to logout?',
-                [
-                  { text: 'Cancel', style: 'cancel' },
-                  {
-                    text: 'Logout',
-                    style: 'destructive',
-                    onPress: async () => {
-                      try {
-                        const authService = getAuthService();
-                        await authService.logout();
-                        console.log('Logged out successfully');
-                        router.replace('/auth/login');
-                      } catch (error) {
-                        Alert.alert('Error', 'Failed to logout.');
-                      }
-                    },
-                  },
-                ]
-              );
-            }}
-          >
-            <Text style={styles.logoutButtonText}>Log out</Text>
-          </TouchableOpacity>
-        </View>
-      </ScrollView>
+          <ScrollView contentContainerStyle={styles.legalContent}>
+            <Text style={styles.legalText}>
+              {legalDoc === 'privacy' ? PRIVACY_POLICY_TEXT : TERMS_OF_SERVICE_TEXT}
+            </Text>
+          </ScrollView>
+        </SafeAreaView>
+      </Modal>
 
       {/* Feedback composer */}
       <Modal visible={feedbackOpen} transparent animationType="slide" onRequestClose={() => setFeedbackOpen(false)}>
@@ -923,321 +868,218 @@ export default function SettingsScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: COLORS.cream,
+    backgroundColor: C.cream,
   },
   scrollContent: {
     paddingHorizontal: 16,
-    paddingVertical: 20,
-    paddingBottom: 40,
+    paddingTop: 8,
+    paddingBottom: 44,
   },
   centerContent: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
   },
-  header: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 24,
-  },
   title: {
     fontSize: 28,
     fontWeight: '700',
-    color: COLORS.darkSage,
-  },
-  editButton: {
-    fontSize: 14,
-    color: '#34C759',
-    fontWeight: '600',
+    color: C.dark,
   },
   subtitle: {
     fontSize: 16,
-    color: '#666',
+    color: C.muted,
   },
+
+  // ---------- identity header ----------
+  profileCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 14,
+    backgroundColor: C.white,
+    borderRadius: radius.cardLg,
+    padding: 18,
+    marginTop: 8,
+    marginBottom: 14,
+    ...shadow.card,
+  },
+  avatar: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: C.tint,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  avatarInitial: { fontSize: 24, fontWeight: '800', color: C.primary },
+  profileName: { fontSize: 20, fontWeight: '700', color: C.dark, letterSpacing: -0.3 },
+  profileNameInput: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: C.dark,
+    borderWidth: 1,
+    borderColor: C.border,
+    borderRadius: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  profileMeta: { fontSize: 13, color: C.muted, marginTop: 3 },
+  editButton: { fontSize: 14, color: C.accent, fontWeight: '700' },
+
+  // ---------- cards & groups ----------
   section: {
-    backgroundColor: COLORS.white,
-    borderRadius: 18,
+    backgroundColor: C.white,
+    borderRadius: radius.cardLg,
     padding: 16,
     marginBottom: 14,
-    shadowColor: '#1B2E1A',
-    shadowOpacity: 0.06,
-    shadowRadius: 3,
-    shadowOffset: { width: 0, height: 1 },
-    elevation: 1,
+    ...shadow.card,
   },
-  sectionTitle: {
-    fontSize: 17,
-    fontWeight: '700',
-    color: COLORS.darkSage,
-    marginBottom: 10,
-    letterSpacing: -0.2,
+  groupHead: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 12 },
+  groupTitle: {
+    fontSize: 12,
+    fontWeight: '800',
+    color: C.muted,
+    letterSpacing: 0.5,
+    textTransform: 'uppercase',
   },
   sectionSubtext: {
     fontSize: 12,
-    color: COLORS.mutedSage,
+    color: C.muted,
     marginBottom: 12,
     lineHeight: 17,
   },
+  divider: { height: 1, backgroundColor: C.border2 },
+
+  fieldLabel: { fontSize: 13, color: C.muted, fontWeight: '600', marginBottom: 6 },
+  input: {
+    borderWidth: 1,
+    borderColor: C.border,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontSize: 14,
+    color: C.dark,
+  },
+  value: { fontSize: 14, color: C.dark, fontWeight: '600' },
+  valueBeta: { fontSize: 14, color: C.warning, fontWeight: '700' },
+
+  // ---------- link rows ----------
+  rowLink: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 13,
+  },
+  rowLinkLabel: { fontSize: 14, color: C.dark, fontWeight: '600' },
+  rowLinkSub: { fontSize: 12, color: C.muted, marginTop: 2 },
+  rowLinkValue: { fontSize: 13, color: C.muted, fontWeight: '600', flexShrink: 1, textAlign: 'right', paddingLeft: 12 },
+  chev: { fontSize: 15, color: C.chevron, fontWeight: '700' },
+
+  // ---------- preference pills ----------
+  prefRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  prefLabel: { fontSize: 14, fontWeight: '600', color: C.dark },
+  pillRow: { flexDirection: 'row', gap: 8, flexWrap: 'wrap' },
+  pill: {
+    paddingVertical: 7,
+    paddingHorizontal: 20,
+    borderRadius: radius.chip,
+    backgroundColor: C.tint,
+    borderWidth: 1,
+    borderColor: 'transparent',
+  },
+  pillActive: { backgroundColor: C.primary, borderColor: C.primary },
+  pillText: { fontSize: 13, fontWeight: '700', color: C.text2 },
+  pillTextActive: { color: '#fff' },
+
+  // ---------- advanced disclosure ----------
   advancedToggle: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     paddingVertical: 12,
-    paddingHorizontal: 4,
-    marginBottom: 4,
-  },
-  advancedToggleText: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: COLORS.mutedSage,
-    letterSpacing: 0.2,
-  },
-  advancedChevron: {
-    fontSize: 14,
-    color: COLORS.mutedSage,
-  },
-  settingRow: {
-    paddingVertical: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: '#F0F0EA',
-  },
-  label: {
-    fontSize: 13,
-    color: COLORS.mutedSage,
-    marginBottom: 4,
-    fontWeight: '500',
-  },
-  value: {
-    fontSize: 14,
-    color: COLORS.darkSage,
-    fontWeight: '600',
-  },
-  valueDisabled: {
-    fontSize: 14,
-    color: '#999',
-  },
-  valueBeta: {
-    fontSize: 14,
-    color: '#FF9500',
-    fontWeight: '600',
-  },
-  input: {
-    borderWidth: 1,
-    borderColor: '#ddd',
-    borderRadius: 6,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    fontSize: 14,
-    color: COLORS.darkSage,
-    marginTop: 4,
-  },
-  buttonGroup: {
-    gap: 8,
-  },
-  unitButton: {
-    paddingVertical: 10,
-    borderRadius: 8,
-    backgroundColor: COLORS.white,
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: '#ddd',
-  },
-  unitButtonActive: {
-    backgroundColor: COLORS.sage,
-    borderColor: COLORS.sage,
-  },
-  unitButtonDisabled: {
-    opacity: 0.6,
-  },
-  unitButtonText: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#666',
-  },
-  unitButtonTextActive: {
-    color: '#fff',
-  },
-  unitsGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-    marginBottom: 12,
-  },
-  unitGridButton: {
-    paddingVertical: 5,
-    paddingHorizontal: 18,
-    borderRadius: 6,
-    backgroundColor: COLORS.light,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 1,
-    borderColor: COLORS.border,
-  },
-  appsGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 12,
-    marginBottom: 16,
-  },
-  appCard: {
-    width: '48%',
-    backgroundColor: '#F7F8F3',
-    borderRadius: 12,
-    padding: 12,
-    alignItems: 'center',
-    borderWidth: 2,
-    borderColor: 'transparent',
-  },
-  appCardActive: {
-    borderColor: COLORS.accent,
-    backgroundColor: '#EEF3E6',
-  },
-  appIcon: {
-    fontSize: 32,
-    marginBottom: 8,
-  },
-  appName: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: COLORS.darkSage,
-    textAlign: 'center',
-    marginBottom: 4,
-  },
-  appPlatform: {
-    fontSize: 10,
-    color: '#999',
-    textTransform: 'capitalize',
-  },
-  appCheckmark: {
-    fontSize: 18,
-    color: '#34C759',
-    position: 'absolute',
-    top: 8,
-    right: 8,
-  },
-  fitnessGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-    marginBottom: 16,
-  },
-  fitnessButton: {
-    width: '48%',
-    paddingVertical: 12,
-    paddingHorizontal: 14,
-    borderRadius: 10,
-    backgroundColor: COLORS.light,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-  },
-  fitnessName: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: COLORS.darkSage,
-  },
-  fitnessPlatform: {
-    fontSize: 11,
-    color: COLORS.mutedSage,
-    marginTop: 3,
-  },
-  fitnessPlatformActive: {
-    color: 'rgba(255,255,255,0.8)',
-  },
-  recommendationBox: {
-    backgroundColor: '#EEF3E6',
-    borderRadius: 14,
-    padding: 14,
-    marginBottom: 16,
-  },
-  recommendationLabel: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: COLORS.sage,
+    paddingHorizontal: 6,
     marginBottom: 6,
   },
-  recommendationText: {
-    fontSize: 12,
-    color: '#5C6B54',
-    lineHeight: 18,
-  },
-  configBox: {
-    backgroundColor: '#EEF3E6',
-    borderRadius: 14,
-    padding: 14,
-  },
-  configTitle: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: COLORS.sage,
-    marginBottom: 8,
-  },
-  configItem: {
-    paddingVertical: 8,
-    paddingLeft: 12,
-    borderLeftWidth: 1,
-    borderLeftColor: '#e3f2fd',
-  },
-  configName: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: COLORS.darkSage,
-    marginBottom: 2,
-  },
-  configDesc: {
-    fontSize: 11,
-    color: '#999',
-  },
-  aboutText: {
-    fontSize: 12,
-    color: '#666',
-    lineHeight: 18,
-    marginTop: 12,
-  },
+  advancedToggleText: { fontSize: 13, fontWeight: '700', color: C.muted, letterSpacing: 0.2 },
+  advancedChevron: { fontSize: 14, color: C.muted, fontWeight: '700' },
+
+  // ---------- toggles ----------
   toggleRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
     paddingVertical: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: '#eee',
   },
-  toggleLabel: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: COLORS.darkSage,
-    marginBottom: 2,
-  },
-  toggleSubtext: {
-    fontSize: 11,
-    color: '#999',
-  },
+  toggleLabel: { fontSize: 14, fontWeight: '600', color: C.dark, marginBottom: 2 },
+  toggleSubtext: { fontSize: 11, color: C.muted, lineHeight: 15 },
   toggleButton: {
     width: 50,
     height: 28,
     borderRadius: 14,
-    backgroundColor: COLORS.border,
+    backgroundColor: C.toggleOff,
     padding: 2,
     justifyContent: 'flex-start',
   },
-  toggleButtonActive: {
-    backgroundColor: COLORS.accent,
-    justifyContent: 'flex-end',
+  toggleButtonActive: { backgroundColor: C.accent, justifyContent: 'flex-end' },
+  toggleThumb: { width: 24, height: 24, borderRadius: 12, backgroundColor: C.white },
+  toggleThumbActive: { backgroundColor: C.white },
+
+  // ---------- fitness (collapsed) ----------
+  fitnessGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 14, marginBottom: 14 },
+  fitnessButton: {
+    width: '48%',
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    borderRadius: 10,
+    backgroundColor: C.tint,
+    borderWidth: 1,
+    borderColor: C.border,
   },
-  toggleThumb: {
-    width: 24,
-    height: 24,
+  fitnessName: { fontSize: 13, fontWeight: '700', color: C.dark },
+  fitnessPlatform: { fontSize: 11, color: C.muted, marginTop: 3 },
+  fitnessPlatformActive: { color: 'rgba(255,255,255,0.85)' },
+  unitButtonActive: { backgroundColor: C.primary, borderColor: C.primary },
+  unitButtonTextActive: { color: '#fff' },
+  recommendationBox: { backgroundColor: C.tint, borderRadius: 14, padding: 14, marginBottom: 12 },
+  recommendationLabel: { fontSize: 12, fontWeight: '700', color: C.primary, marginBottom: 6 },
+  recommendationText: { fontSize: 12, color: C.text2, lineHeight: 18 },
+  configBox: { backgroundColor: C.tint, borderRadius: 14, padding: 14 },
+  configTitle: { fontSize: 12, fontWeight: '700', color: C.primary, marginBottom: 8 },
+  configItem: { paddingVertical: 8, paddingLeft: 12, borderLeftWidth: 1, borderLeftColor: C.border },
+  configName: { fontSize: 12, fontWeight: '600', color: C.dark, marginBottom: 2 },
+  configDesc: { fontSize: 11, color: C.muted },
+
+  aboutText: { fontSize: 12, color: C.muted, lineHeight: 18, textAlign: 'center', paddingHorizontal: 12, marginTop: 4 },
+
+  // ---------- buttons ----------
+  actionButtons: { flexDirection: 'row', gap: 12, marginTop: 16 },
+  button: { flex: 1, paddingVertical: 12, borderRadius: 12, alignItems: 'center', marginTop: 10 },
+  buttonCancel: { backgroundColor: C.tint, marginTop: 0 },
+  buttonSave: { backgroundColor: C.primary, marginTop: 0 },
+  buttonText: { fontSize: 14, fontWeight: '700', color: C.dark },
+  buttonTextWhite: { fontSize: 14, fontWeight: '700', color: '#fff' },
+  buttonDev: { backgroundColor: C.tint, borderWidth: 1, borderColor: C.primary },
+
+  neutralBtn: {
+    marginTop: 14,
+    paddingVertical: 13,
     borderRadius: 12,
-    backgroundColor: COLORS.white,
+    backgroundColor: C.tint,
+    alignItems: 'center',
   },
-  toggleThumbActive: {
-    backgroundColor: COLORS.white,
+  neutralBtnText: { fontSize: 14, fontWeight: '700', color: C.primary },
+
+  dangerButton: {
+    paddingVertical: 12,
+    borderRadius: 12,
+    backgroundColor: C.white,
+    borderWidth: 1.5,
+    borderColor: C.danger,
+    alignItems: 'center',
+    marginBottom: 10,
   },
-  legalLink: {
-    fontSize: 14,
-    color: '#34C759',
-    fontWeight: '600',
-  },
+  dangerButtonText: { fontSize: 14, fontWeight: '700', color: C.danger },
+
+  // ---------- legal modal ----------
   legalHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -1245,282 +1087,34 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: 12,
     borderBottomWidth: 1,
-    borderBottomColor: '#eee',
+    borderBottomColor: C.border2,
   },
-  legalTitle: {
-    fontSize: 18,
-    fontWeight: '700',
-    color: COLORS.darkSage,
-  },
-  legalClose: {
-    fontSize: 20,
-    color: '#666',
-    paddingHorizontal: 8,
-  },
-  legalContent: {
-    padding: 16,
-    paddingBottom: 40,
-  },
-  legalText: {
-    fontSize: 13,
-    lineHeight: 20,
-    color: '#444',
-  },
-  calibrationBox: {
-    backgroundColor: '#EEF3E6',
-    borderRadius: 14,
-    padding: 14,
-    marginBottom: 12,
-  },
-  calibrationRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-around',
-    marginBottom: 8,
-  },
-  calibrationStat: {
-    alignItems: 'center',
-  },
-  calibrationValue: {
-    fontSize: 18,
-    fontWeight: '700',
-    color: COLORS.darkSage,
-  },
-  calibrationLabel: {
-    fontSize: 11,
-    color: '#999',
-    marginTop: 2,
-  },
-  calibrationRangeText: {
-    fontSize: 11,
-    color: '#666',
-    textAlign: 'center',
-    marginTop: 4,
-  },
-  manualWeighInBox: {
-    backgroundColor: '#EEF3E6',
-    borderRadius: 14,
-    padding: 14,
-    marginBottom: 12,
-  },
-  manualWeighInRow: {
-    flexDirection: 'row',
-    gap: 8,
-    marginBottom: 6,
-  },
-  manualWeighInInput: {
-    flex: 1,
-    borderWidth: 1,
-    borderColor: '#ddd',
-    borderRadius: 6,
-    paddingHorizontal: 8,
-    paddingVertical: 8,
-    fontSize: 12,
-    color: COLORS.darkSage,
-  },
-  manualWeighInButton: {
-    backgroundColor: COLORS.sage,
-    borderRadius: 10,
-    paddingHorizontal: 16,
-    justifyContent: 'center',
-  },
-  manualWeighInButtonText: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#fff',
-  },
-  calibrationSamplesBox: {
-    backgroundColor: '#EEF3E6',
-    borderRadius: 14,
-    padding: 14,
-  },
-  calibrationSamplesTitle: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: COLORS.sage,
-    marginBottom: 8,
-  },
-  calibrationSampleRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingVertical: 6,
-    borderBottomWidth: 1,
-    borderBottomColor: '#e0e8dc',
-  },
-  calibrationSampleText: {
-    fontSize: 11,
-    color: '#558B2F',
-    flex: 1,
-  },
-  calibrationSampleDelete: {
-    fontSize: 14,
-    color: '#FF3B30',
-    paddingHorizontal: 8,
-  },
-  calibrationResetButton: {
-    marginTop: 10,
-    alignItems: 'center',
-    paddingVertical: 8,
-  },
-  calibrationResetText: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#FF3B30',
-  },
-  batteryInfoBox: {
-    backgroundColor: COLORS.light,
-    borderRadius: 8,
-    padding: 12,
-    marginTop: 12,
-    borderLeftWidth: 4,
-    borderLeftColor: '#34C759',
-  },
-  batteryInfoLabel: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#2E7D32',
-    marginBottom: 4,
-  },
-  batteryInfoText: {
-    fontSize: 12,
-    color: '#558B2F',
-  },
-  teamInput: {
-    borderWidth: 1,
-    borderColor: '#ddd',
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    fontSize: 14,
-    color: COLORS.darkSage,
-    marginBottom: 8,
-  },
-  teamInputHint: {
-    fontSize: 11,
-    color: '#999',
-    fontStyle: 'italic',
-  },
-  teamDisplayBox: {
-    backgroundColor: '#EEF3E6',
-    borderRadius: 14,
-    padding: 14,
-    marginBottom: 12,
-  },
-  teamBadge: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: COLORS.darkSage,
-    marginBottom: 4,
-  },
-  teamSubtext: {
-    fontSize: 12,
-    color: '#666',
-  },
-  teamInfoBox: {
-    backgroundColor: '#EEF3E6',
-    borderRadius: 14,
-    padding: 14,
-  },
-  teamInfoTitle: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: COLORS.sage,
-    marginBottom: 4,
-  },
-  teamInfoText: {
-    fontSize: 11,
-    color: '#5C6B54',
-    lineHeight: 16,
-  },
-  actionButtons: {
-    flexDirection: 'row',
-    gap: 12,
-    marginBottom: 24,
-  },
-  button: {
-    flex: 1,
-    paddingVertical: 12,
-    borderRadius: 8,
-    alignItems: 'center',
-  },
-  buttonCancel: {
-    backgroundColor: COLORS.light,
-  },
-  buttonSave: {
-    backgroundColor: COLORS.sage,
-  },
-  buttonText: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: COLORS.darkSage,
-  },
-  buttonTextWhite: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#fff',
-  },
-  buttonDev: {
-    backgroundColor: COLORS.light,
-    borderWidth: 1,
-    borderColor: COLORS.sage,
-  },
-  dangerButton: {
-    paddingVertical: 12,
-    borderRadius: 8,
-    backgroundColor: COLORS.white,
-    borderWidth: 2,
-    borderColor: '#FF3B30',
-    alignItems: 'center',
-    marginBottom: 12,
-  },
-  dangerButtonText: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#FF3B30',
-  },
-  logoutButton: {
-    paddingVertical: 12,
-    borderRadius: 8,
-    backgroundColor: COLORS.white,
-    borderWidth: 2,
-    borderColor: '#FF3B30',
-    alignItems: 'center',
-  },
-  logoutButtonText: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#FF3B30',
-  },
+  legalTitle: { fontSize: 18, fontWeight: '700', color: C.dark },
+  legalClose: { fontSize: 20, color: C.muted, paddingHorizontal: 8 },
+  legalContent: { padding: 16, paddingBottom: 40 },
+  legalText: { fontSize: 13, lineHeight: 20, color: C.text2 },
 
-  feedbackButton: {
-    marginTop: 12,
-    backgroundColor: COLORS.sage,
-    borderRadius: 12,
-    paddingVertical: 13,
-    alignItems: 'center',
-  },
-  feedbackButtonText: { color: '#fff', fontSize: 15, fontWeight: '700' },
-
+  // ---------- feedback sheet ----------
   fbOverlay: { flex: 1, justifyContent: 'flex-end' },
   fbBackdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(27,46,26,0.45)' },
-  fbSheet: { backgroundColor: COLORS.cream, borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 22, paddingBottom: 34 },
-  fbTitle: { fontSize: 20, fontWeight: '700', color: COLORS.darkSage },
-  fbSub: { fontSize: 13, color: COLORS.mutedSage, marginTop: 2, marginBottom: 14 },
+  fbSheet: { backgroundColor: C.cream, borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 22, paddingBottom: 34 },
+  fbTitle: { fontSize: 20, fontWeight: '700', color: C.dark },
+  fbSub: { fontSize: 13, color: C.muted, marginTop: 2, marginBottom: 14 },
   fbInput: {
     backgroundColor: '#fff',
     borderRadius: 12,
     borderWidth: 1,
-    borderColor: COLORS.border,
+    borderColor: C.border,
     padding: 14,
     fontSize: 15,
-    color: COLORS.darkSage,
+    color: C.dark,
     minHeight: 110,
     textAlignVertical: 'top',
   },
   fbActions: { flexDirection: 'row', gap: 12, marginTop: 16 },
   fbBtn: { flex: 1, borderRadius: 12, paddingVertical: 14, alignItems: 'center' },
-  fbCancel: { backgroundColor: '#fff', borderWidth: 1, borderColor: COLORS.border },
-  fbCancelText: { color: COLORS.darkSage, fontSize: 15, fontWeight: '700' },
-  fbSend: { backgroundColor: COLORS.sage },
+  fbCancel: { backgroundColor: '#fff', borderWidth: 1, borderColor: C.border },
+  fbCancelText: { color: C.dark, fontSize: 15, fontWeight: '700' },
+  fbSend: { backgroundColor: C.primary },
   fbSendText: { color: '#fff', fontSize: 15, fontWeight: '700' },
 });
