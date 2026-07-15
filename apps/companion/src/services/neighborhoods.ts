@@ -118,7 +118,7 @@ const CITY_SOURCES: CitySource[] = [
     // without it, exporting full-resolution rings for all 248 hoods takes 3min+
     // and the layer never loads on device. At neighborhood scale the
     // simplification is invisible (and we decimate rings again on our side).
-    url: "https://gis.atlantaga.gov/dpcd/rest/services/AdministrativeArea/GeopoliticalArea/MapServer/1/query?where=GEOTYPE%3D'Neighborhood'&outFields=NAME&outSR=4326&maxAllowableOffset=0.0003&f=geojson",
+    url: 'https://gis.atlantaga.gov/dpcd/rest/services/AdministrativeArea/GeopoliticalArea/MapServer/1/query?where=GEOTYPE%3D%27Neighborhood%27&outFields=NAME&outSR=4326&maxAllowableOffset=0.0003&f=geojson',
     file: FileSystem.documentDirectory + 'atl-hoods.json',
     nameKeys: ['NAME', 'name'],
   },
