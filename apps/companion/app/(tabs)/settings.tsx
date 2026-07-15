@@ -526,25 +526,6 @@ export default function SettingsScreen() {
           </View>
         )}
 
-        {/* ---------- Preferences ---------- */}
-        <View style={styles.section}>
-          <GroupHead icon="target" label="Preferences" />
-          <View style={styles.prefRow}>
-            <Text style={styles.prefLabel}>Distance units</Text>
-            <View style={styles.pillRow}>
-              {(['mi', 'km'] as const).map((u) => (
-                <Pressable
-                  key={u}
-                  style={[styles.pill, distanceUnit === u && styles.pillActive]}
-                  onPress={() => setDistanceUnit(u)}
-                >
-                  <Text style={[styles.pillText, distanceUnit === u && styles.pillTextActive]}>{u}</Text>
-                </Pressable>
-              ))}
-            </View>
-          </View>
-        </View>
-
         {/* ---------- Community ---------- */}
         <View style={styles.section}>
           <GroupHead icon="share" label="Community" />
@@ -565,9 +546,20 @@ export default function SettingsScreen() {
           </Pressable>
         </View>
 
-        {/* ---------- Privacy & sharing ---------- */}
+        {/* ---------- Preferences & privacy ---------- */}
         <View style={styles.section}>
-          <GroupHead icon="user" label="Privacy & sharing" />
+          <GroupHead icon="user" label="Preferences & privacy" />
+          <View style={[styles.prefRow, { paddingVertical: 6 }]}>
+            <Text style={styles.prefLabel}>Distance units</Text>
+            <View style={styles.pillRow}>
+              {(['mi', 'km'] as const).map((u) => (
+                <Pressable key={u} style={[styles.pill, distanceUnit === u && styles.pillActive]} onPress={() => setDistanceUnit(u)}>
+                  <Text style={[styles.pillText, distanceUnit === u && styles.pillTextActive]}>{u}</Text>
+                </Pressable>
+              ))}
+            </View>
+          </View>
+          <View style={styles.divider} />
           <Toggle
             label="Show me on the leaderboard"
             sub="Your name and totals appear on the individual leaderboard. Off keeps you private."
@@ -688,13 +680,6 @@ export default function SettingsScreen() {
             <Text style={styles.rowLinkLabel}>Terms of service</Text>
             <Text style={styles.rowLinkValue}>View →</Text>
           </Pressable>
-          <View style={styles.divider} />
-          <View style={styles.rowLink}>
-            <Text style={styles.rowLinkLabel}>Version</Text>
-            <Text style={styles.rowLinkValue} numberOfLines={1}>
-              {Constants.expoConfig?.version ?? '1.0.0'} · {otaBuildStamp()}
-            </Text>
-          </View>
         </View>
 
         {/* ---------- Advanced (collapsed) ---------- */}
@@ -829,11 +814,6 @@ export default function SettingsScreen() {
             <Text style={styles.rowLinkLabel}>Email</Text>
             <Text style={styles.rowLinkValue} numberOfLines={1}>{email || '—'}</Text>
           </View>
-          <View style={styles.divider} />
-          <View style={styles.rowLink}>
-            <Text style={styles.rowLinkLabel}>Status</Text>
-            <Text style={styles.valueBeta}>Beta</Text>
-          </View>
           <TouchableOpacity style={styles.neutralBtn} onPress={confirmLogout} activeOpacity={0.85}>
             <Text style={styles.neutralBtnText}>Log out</Text>
           </TouchableOpacity>
@@ -851,8 +831,8 @@ export default function SettingsScreen() {
         </View>
 
         <Text style={styles.aboutText}>
-          Pick is a motion-detection app for tracking trash pickups autonomously. Data is stored
-          locally on your device and synced to fitness apps when enabled.
+          PICK · v{Constants.expoConfig?.version ?? '1.0.0'} · {otaBuildStamp()} · Beta{'\n'}
+          Made for cleaner neighborhoods.
         </Text>
       </ScrollView>
 
