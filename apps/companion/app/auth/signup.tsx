@@ -1,10 +1,9 @@
-import { View, Text, StyleSheet, TouchableOpacity, TextInput, Alert, ActivityIndicator, ScrollView, KeyboardAvoidingView, Platform } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, TextInput, Alert, ActivityIndicator, ScrollView, KeyboardAvoidingView, Platform, Image } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useState } from 'react';
 import { useRouter } from 'expo-router';
 import { getAuthService } from '../../src/services/authService';
 import { COLORS, SPACING, RADIUS } from '../../src/constants/colors';
-import { Icon } from '../../src/pick/Icon';
 
 export default function SignupScreen() {
   const router = useRouter();
@@ -67,9 +66,7 @@ export default function SignupScreen() {
       >
         {/* Header */}
         <View style={styles.header}>
-          <View style={styles.logo}>
-            <Icon name="leaf" size={34} color="#fff" sw={1.7} />
-          </View>
+          <Image source={require('../../assets/images/logo-mark.png')} style={styles.logo} resizeMode="contain" />
           <Text style={styles.title}>Create Account</Text>
           <Text style={styles.subtitle}>Start tracking cleanups</Text>
         </View>
@@ -197,12 +194,9 @@ const styles = StyleSheet.create({
     marginBottom: 32,
   },
   logo: {
-    width: 64,
-    height: 64,
+    width: 76,
+    height: 76,
     borderRadius: 20,
-    backgroundColor: COLORS.sage,
-    alignItems: 'center',
-    justifyContent: 'center',
     marginBottom: 16,
     shadowColor: COLORS.sage,
     shadowOpacity: 0.28,

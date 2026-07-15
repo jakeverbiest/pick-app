@@ -6,16 +6,19 @@
  * splash that then transitions into the app. On-brand for the Trail design
  * (sage/cream, no emoji).
  */
-import { View, Text, ActivityIndicator, StyleSheet } from 'react-native';
+import { View, Text, ActivityIndicator, StyleSheet, Image } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
-import { Icon } from './Icon';
 import { COLORS } from '../constants/colors';
 
 function Logo() {
+  // The trash-bag "G" mark — same asset as the native splash, so the OS
+  // splash → JS loading handoff reads as one continuous screen.
   return (
-    <View style={styles.logo}>
-      <Icon name="leaf" size={34} color={COLORS.sage} sw={1.7} />
-    </View>
+    <Image
+      source={require('../../assets/images/splash-icon.png')}
+      style={styles.logo}
+      resizeMode="contain"
+    />
   );
 }
 
@@ -56,16 +59,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: 32,
   },
   logo: {
-    width: 64,
-    height: 64,
-    borderRadius: 20,
-    backgroundColor: COLORS.white,
-    alignItems: 'center',
-    justifyContent: 'center',
-    shadowColor: '#000',
-    shadowOpacity: 0.18,
-    shadowRadius: 14,
-    shadowOffset: { width: 0, height: 10 },
+    width: 104,
+    height: 104,
   },
   brand: {
     fontSize: 30,
