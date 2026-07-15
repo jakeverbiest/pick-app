@@ -1,4 +1,5 @@
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Pressable, Alert, TextInput, Modal, KeyboardAvoidingView, Platform, Keyboard } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Pressable, Alert, TextInput, Modal, KeyboardAvoidingView, Platform, Keyboard, Linking, Share } from 'react-native';
+import QRCode from 'react-native-qrcode-svg';
 import * as Clipboard from 'expo-clipboard';
 import Constants from 'expo-constants';
 import * as Updates from 'expo-updates';
@@ -24,6 +25,10 @@ import {
 } from '../../src/services/crashRecorder';
 import { stopBackgroundSession } from '../../src/services/backgroundSession';
 import { TeamSection } from '../../src/pick/TeamSection';
+
+// Beta invite (TestFlight public link) + the public community dashboard.
+const TESTFLIGHT_URL = 'https://testflight.apple.com/join/6753UhuM';
+const DASHBOARD_URL = 'https://pickdashboard.netlify.app';
 
 // A real signal for "did my OTA land?" — the app VERSION (1.0.0) never changes
 // on an OTA, only the update bundle does. updateId changes every publish; an
@@ -87,6 +92,7 @@ export default function SettingsScreen() {
   const [uid, setUid] = useState('');
   const [email, setEmail] = useState('');
   const [feedbackOpen, setFeedbackOpen] = useState(false);
+  const [inviteOpen, setInviteOpen] = useState(false);
   const [feedbackText, setFeedbackText] = useState('');
   const [sendingFeedback, setSendingFeedback] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
@@ -434,6 +440,23 @@ export default function SettingsScreen() {
     );
   };
 
+  const shareInvite = async () => {
+    try {
+      await Share.share({
+        message: `Try PICK — pop your phone in your pocket and it counts the litter you pick up automatically, then maps how clean your neighborhood is getting. Install on iPhone: ${TESTFLIGHT_URL}`,
+      });
+    } catch {}
+  };
+
+  const copyInvite = async () => {
+    await Clipboard.setStringAsync(TESTFLIGHT_URL);
+    Alert.alert('Copied', 'Invite link copied — paste it to a friend.');
+  };
+
+  const openDashboard = () => {
+    Linking.openURL(DASHBOARD_URL).catch(() => Alert.alert('Could not open', DASHBOARD_URL));
+  };
+
   if (loading) {
     return (
       <SafeAreaView style={styles.container}>
@@ -520,6 +543,26 @@ export default function SettingsScreen() {
               ))}
             </View>
           </View>
+        </View>
+
+        {/* ---------- Community ---------- */}
+        <View style={styles.section}>
+          <GroupHead icon="share" label="Community" />
+          <Pressable style={styles.rowLink} onPress={() => setInviteOpen(true)}>
+            <View style={{ flex: 1, paddingRight: 12 }}>
+              <Text style={styles.rowLinkLabel}>Invite a friend</Text>
+              <Text style={styles.rowLinkSub}>Share a QR code or link to join the beta</Text>
+            </View>
+            <Text style={styles.chev}>▸</Text>
+          </Pressable>
+          <View style={styles.divider} />
+          <Pressable style={styles.rowLink} onPress={openDashboard}>
+            <View style={{ flex: 1, paddingRight: 12 }}>
+              <Text style={styles.rowLinkLabel}>See your city's impact</Text>
+              <Text style={styles.rowLinkSub}>Live community stats for every city</Text>
+            </View>
+            <Text style={styles.rowLinkValue}>Open →</Text>
+          </Pressable>
         </View>
 
         {/* ---------- Privacy & sharing ---------- */}
@@ -861,6 +904,29 @@ export default function SettingsScreen() {
           </View>
         </KeyboardAvoidingView>
       </Modal>
+
+      {/* Invite a friend — QR + share */}
+      <Modal visible={inviteOpen} transparent animationType="slide" onRequestClose={() => setInviteOpen(false)}>
+        <View style={styles.fbOverlay}>
+          <Pressable style={styles.fbBackdrop} onPress={() => setInviteOpen(false)} />
+          <View style={styles.inviteSheet}>
+            <Text style={styles.fbTitle}>Invite a friend</Text>
+            <Text style={styles.inviteSub}>Have them point their iPhone camera at this code to join the PICK beta.</Text>
+            <View style={styles.qrWrap}>
+              <QRCode value={TESTFLIGHT_URL} size={196} color={COLORS.darkSage} backgroundColor="#ffffff" />
+            </View>
+            <Text style={styles.inviteUrl} numberOfLines={1}>{TESTFLIGHT_URL}</Text>
+            <View style={[styles.fbActions, { width: '100%' }]}>
+              <TouchableOpacity style={[styles.fbBtn, styles.fbCancel]} onPress={copyInvite}>
+                <Text style={styles.fbCancelText}>Copy link</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={[styles.fbBtn, styles.fbSend]} onPress={shareInvite}>
+                <Text style={styles.fbSendText}>Share</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -1117,4 +1183,12 @@ const styles = StyleSheet.create({
   fbCancelText: { color: C.dark, fontSize: 15, fontWeight: '700' },
   fbSend: { backgroundColor: C.primary },
   fbSendText: { color: '#fff', fontSize: 15, fontWeight: '700' },
+
+  inviteSheet: {
+    backgroundColor: C.cream, borderTopLeftRadius: 24, borderTopRightRadius: 24,
+    padding: 22, paddingBottom: 34, alignItems: 'center',
+  },
+  inviteSub: { fontSize: 13, color: C.muted, marginTop: 2, marginBottom: 4, textAlign: 'center' },
+  qrWrap: { backgroundColor: '#fff', padding: 16, borderRadius: 18, marginTop: 16, marginBottom: 12, ...shadow.card },
+  inviteUrl: { fontSize: 12, color: C.muted, marginBottom: 16, maxWidth: '100%' },
 });

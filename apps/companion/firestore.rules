@@ -108,6 +108,22 @@ service cloud.firestore {
       allow read, update, delete: if false;
     }
 
+    // --- Public stats: the aggregate dashboard (city + global). PUBLIC read
+    //     (no auth) so a public website can show them. Written ONLY by the
+    //     scheduledPublicStats / rebuildPublicStats Cloud Functions (admin SDK
+    //     bypasses rules). Contents are aggregates only — counts, totals, a
+    //     coarse ~1km "recently cleaned" tile grid, and an opt-in top-picker
+    //     board (display names of users who left themselves leaderboard-visible).
+    //     No routes, no exact locations, no private data. ---
+    match /global_stats/{docId} {
+      allow read: if true;
+      allow write: if false;
+    }
+    match /city_stats/{docId} {
+      allow read: if true;
+      allow write: if false;
+    }
+
     // Everything else: denied
     match /{document=**} {
       allow read, write: if false;
