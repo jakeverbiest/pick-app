@@ -94,6 +94,10 @@ interface CitySource {
   url: string;
   file: string;
   nameKeys: string[]; // property keys to try, most-authoritative first
+  // Does the CARTO basemap already print neighborhood names here? NYC's hoods
+  // are labeled by the tiles, so we don't double them up; Atlanta's are not, so
+  // we draw our own soft labels to match.
+  basemapLabels: boolean;
 }
 
 const CITY_SOURCES: CitySource[] = [
@@ -106,6 +110,7 @@ const CITY_SOURCES: CitySource[] = [
     url: 'https://raw.githubusercontent.com/HodgesWardElliott/custom-nyc-neighborhoods/master/custom-pedia-cities-nyc-Mar2018.geojson',
     file: FileSystem.documentDirectory + 'nyc-hoods.json',
     nameKeys: ['neighborhood', 'name', 'ntaname', 'NTAName'],
+    basemapLabels: true, // CARTO prints NYC hood names already
   },
   {
     id: 'atl',
@@ -121,8 +126,16 @@ const CITY_SOURCES: CitySource[] = [
     url: 'https://gis.atlantaga.gov/dpcd/rest/services/AdministrativeArea/GeopoliticalArea/MapServer/1/query?where=GEOTYPE%3D%27Neighborhood%27&outFields=NAME&outSR=4326&maxAllowableOffset=0.0003&f=geojson',
     file: FileSystem.documentDirectory + 'atl-hoods.json',
     nameKeys: ['NAME', 'name'],
+    basemapLabels: false, // CARTO doesn't label Atlanta hoods — we draw them
   },
 ];
+
+/** True when we should draw our own neighborhood name labels because the
+ *  basemap doesn't print them for the city at this point (e.g. Atlanta). */
+export function hoodLabelsNeeded(lat: number, lon: number): boolean {
+  const c = cityForPoint(lat, lon);
+  return !!c && !c.basemapLabels;
+}
 
 /** The city whose bounding box contains the point, if any. */
 function cityForPoint(lat: number, lon: number): CitySource | null {
