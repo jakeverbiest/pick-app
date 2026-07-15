@@ -41,9 +41,12 @@ const OVERPASS_ENDPOINTS = [
   'https://maps.mail.ru/osm/tools/overpass/api/interpreter',
 ];
 const SEGMENT_LENGTH_M = 50;
-// Sidewalk-level snapping: tight enough not to credit the OPPOSITE side of
-// the street (~18m away in NYC), loose enough for Balanced GPS (~10m error)
-const SNAP_DISTANCE_M = 15;
+// Sidewalk-level snapping: tight enough not to credit the OPPOSITE side of the
+// street (~18m away in NYC), loose enough for Balanced GPS (~10m error). Field
+// test showed 15m was crediting both sides on narrower streets — tightened to
+// 11m. (Note: in areas with no mapped sidewalks we fall back to road CENTER
+// lines, where per-side isn't possible — the whole street reads as cleaned.)
+const SNAP_DISTANCE_M = 11;
 // A segment counts as cleaned only if the route ran alongside this fraction of
 // its length (sampled). Stops one stray GPS ping from crediting a whole block,
 // and (with the tight snap) avoids crediting the opposite sidewalk you didn't walk.

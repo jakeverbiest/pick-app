@@ -75,7 +75,11 @@ class MotionDetector {
   private tuning: TuningParams = {
     accelThreshold: 0.85,
     gyroThreshold: 0.25,
-    cooldownMs: 2500,
+    // 2500ms swallowed clustered pickups (bend once, grab 2-3 nearby pieces) —
+    // field test (Jul): 100 real picks registered 48-62. Dropped to 1500ms so
+    // back-to-back picks count, while still filtering a single motion's double-
+    // trigger (~0.5s). Re-validate on the next walk.
+    cooldownMs: 1500,
   };
 
   private onPickupCallback: ((event: PickupEvent) => void) | null = null;
@@ -190,8 +194,10 @@ class MotionDetector {
     }
 
     // Shape detector: feed samples
-    // Start recording at 1.2g to filter street noise (ground truth shows pickups peak at 1.09-1.35g)
-    if (!MotionShapeDetector.isCurrentlyRecording() && magnitude > 1.2) {
+    // Start recording at 1.1g: ground truth shows pickups peak at 1.09-1.35g, so
+    // the old 1.2g gate silently dropped the gentle end of real pickups. The
+    // shape + gyro checks downstream still reject street noise. (Jul tuning.)
+    if (!MotionShapeDetector.isCurrentlyRecording() && magnitude > 1.1) {
       // Start recording when acceleration spikes above baseline
       MotionShapeDetector.startRecording(now);
       console.log(`🔴 Recording started (${magnitude.toFixed(2)}g spike)`);
