@@ -137,6 +137,13 @@ export function hoodLabelsNeeded(lat: number, lon: number): boolean {
   return !!c && !c.basemapLabels;
 }
 
+/** True when this location has real neighborhood polygons to play with. When
+ *  false (small towns, undefined neighborhoods), the app falls back to a broad
+ *  "your area" radius level instead. */
+export function hasNeighborhoods(lat: number, lon: number): boolean {
+  return cityForPoint(lat, lon) !== null;
+}
+
 /** The city whose bounding box contains the point, if any. */
 function cityForPoint(lat: number, lon: number): CitySource | null {
   return CITY_SOURCES.find((c) => c.inBox(lat, lon)) ?? null;
