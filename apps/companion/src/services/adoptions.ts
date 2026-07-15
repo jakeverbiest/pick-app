@@ -20,6 +20,7 @@ export interface Adoption {
   radiusM: number;
   thresholdDays: number;
   createdAt: number;
+  coords?: [number, number][]; // the block's line, when adopted by tapping the map
 }
 
 const DEFAULT_RADIUS_M = 150; // "this street" ≈ a block or two
@@ -60,6 +61,33 @@ export async function adoptCurrentStreet(thresholdDays: number = DEFAULT_THRESHO
   };
   const ref = await addDoc(collection(db, 'adoptions'), data);
   return { id: ref.id, label, lat, lon, radiusM: DEFAULT_RADIUS_M, thresholdDays, createdAt: now };
+}
+
+/** Save a block adopted by long-pressing it on the map (already snapped to a
+ *  street segment; `label` from a reverse-geocode of its midpoint). */
+export async function saveAdoptedBlock(
+  seg: { id: string; coords: [number, number][] },
+  label: string,
+  thresholdDays: number = DEFAULT_THRESHOLD_DAYS
+): Promise<Adoption> {
+  const user = getAuthService().getCurrentUser();
+  if (!user) throw new Error('Sign in to adopt a block.');
+  const mid = seg.coords[Math.floor(seg.coords.length / 2)] || [0, 0];
+  const now = Date.now();
+  const data = {
+    userId: user.uid,
+    email: user.email || '',
+    label: label || 'This block',
+    lat: mid[0],
+    lon: mid[1],
+    coords: seg.coords,
+    radiusM: 25,
+    thresholdDays,
+    lastNotified: 0,
+    createdAt: now,
+  };
+  const ref = await addDoc(collection(db, 'adoptions'), data);
+  return { id: ref.id, label: data.label, lat: mid[0], lon: mid[1], coords: seg.coords, radiusM: 25, thresholdDays, createdAt: now };
 }
 
 export async function listMyAdoptions(): Promise<Adoption[]> {

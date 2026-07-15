@@ -439,6 +439,27 @@ function distMeters(aLat, aLon, bLat, bLon) {
   return 2 * R * Math.asin(Math.min(1, Math.sqrt(x)));
 }
 
+// Min distance (m) from a point to a block's polyline — for blocks adopted by
+// tapping the map (they carry `coords`).
+function pointToSegM(plat, plon, alat, alon, blat, blon) {
+  const cosLat = Math.cos((plat * Math.PI) / 180);
+  const ax = alon * cosLat, ay = alat, bx = blon * cosLat, by = blat, px = plon * cosLat, py = plat;
+  const dx = bx - ax, dy = by - ay;
+  const lenSq = dx * dx + dy * dy;
+  let t = lenSq === 0 ? 0 : ((px - ax) * dx + (py - ay) * dy) / lenSq;
+  t = Math.max(0, Math.min(1, t));
+  const cx = ax + t * dx, cy = ay + t * dy;
+  return distMeters(py, px / cosLat, cy, cx / cosLat);
+}
+function pointToPolyM(plat, plon, coords) {
+  let best = Infinity;
+  for (let i = 1; i < coords.length; i++) {
+    const d = pointToSegM(plat, plon, coords[i - 1][0], coords[i - 1][1], coords[i][0], coords[i][1]);
+    if (d < best) best = d;
+  }
+  return best;
+}
+
 function esc(s) {
   return String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 }
@@ -464,11 +485,13 @@ async function checkAdoptions() {
     const radius = num(a.radiusM) || 150;
     const windowStart = now - thresh * 86400 * 1000;
 
+    const line = Array.isArray(a.coords) && a.coords.length >= 2 ? a.coords : null;
     let fresh = false;
     let lastNearTs = 0;
     for (const c of recent) {
       if (!Number.isFinite(c.lat) || !Number.isFinite(c.lon)) continue;
-      if (distMeters(a.lat, a.lon, c.lat, c.lon) <= radius) {
+      const dist = line ? pointToPolyM(c.lat, c.lon, line) : distMeters(a.lat, a.lon, c.lat, c.lon);
+      if (dist <= radius) {
         if (c.ts > lastNearTs) lastNearTs = c.ts;
         if (c.ts >= windowStart) { fresh = true; break; }
       }

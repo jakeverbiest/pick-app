@@ -25,7 +25,7 @@ import {
 } from '../../src/services/crashRecorder';
 import { stopBackgroundSession } from '../../src/services/backgroundSession';
 import { TeamSection } from '../../src/pick/TeamSection';
-import { adoptCurrentStreet, listMyAdoptions, removeAdoption, Adoption, DEFAULT_THRESHOLD_DAYS } from '../../src/services/adoptions';
+import { listMyAdoptions, removeAdoption, Adoption } from '../../src/services/adoptions';
 
 // Beta invite (TestFlight public link) + the public community dashboard.
 const TESTFLIGHT_URL = 'https://testflight.apple.com/join/6753UhuM';
@@ -96,8 +96,6 @@ export default function SettingsScreen() {
   const [inviteOpen, setInviteOpen] = useState(false);
   const [adoptOpen, setAdoptOpen] = useState(false);
   const [adoptions, setAdoptions] = useState<Adoption[]>([]);
-  const [adoptBusy, setAdoptBusy] = useState(false);
-  const [reminderDays, setReminderDays] = useState(DEFAULT_THRESHOLD_DAYS);
   const [feedbackText, setFeedbackText] = useState('');
   const [sendingFeedback, setSendingFeedback] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
@@ -469,19 +467,6 @@ export default function SettingsScreen() {
     try {
       setAdoptions(await listMyAdoptions());
     } catch {}
-  };
-
-  const doAdopt = async () => {
-    setAdoptBusy(true);
-    try {
-      const a = await adoptCurrentStreet(reminderDays);
-      setAdoptions((prev) => [a, ...prev]);
-      Alert.alert('Block adopted', `We'll email you if ${a.label} goes ${a.thresholdDays} days without a cleanup nearby.`);
-    } catch (e: any) {
-      Alert.alert('Could not adopt', e?.message || 'Please try again.');
-    } finally {
-      setAdoptBusy(false);
-    }
   };
 
   const doRemoveAdoption = (id: string) => {
@@ -960,14 +945,14 @@ export default function SettingsScreen() {
         <View style={styles.fbOverlay}>
           <Pressable style={styles.fbBackdrop} onPress={() => setAdoptOpen(false)} />
           <View style={styles.fbSheet}>
-            <Text style={styles.fbTitle}>Adopt a block</Text>
+            <Text style={styles.fbTitle}>Your blocks</Text>
             <Text style={styles.fbSub}>
-              Claim blocks you care about — adopt as many as you like. We'll email you when one goes too long
-              without a cleanup nearby.
+              On the Map, <Text style={{ fontWeight: '700', color: C.dark }}>press and hold a block</Text> to
+              adopt it. We'll email you if one goes too long without a cleanup nearby.
             </Text>
 
-            {adoptions.length > 0 && (
-              <View style={{ marginBottom: 14 }}>
+            {adoptions.length > 0 ? (
+              <View style={{ marginTop: 4 }}>
                 {adoptions.map((a) => (
                   <View key={a.id} style={styles.adoptRow}>
                     <View style={{ flex: 1, paddingRight: 10 }}>
@@ -980,30 +965,9 @@ export default function SettingsScreen() {
                   </View>
                 ))}
               </View>
+            ) : (
+              <Text style={styles.adoptEmpty}>No blocks adopted yet — press and hold one on the Map.</Text>
             )}
-
-            <View style={styles.reminderRow}>
-              <Text style={styles.reminderLabel}>Remind me after</Text>
-              <View style={styles.pillRow}>
-                {[3, 7, 14].map((d) => (
-                  <Pressable
-                    key={d}
-                    style={[styles.pill, reminderDays === d && styles.pillActive]}
-                    onPress={() => setReminderDays(d)}
-                  >
-                    <Text style={[styles.pillText, reminderDays === d && styles.pillTextActive]}>{d}d</Text>
-                  </Pressable>
-                ))}
-              </View>
-            </View>
-
-            <TouchableOpacity
-              style={[styles.fbBtn, styles.fbSend, { width: '100%' }, adoptBusy && { opacity: 0.7 }]}
-              onPress={doAdopt}
-              disabled={adoptBusy}
-            >
-              <Text style={styles.fbSendText}>{adoptBusy ? 'Finding your block…' : 'Adopt the block I’m on'}</Text>
-            </TouchableOpacity>
           </View>
         </View>
       </Modal>
@@ -1303,6 +1267,7 @@ const styles = StyleSheet.create({
   adoptRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 11, borderBottomWidth: 1, borderBottomColor: C.border2 },
   adoptName: { fontSize: 15, fontWeight: '700', color: C.dark },
   adoptMeta: { fontSize: 12, color: C.muted, marginTop: 1 },
+  adoptEmpty: { fontSize: 13, color: C.muted, marginTop: 8, marginBottom: 4 },
   reminderRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 },
   reminderLabel: { fontSize: 14, fontWeight: '600', color: C.dark },
   qrWrap: { backgroundColor: '#fff', padding: 16, borderRadius: 18, marginTop: 16, marginBottom: 12, ...shadow.card },

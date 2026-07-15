@@ -636,6 +636,25 @@ async function getCoverageForRingTiled(ring: [number, number][]): Promise<Render
 }
 
 /** Coverage stats for the area — feeds "62% cleaned in last 5 days". */
+/** The street segment nearest a tapped point — powers "adopt this block".
+ *  Returns null when the tap isn't near any street (> 40m away). */
+export async function nearestStreetSegment(
+  lat: number,
+  lon: number
+): Promise<{ id: string; coords: [number, number][] } | null> {
+  const segs = await getCoverage(lat, lon);
+  let best: { id: string; coords: [number, number][] } | null = null;
+  let bestD = Infinity;
+  for (const s of segs) {
+    const c = s.coords;
+    for (let i = 1; i < c.length; i++) {
+      const d = pointToEdgeM([lat, lon], c[i - 1], c[i]);
+      if (d < bestD) { bestD = d; best = { id: s.id, coords: c }; }
+    }
+  }
+  return bestD <= 40 ? best : null;
+}
+
 export async function getCoverageStats(lat: number, lon: number) {
   const coverage = await getCoverage(lat, lon);
   const total = coverage.length;
