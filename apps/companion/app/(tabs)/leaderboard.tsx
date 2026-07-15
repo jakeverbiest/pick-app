@@ -7,24 +7,17 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { getAuthService } from '../../src/services/authService';
 import { getDatabase } from '../../src/services/firebaseDatabase';
 import type { UserStats, Challenge } from '../../src/services/firebaseDatabase';
-import { formatBags, itemsToBags, aggregateBags } from '../../src/services/impactMetrics';
+import { formatBagsShort, itemsToBags, aggregateBags } from '../../src/services/impactMetrics';
 import { Icon, IconName } from '../../src/pick/Icon';
 import { C, radius, shadow } from '../../src/pick/theme';
 import { ProgressBar } from '../../src/pick/ui';
 
 type Board = 'you' | 'teams' | 'challenges';
-type SortMetric = 'pickups' | 'bags' | 'days';
 
 const BOARDS: { key: Board; label: string }[] = [
   { key: 'you', label: 'You' },
   { key: 'teams', label: 'Teams' },
   { key: 'challenges', label: 'Challenges' },
-];
-
-const METRICS: { key: SortMetric; label: string; unit: string }[] = [
-  { key: 'pickups', label: 'Pickups', unit: 'pickups' },
-  { key: 'bags', label: 'Bags', unit: 'bags' },
-  { key: 'days', label: 'Active days', unit: 'days' },
 ];
 
 const GOAL_ICON: Record<string, IconName> = {
@@ -36,9 +29,41 @@ const GOAL_ICON: Record<string, IconName> = {
 
 type Personal = { pickups: number; bags: number; days: number; cleanups: number };
 
+/** All three impact metrics at once — pickups, bags, active days.
+ *  `hero` scales it up for the personal card; rows use the compact form. */
+function StatTrio({
+  pickups,
+  bags,
+  days,
+  hero = false,
+}: {
+  pickups: number;
+  bags: number;
+  days: number;
+  hero?: boolean;
+}) {
+  return (
+    <View style={hero ? styles.trioHero : styles.trio}>
+      <View style={styles.trioCol}>
+        <Text style={hero ? styles.trioNumHero : styles.trioNum}>{pickups.toLocaleString()}</Text>
+        <Text style={styles.trioCap}>Pickups</Text>
+      </View>
+      <View style={styles.trioDiv} />
+      <View style={styles.trioCol}>
+        <Text style={hero ? styles.trioNumHero : styles.trioNum}>{formatBagsShort(bags)}</Text>
+        <Text style={styles.trioCap}>Bags</Text>
+      </View>
+      <View style={styles.trioDiv} />
+      <View style={styles.trioCol}>
+        <Text style={hero ? styles.trioNumHero : styles.trioNum}>{days.toLocaleString()}</Text>
+        <Text style={styles.trioCap}>Active days</Text>
+      </View>
+    </View>
+  );
+}
+
 export default function LeaderboardScreen() {
   const [board, setBoard] = useState<Board>('you');
-  const [metric, setMetric] = useState<SortMetric>('pickups');
   const [teams, setTeams] = useState<any[]>([]);
   const [individuals, setIndividuals] = useState<UserStats[]>([]);
   const [challenges, setChallenges] = useState<Challenge[]>([]);
@@ -70,7 +95,7 @@ export default function LeaderboardScreen() {
         cleanups: mine.length,
       });
       const [indiv, teamData, active] = await Promise.all([
-        db.getIndividualLeaderboard(metric),
+        db.getIndividualLeaderboard('pickups'),
         db.getTeamLeaderboard(),
         db.getChallenges('active'),
       ]);
@@ -82,7 +107,7 @@ export default function LeaderboardScreen() {
     } finally {
       setLoading(false);
     }
-  }, [metric]);
+  }, []);
 
   useEffect(() => {
     load();
@@ -109,17 +134,14 @@ export default function LeaderboardScreen() {
     }
   };
 
-  const unit = METRICS.find((m) => m.key === metric)!.unit;
-
-  const userValue = (u: UserStats): number =>
-    metric === 'pickups' ? u.total_pickups || 0
-    : metric === 'bags' ? (u.total_bags ?? itemsToBags(u.total_pickups || 0))
-    : u.active_days || 0;
-  const teamValue = (t: any): number =>
-    metric === 'pickups' ? t.total_pickups || 0
-    : metric === 'bags' ? (t.total_bags ?? itemsToBags(t.total_pickups || 0))
-    : t.total_days || 0;
-  const show = (v: number): string => (metric === 'bags' ? formatBags(v) : String(v));
+  // One board, all metrics visible at once. Ranked by pickups — the counted,
+  // canonical unit; bags and active days ride along on every row.
+  const userValue = (u: UserStats): number => u.total_pickups || 0;
+  const teamValue = (t: any): number => t.total_pickups || 0;
+  const userBags = (u: UserStats): number => u.total_bags ?? itemsToBags(u.total_pickups || 0);
+  const teamBags = (t: any): number => t.total_bags ?? itemsToBags(t.total_pickups || 0);
+  const userDays = (u: UserStats): number => u.active_days || 0;
+  const teamDays = (t: any): number => t.total_days || 0;
 
   const indivRanked = [...individuals].sort((a, b) => userValue(b) - userValue(a));
   const myIndex = me && !me.hidden ? indivRanked.findIndex((u) => u.uid === me.uid) : -1;
@@ -133,7 +155,6 @@ export default function LeaderboardScreen() {
   const teamRank = teamIndex >= 0 ? teamIndex + 1 : null;
   const teamGap = teamIndex > 0 ? teamValue(teamRanked[teamIndex - 1]) - teamValue(teamRanked[teamIndex]) : 0;
 
-  const personalShown = metric === 'bags' ? formatBags(personal.bags) : metric === 'days' ? String(personal.days) : String(personal.pickups);
 
   if (loading) {
     return (
@@ -163,19 +184,6 @@ export default function LeaderboardScreen() {
           })}
         </View>
 
-        {/* metric switch — only for the ranked boards */}
-        {board !== 'challenges' && (
-          <View style={[styles.segment, styles.metricSegment]}>
-            {METRICS.map((m) => {
-              const active = metric === m.key;
-              return (
-                <Pressable key={m.key} style={[styles.segBtnSm, active && styles.segBtnActive]} onPress={() => setMetric(m.key)}>
-                  <Text style={[styles.segTextSm, active && styles.segTextActive]}>{m.label}</Text>
-                </Pressable>
-              );
-            })}
-          </View>
-        )}
 
         {/* ============================ YOU ============================ */}
         {board === 'you' && (
@@ -185,9 +193,7 @@ export default function LeaderboardScreen() {
                 <Icon name="activity" size={20} color={C.primary} sw={1.8} />
                 <Text style={styles.personalLabel}>Your impact</Text>
               </View>
-              <Text style={styles.personalValue}>
-                {personalShown} <Text style={styles.personalUnit}>{unit}</Text>
-              </Text>
+              <StatTrio pickups={personal.pickups} bags={personal.bags} days={personal.days} hero />
               <Text style={styles.personalSub}>
                 {me?.hidden
                   ? "You're hidden from the leaderboard — only you can see this."
@@ -216,17 +222,14 @@ export default function LeaderboardScreen() {
                       <View style={[styles.rank, top ? styles.rankTop : styles.rankPlain]}>
                         <Text style={[styles.rankText, top && { color: '#fff' }]}>{i + 1}</Text>
                       </View>
-                      <View style={{ flex: 1, minWidth: 0 }}>
+                      <View style={styles.rowName}>
                         <Text style={styles.teamName} numberOfLines={1}>
                           {u.display_name || 'Picker'}
                           {you ? '  ·  You' : ''}
                         </Text>
-                        <Text style={styles.teamMembers}>{u.team || 'Solo'}</Text>
+                        <Text style={styles.teamMembers} numberOfLines={1}>{u.team || 'Solo'}</Text>
                       </View>
-                      <View style={{ alignItems: 'flex-end' }}>
-                        <Text style={styles.value}>{show(userValue(u))}</Text>
-                        <Text style={styles.unit}>{unit}</Text>
-                      </View>
+                      <StatTrio pickups={userValue(u)} bags={userBags(u)} days={userDays(u)} />
                     </View>
                   );
                 })}
@@ -252,19 +255,16 @@ export default function LeaderboardScreen() {
                       <View style={[styles.rank, top ? styles.rankTop : styles.rankPlain]}>
                         <Text style={[styles.rankText, top && { color: '#fff' }]}>{i + 1}</Text>
                       </View>
-                      <View style={{ flex: 1, minWidth: 0 }}>
+                      <View style={styles.rowName}>
                         <Text style={styles.teamName} numberOfLines={1}>
                           {entry.team}
                           {you ? '  ·  You' : ''}
                         </Text>
-                        <Text style={styles.teamMembers}>
-                          {entry.member_count} members · {entry.total_cleanups} cleanups
+                        <Text style={styles.teamMembers} numberOfLines={1}>
+                          {entry.member_count} {entry.member_count === 1 ? 'member' : 'members'}
                         </Text>
                       </View>
-                      <View style={{ alignItems: 'flex-end' }}>
-                        <Text style={styles.value}>{show(teamValue(entry))}</Text>
-                        <Text style={styles.unit}>{unit}</Text>
-                      </View>
+                      <StatTrio pickups={teamValue(entry)} bags={teamBags(entry)} days={teamDays(entry)} />
                     </View>
                   );
                 })}
@@ -288,7 +288,7 @@ export default function LeaderboardScreen() {
                 <View style={{ flex: 1 }}>
                   <Text style={styles.calloutTitle}>{userTeam} is #{teamRank}</Text>
                   <Text style={styles.calloutSub}>
-                    {teamRank === 1 ? "You're in the lead — keep it up." : `${teamGap.toLocaleString()} ${unit} from the next spot.`}
+                    {teamRank === 1 ? "You're in the lead — keep it up." : `${teamGap.toLocaleString()} pickups from the next spot.`}
                   </Text>
                 </View>
               </View>
@@ -368,12 +368,9 @@ const styles = StyleSheet.create({
   sub: { fontSize: 14, color: C.text3, marginTop: 4, marginBottom: 18 },
 
   segment: { flexDirection: 'row', gap: 6, backgroundColor: '#EAEBE4', borderRadius: 12, padding: 4 },
-  metricSegment: { marginTop: 10 },
   segBtn: { flex: 1, borderRadius: 9, paddingVertical: 9, alignItems: 'center' },
-  segBtnSm: { flex: 1, borderRadius: 8, paddingVertical: 7, alignItems: 'center' },
   segBtnActive: { backgroundColor: '#fff', ...shadow.card },
   segText: { fontSize: 13, fontWeight: '700', color: C.muted },
-  segTextSm: { fontSize: 12, fontWeight: '600', color: C.muted },
   segTextActive: { color: C.primary },
 
   row: {
@@ -391,10 +388,18 @@ const styles = StyleSheet.create({
   rankTop: { backgroundColor: C.primary },
   rankPlain: { backgroundColor: C.tint },
   rankText: { fontSize: 14, fontWeight: '700', color: C.primary },
+  rowName: { flex: 1, minWidth: 0, marginRight: 4 },
   teamName: { fontSize: 15, fontWeight: '700', color: C.dark },
   teamMembers: { fontSize: 12, color: C.muted, marginTop: 1 },
-  value: { fontSize: 17, fontWeight: '700', color: C.primary },
-  unit: { fontSize: 11, color: C.muted, fontWeight: '600' },
+
+  // all-metrics trio (pickups · bags · active days), shown on every row + hero
+  trio: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  trioHero: { flexDirection: 'row', alignItems: 'center', gap: 14, marginTop: 4 },
+  trioCol: { alignItems: 'center', minWidth: 34 },
+  trioDiv: { width: StyleSheet.hairlineWidth, alignSelf: 'stretch', backgroundColor: C.border },
+  trioNum: { fontSize: 16, fontWeight: '700', color: C.primary, letterSpacing: -0.3 },
+  trioNumHero: { fontSize: 24, fontWeight: '700', color: C.primary, letterSpacing: -0.5 },
+  trioCap: { fontSize: 9.5, color: C.muted, fontWeight: '600', marginTop: 1 },
 
   callout: { backgroundColor: C.tint, borderRadius: radius.card, padding: 16, marginTop: 16, flexDirection: 'row', alignItems: 'center', gap: 13 },
   calloutTitle: { fontSize: 14, fontWeight: '700', color: C.dark },

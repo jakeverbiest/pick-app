@@ -270,7 +270,6 @@ export default function ActivityScreen() {
             <View style={{ marginTop: 14 }}>
               <ProgressBar pct={Math.max(0.01, coverage.everCleanedPct / 100)} height={8} />
             </View>
-            <Text style={styles.milestoneHint}>{coverage.everCleanedPct}% of the streets near your current location have ever been cleaned.</Text>
           </Card>
         )}
 
