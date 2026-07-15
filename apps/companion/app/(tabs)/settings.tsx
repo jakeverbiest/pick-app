@@ -97,6 +97,8 @@ export default function SettingsScreen() {
   const [sendingFeedback, setSendingFeedback] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [fitnessOpen, setFitnessOpen] = useState(false);
+  const [teamOpen, setTeamOpen] = useState(false);
+  const [manageOpen, setManageOpen] = useState(false);
   const [leaderboardHidden, setLeaderboardHidden] = useState(false);
   const [communitySharing, setCommunitySharing] = useState(true);
   const [communityAutoPost, setCommunityAutoPost] = useState(false);
@@ -586,8 +588,21 @@ export default function SettingsScreen() {
           )}
         </View>
 
-        {/* ---------- Team ---------- */}
-        {uid ? <TeamSection userId={uid} currentTeam={teamName} onChange={setTeamName} /> : null}
+        {/* ---------- Team (collapsible) ---------- */}
+        {uid ? (
+          <View style={styles.section}>
+            <Pressable style={styles.rowLink} onPress={() => setTeamOpen((v) => !v)}>
+              <View style={{ flex: 1, paddingRight: 12 }}>
+                <Text style={styles.rowLinkLabel}>Team</Text>
+                <Text style={styles.rowLinkSub}>
+                  {teamName && teamName.toLowerCase() !== 'solo' ? teamName : 'Solo — tap to join or start a team'}
+                </Text>
+              </View>
+              <Text style={styles.chev}>{teamOpen ? '▾' : '▸'}</Text>
+            </Pressable>
+            {teamOpen && <TeamSection userId={uid} currentTeam={teamName} onChange={setTeamName} bare />}
+          </View>
+        ) : null}
 
         {/* ---------- Integrations ---------- */}
         <View style={styles.section}>
@@ -817,17 +832,21 @@ export default function SettingsScreen() {
           <TouchableOpacity style={styles.neutralBtn} onPress={confirmLogout} activeOpacity={0.85}>
             <Text style={styles.neutralBtnText}>Log out</Text>
           </TouchableOpacity>
-        </View>
 
-        {/* ---------- Danger zone ---------- */}
-        <View style={styles.section}>
-          <GroupHead icon="trash" label="Danger zone" danger />
-          <TouchableOpacity style={styles.dangerButton} onPress={confirmClearData}>
-            <Text style={styles.dangerButtonText}>Clear all data</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={[styles.dangerButton, { marginBottom: 0 }]} onPress={confirmDeleteAccount}>
-            <Text style={styles.dangerButtonText}>Delete account</Text>
-          </TouchableOpacity>
+          <Pressable style={styles.manageRow} onPress={() => setManageOpen((v) => !v)}>
+            <Text style={styles.manageText}>Delete or reset account</Text>
+            <Text style={[styles.chev, { color: C.danger }]}>{manageOpen ? '▾' : '▸'}</Text>
+          </Pressable>
+          {manageOpen && (
+            <>
+              <TouchableOpacity style={styles.dangerButton} onPress={confirmClearData}>
+                <Text style={styles.dangerButtonText}>Clear all data</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={[styles.dangerButton, { marginBottom: 0 }]} onPress={confirmDeleteAccount}>
+                <Text style={styles.dangerButtonText}>Delete account</Text>
+              </TouchableOpacity>
+            </>
+          )}
         </View>
 
         <Text style={styles.aboutText}>
@@ -1114,6 +1133,14 @@ const styles = StyleSheet.create({
   },
   neutralBtnText: { fontSize: 14, fontWeight: '700', color: C.primary },
 
+  manageRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 12,
+    marginTop: 6,
+  },
+  manageText: { fontSize: 14, fontWeight: '700', color: C.danger },
   dangerButton: {
     paddingVertical: 12,
     borderRadius: 12,

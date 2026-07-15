@@ -24,10 +24,14 @@ export function TeamSection({
   userId,
   currentTeam,
   onChange,
+  bare,
 }: {
   userId: string;
   currentTeam: string;
   onChange: (teamName: string) => void;
+  /** Embed inside an existing card (no own card chrome / title) — e.g. a
+   *  collapsible "Team" row on the You page. */
+  bare?: boolean;
 }) {
   const [teams, setTeams] = useState<TeamDirWithStats[]>([]);
   const [loading, setLoading] = useState(true);
@@ -109,8 +113,8 @@ export function TeamSection({
   };
 
   return (
-    <View style={styles.section}>
-      <Text style={styles.sectionTitle}>Team</Text>
+    <View style={bare ? styles.bare : styles.section}>
+      {!bare && <Text style={styles.sectionTitle}>Team</Text>}
       <Text style={styles.subtext}>
         Join a team — every cleanup you log counts toward its leaderboard total.
       </Text>
@@ -196,6 +200,7 @@ const styles = StyleSheet.create({
     shadowRadius: 3,
     shadowOffset: { width: 0, height: 1 },
   },
+  bare: { marginTop: 4 },
   sectionTitle: {
     fontSize: 17,
     fontWeight: '700',
