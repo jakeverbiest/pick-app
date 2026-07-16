@@ -53,7 +53,12 @@ const SNAP_DISTANCE_M = 11;
 const COVERAGE_THRESHOLD = 0.8; // 80% of the segment — one side of a block, not the street
 const SEGMENT_SAMPLE_STEP_M = 5; // sample the segment every ~5m to measure coverage
 const FETCH_RADIUS_M = 600;
-const GEOMETRY_CACHE_PREFIX = '@pick_sidewalks_'; // v2: sidewalks, not centerlines
+// When we can't get real per-side sidewalks and fall back to a road CENTERLINE,
+// we split that centerline into two virtual sidewalks offset this far to each
+// side (so the two sit ~2x apart). With an 11m snap + the 80% coverage rule,
+// walking the north side credits only the north virtual sidewalk, not both.
+const ROAD_SIDE_OFFSET_M = 8;
+const GEOMETRY_CACHE_PREFIX = '@pick_sidewalks_v3_'; // v3: split centerline fallbacks per-side
 const MIN_SIDEWALK_SEGMENTS = 30; // below this, area has unmapped sidewalks → fall back to roads
 const GEOMETRY_CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 const STATUS_COLLECTION = 'segment_status';
@@ -65,9 +70,10 @@ const PARK_GEOMETRY_CACHE_PREFIX = '@pick_parks_';
 const MIN_POINTS_IN_PARK = 6; // route GPS points inside the polygon to count it cleaned
 
 export interface StreetSegment {
-  id: string; // `${osmWayId}_${index}` — stable across fetches
+  id: string; // `${osmWayId}_${index}` — stable across fetches (road fallbacks add _L/_R)
   coords: [number, number][]; // [lat, lon] pairs
   grid: string; // 0.01° grid cell of segment midpoint
+  side?: 'L' | 'R'; // set only on split road-centerline fallbacks
 }
 
 export interface SegmentStatus {
@@ -128,6 +134,25 @@ function pointToEdgeM(
   const cx = ax + t * dx, cy = ay + t * dy;
   // back to meters
   return distM(py, px / cosLat, cy, cx / cosLat);
+}
+
+/** Shift a whole segment sideways by `meters` (perpendicular to its overall
+ *  heading). Positive = left of the a→b direction, negative = right. Used to
+ *  turn a road centerline into two virtual per-side sidewalks. */
+function offsetCoords(coords: [number, number][], meters: number): [number, number][] {
+  if (coords.length < 2) return coords;
+  const a = coords[0];
+  const b = coords[coords.length - 1];
+  const cosLat = Math.cos((a[0] * Math.PI) / 180);
+  const dxE = (b[1] - a[1]) * 111320 * cosLat; // east component (m)
+  const dyN = (b[0] - a[0]) * 110540; // north component (m)
+  const len = Math.hypot(dxE, dyN) || 1;
+  // left normal = rotate heading +90°: (-north, east)
+  const nE = -dyN / len;
+  const nN = dxE / len;
+  const dLon = (nE * meters) / (111320 * cosLat);
+  const dLat = (nN * meters) / 110540;
+  return coords.map(([la, lo]) => [la + dLat, lo + dLon] as [number, number]);
 }
 
 /** Resample a polyline into points spaced ~stepM apart, for coverage sampling. */
@@ -325,13 +350,27 @@ async function fetchStreetGeometry(lat: number, lon: number): Promise<StreetSegm
       out geom;
     `;
     json = await runOverpass(roadQuery);
-    segments = chopWaysIntoSegments(json);
+    segments = chopWaysIntoSegments(json, true); // centerlines → split into per-side sidewalks
   }
   return segments;
 }
 
-function chopWaysIntoSegments(json: any): StreetSegment[] {
+// `split` = this geometry is road CENTERLINES (the no-sidewalk fallback), so
+// emit two offset per-side segments (…_L / …_R) instead of one centerline. In
+// true-sidewalk data each side is already its own way, so we leave it alone.
+function chopWaysIntoSegments(json: any, split = false): StreetSegment[] {
   const segments: StreetSegment[] = [];
+  const emit = (baseId: string, segCoords: [number, number][]) => {
+    if (segCoords.length < 2) return;
+    const mid = segCoords[Math.floor(segCoords.length / 2)];
+    const grid = gridKey(mid[0], mid[1]);
+    if (split) {
+      segments.push({ id: `${baseId}_L`, coords: offsetCoords(segCoords, ROAD_SIDE_OFFSET_M), grid, side: 'L' });
+      segments.push({ id: `${baseId}_R`, coords: offsetCoords(segCoords, -ROAD_SIDE_OFFSET_M), grid, side: 'R' });
+    } else {
+      segments.push({ id: baseId, coords: segCoords, grid });
+    }
+  };
   for (const way of json.elements || []) {
     if (way.type !== 'way' || !way.geometry || way.geometry.length < 2) continue;
     const pts: [number, number][] = way.geometry.map((g: any) => [g.lat, g.lon]);
@@ -345,14 +384,7 @@ function chopWaysIntoSegments(json: any): StreetSegment[] {
       segLen += distM(pts[i - 1][0], pts[i - 1][1], pts[i][0], pts[i][1]);
       const isLast = i === pts.length - 1;
       if (segLen >= SEGMENT_LENGTH_M || isLast) {
-        if (segCoords.length >= 2) {
-          const mid = segCoords[Math.floor(segCoords.length / 2)];
-          segments.push({
-            id: `${way.id}_${segIndex}`,
-            coords: segCoords,
-            grid: gridKey(mid[0], mid[1]),
-          });
-        }
+        emit(`${way.id}_${segIndex}`, segCoords);
         segIndex++;
         segCoords = [pts[i]];
         segLen = 0;
@@ -499,7 +531,7 @@ export async function getCoverage(lat: number, lon: number): Promise<RenderSegme
 
 // ---------- whole-neighborhood coverage (one Overpass query) ----------
 
-const RING_CACHE_PREFIX = '@pick_ringsegs_';
+const RING_CACHE_PREFIX = '@pick_ringsegs_v3_'; // v3: split centerline fallbacks per-side
 
 /** Cheap stable hash of a ring for the geometry cache key. */
 function ringHash(ring: [number, number][]): string {
@@ -545,7 +577,7 @@ async function fetchStreetGeometryForRing(ring: [number, number][]): Promise<Str
       out geom;
     `;
     json = await runOverpass(roadQuery);
-    segments = chopWaysIntoSegments(json);
+    segments = chopWaysIntoSegments(json, true); // centerlines → split into per-side sidewalks
   }
   return segments;
 }
