@@ -31,13 +31,17 @@ service cloud.firestore {
     //     by the Cloud Functions below. ---
     match /cleanups/{cleanupId} {
       allow read: if isOwner(resource.data.userId);
+      // weight_lb is OPTIONAL — the app doesn't send it (bags, not pounds, are
+      // the unit). Requiring it silently rejected every real cleanup, forcing a
+      // local-only fallback. Validate it only when present.
       allow create: if isOwner(request.resource.data.userId)
         && request.resource.data.items_count is number
         && request.resource.data.items_count >= 0
         && request.resource.data.items_count < 5000
-        && request.resource.data.weight_lb is number
-        && request.resource.data.weight_lb >= 0
-        && request.resource.data.weight_lb < 1000;
+        && (!('weight_lb' in request.resource.data) || (
+              request.resource.data.weight_lb is number
+              && request.resource.data.weight_lb >= 0
+              && request.resource.data.weight_lb < 1000));
       allow update, delete: if isOwner(resource.data.userId);
     }
 
@@ -100,6 +104,31 @@ service cloud.firestore {
         && request.resource.data.last_cleaned is number
         && request.resource.data.last_cleaned <= request.time.toMillis() + 60000
         && request.resource.data.last_cleaned > request.time.toMillis() - 86400000;
+    }
+
+    // --- Park status: shared park-cleaning layer, mirrors segment_status.
+    //     Any signed-in user reads and stamps a park cleaned with a plausible,
+    //     non-backdated payload keyed to themselves. (Was missing → the
+    //     catch-all denied every markParksCleaned write, so parks never
+    //     registered as cleaned.) ---
+    match /park_status/{parkId} {
+      allow read: if signedIn();
+      allow write: if signedIn()
+        && request.resource.data.last_user == request.auth.uid
+        && request.resource.data.last_cleaned is number
+        && request.resource.data.last_cleaned <= request.time.toMillis() + 60000
+        && request.resource.data.last_cleaned > request.time.toMillis() - 86400000;
+    }
+
+    // --- User stats: each picker's own leaderboard aggregate, written by the
+    //     owner (doc id = uid). Reads are OPT-IN: only profiles that left
+    //     themselves visible (hidden == false) are readable, so a hidden user's
+    //     display name is never exposed — the owner can always read their own.
+    //     (Was missing → updateUserStats writes were denied and the public
+    //     top-picker board never filled in for real users.) ---
+    match /user_stats/{userId} {
+      allow read: if resource.data.hidden == false || isOwner(userId);
+      allow write: if isOwner(userId);
     }
 
     // --- Analytics: write-only from clients ---

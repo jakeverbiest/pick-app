@@ -2,19 +2,18 @@ rules_version = '2';
 
 // PICK Firestore Security Rules
 //
-// ⚠️ DEPLOYMENT DEPENDENCY: the app currently signs in via simpleAuthService
-// (local AsyncStorage), NOT Firebase Auth — so request.auth is null on every
-// request and the PRODUCTION rules below would block the app entirely.
+// STATUS: LIVE. Published to project pick-app-74c2e. The app authenticates
+// with Firebase Auth (src/services/authService.ts) and writes every document
+// keyed to the Firebase Auth UID, so these owner-scoped rules are satisfied.
 //
-// Path to production:
-//   1. Switch the app to Firebase Auth (authService.ts already exists)
-//   2. Deploy these rules:  firebase deploy --only firestore:rules
+// This file is the version-controlled source of truth. To redeploy after edits:
+//   firebase deploy --only firestore:rules        (needs firebase.json + login)
 //
-// Until then the project is in test mode (open). Do not ship to app stores
-// in test mode — anyone with the API key can read/write everything.
-//
-// Deploy: firebase deploy --only firestore:rules  (from repo root, needs firebase.json)
-
+// Design notes:
+// - Cleanups are OWNER-ONLY reads: routes can reveal home locations even when
+//   trimmed. The shared community map reads segment_status (no routes).
+// - Leaderboards read team_stats, which is written ONLY by the Cloud Functions
+//   (admin SDK bypasses these rules); clients can read but never write it.
 service cloud.firestore {
   match /databases/{database}/documents {
 
@@ -28,23 +27,41 @@ service cloud.firestore {
 
     // --- Cleanups: OWNER-ONLY reads (routes reveal home locations even
     //     trimmed; the shared community map uses segment_status, which has
-    //     no routes). Team leaderboards will need a Cloud Function aggregate
-    //     before they work cross-user again — acceptable until then. ---
+    //     no routes). Team leaderboards are served by team_stats, populated
+    //     by the Cloud Functions below. ---
     match /cleanups/{cleanupId} {
       allow read: if isOwner(resource.data.userId);
+      // weight_lb is OPTIONAL — the app doesn't send it (bags, not pounds, are
+      // the unit). Requiring it silently rejected every real cleanup, forcing a
+      // local-only fallback. Validate it only when present.
       allow create: if isOwner(request.resource.data.userId)
         && request.resource.data.items_count is number
         && request.resource.data.items_count >= 0
         && request.resource.data.items_count < 5000
-        && request.resource.data.weight_lb is number
-        && request.resource.data.weight_lb >= 0
-        && request.resource.data.weight_lb < 1000;
+        && (!('weight_lb' in request.resource.data) || (
+              request.resource.data.weight_lb is number
+              && request.resource.data.weight_lb >= 0
+              && request.resource.data.weight_lb < 1000));
       allow update, delete: if isOwner(resource.data.userId);
     }
 
     // --- User settings: private to the owner ---
     match /users/{userId} {
       allow read, write: if isOwner(userId);
+    }
+
+    // --- Teams: the shared team directory. Anyone signed-in can browse and
+    //     create a team (to join or start one); team docs are immutable once
+    //     created. Membership itself lives in each user's private settings;
+    //     member/activity counts come from team_stats (Cloud Function). ---
+    match /teams/{teamId} {
+      allow read: if signedIn();
+      allow create: if signedIn()
+        && request.resource.data.created_by == request.auth.uid
+        && request.resource.data.name is string
+        && request.resource.data.name.size() > 0
+        && request.resource.data.name.size() <= 60;
+      allow update, delete: if false;
     }
 
     // --- Team stats: the privacy-safe leaderboard aggregate. Written only by
@@ -56,45 +73,11 @@ service cloud.firestore {
       allow write: if false;
     }
 
-    // --- Teams directory: shared list of named teams. Any signed-in user reads
-    //     (directory + existence checks) and may create a team stamped with
-    //     their own uid; only the creator may change or remove it. ---
-    match /teams/{teamId} {
-      allow read: if signedIn();
-      allow create: if isOwner(request.resource.data.created_by)
-        && request.resource.data.name is string
-        && request.resource.data.name.size() > 0
-        && request.resource.data.name.size() < 60;
-      allow update, delete: if isOwner(resource.data.created_by);
-    }
-
     // --- Badges: readable by all signed-in (profiles), writable by owner ---
     match /badges/{badgeId} {
       allow read: if signedIn();
       allow create: if isOwner(request.resource.data.userId);
       allow update, delete: if isOwner(resource.data.userId);
-    }
-
-    // --- User stats: the per-user public leaderboard aggregate. Totals +
-    //     display name + team only — NEVER routes. Any signed-in user reads
-    //     (to render the individual leaderboard); each user writes only their
-    //     own doc. Opt-out is the `hidden` flag, filtered client-side. ---
-    match /user_stats/{userId} {
-      allow read: if signedIn();
-      allow write: if isOwner(userId);
-    }
-
-    // --- Community posts: a cleanup photo + caption (no precise location).
-    //     Any signed-in user reads; the author creates/deletes their own;
-    //     anyone signed-in may toggle a like (only the liked_by array changes). ---
-    match /posts/{postId} {
-      allow read: if signedIn();
-      allow create: if isOwner(request.resource.data.uid);
-      allow delete: if isOwner(resource.data.uid);
-      allow update: if signedIn() && (
-        isOwner(resource.data.uid)
-        || request.resource.data.diff(resource.data).affectedKeys().hasOnly(['liked_by'])
-      );
     }
 
     // --- Challenges: shared. Anyone signed-in reads; creator manages;
@@ -106,7 +89,7 @@ service cloud.firestore {
         resource.data.created_by == request.auth.uid
         // joining: only the participants array may change
         || request.resource.data.diff(resource.data).affectedKeys()
-             .hasOnly(['participants', 'updated_at'])
+            .hasOnly(['participants', 'updated_at'])
       );
       allow delete: if signedIn() && resource.data.created_by == request.auth.uid;
     }
@@ -123,7 +106,11 @@ service cloud.firestore {
         && request.resource.data.last_cleaned > request.time.toMillis() - 86400000;
     }
 
-    // --- Park status: same shared coverage model as segments, for park zones ---
+    // --- Park status: shared park-cleaning layer, mirrors segment_status.
+    //     Any signed-in user reads and stamps a park cleaned with a plausible,
+    //     non-backdated payload keyed to themselves. (Was missing → the
+    //     catch-all denied every markParksCleaned write, so parks never
+    //     registered as cleaned.) ---
     match /park_status/{parkId} {
       allow read: if signedIn();
       allow write: if signedIn()
@@ -133,14 +120,67 @@ service cloud.firestore {
         && request.resource.data.last_cleaned > request.time.toMillis() - 86400000;
     }
 
+    // --- User stats: each picker's own leaderboard aggregate, written by the
+    //     owner (doc id = uid). Reads are OPT-IN: only profiles that left
+    //     themselves visible (hidden == false) are readable, so a hidden user's
+    //     display name is never exposed — the owner can always read their own.
+    //     (Was missing → updateUserStats writes were denied and the public
+    //     top-picker board never filled in for real users.) ---
+    match /user_stats/{userId} {
+      allow read: if resource.data.hidden == false || isOwner(userId);
+      allow write: if isOwner(userId);
+    }
+
     // --- Analytics: write-only from clients ---
     match /analytics/{docId} {
       allow create: if signedIn();
       allow read, update, delete: if false;
     }
 
-    // --- Feedback: testers submit; only the owner (you) reads via console/admin ---
-    match /feedback/{docId} {
+    // --- Public stats: the aggregate dashboard (city + global). PUBLIC read
+    //     (no auth) so a public website can show them. Written ONLY by the
+    //     scheduledPublicStats / rebuildPublicStats Cloud Functions (admin SDK
+    //     bypasses rules). Contents are aggregates only — counts, totals, a
+    //     coarse ~1km "recently cleaned" tile grid, and an opt-in top-picker
+    //     board (display names of users who left themselves leaderboard-visible).
+    //     No routes, no exact locations, no private data. ---
+    match /global_stats/{docId} {
+      allow read: if true;
+      allow write: if false;
+    }
+    match /city_stats/{docId} {
+      allow read: if true;
+      allow write: if false;
+    }
+
+    // --- Adopt-a-street: each picker's adopted spots, private to the owner.
+    //     The scheduled Cloud Function (admin SDK) reads them all and stamps
+    //     lastNotified; clients only touch their own. ---
+    match /adoptions/{adoptionId} {
+      allow read, delete: if isOwner(resource.data.userId);
+      allow create: if isOwner(request.resource.data.userId);
+      allow update: if isOwner(resource.data.userId);
+    }
+
+    // --- Mail: outbound email queue for the "Trigger Email" extension. Written
+    //     ONLY by Cloud Functions (admin SDK); no client access. ---
+    match /mail/{mailId} {
+      allow read, write: if false;
+    }
+
+    // --- Community posts: the shared photo feed. Any signed-in user can read;
+    //     authors create and delete their own; a like only ever changes the
+    //     liked_by array (so you can't rewrite someone else's post). ---
+    match /posts/{postId} {
+      allow read: if signedIn();
+      allow create: if isOwner(request.resource.data.uid);
+      allow update: if signedIn()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['liked_by']);
+      allow delete: if isOwner(resource.data.uid);
+    }
+
+    // --- Feedback: create-only from clients (read only in the Firebase console). ---
+    match /feedback/{feedbackId} {
       allow create: if signedIn();
       allow read, update, delete: if false;
     }

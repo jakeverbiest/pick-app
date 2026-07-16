@@ -1,11 +1,13 @@
 {
+  "__comment": "Canonical Firebase config lives in apps/companion/. These paths intentionally point there so `firebase deploy` from the repo ROOT and from apps/companion are IDENTICAL. Do NOT add divergent rules/functions here — the old firebase/ tree is deprecated.",
   "firestore": {
-    "rules": "firebase/firestore.rules"
-  },
-  "storage": {
-    "rules": "firebase/storage.rules"
+    "rules": "apps/companion/firestore.rules",
+    "indexes": "apps/companion/firestore.indexes.json"
   },
   "functions": {
-    "source": "firebase/functions"
+    "source": "apps/companion/functions"
+  },
+  "storage": {
+    "rules": "apps/companion/storage.rules"
   }
 }
