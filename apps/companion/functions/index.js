@@ -229,8 +229,27 @@ async function rebuildPublicStats() {
   });
 
   const global = newAgg();
-  const cities = new Map(); // slug -> { name, agg }
+  const cities = new Map(); // slug -> { name, agg, hot }
   const tiles = new Map();   // "lat,lon" (2dp ≈ 1km) -> count, last 7 days
+  const hot = new Map();     // "lat,lon" (3dp ≈ 100m) -> pickup count, all-time
+
+  // Bin a cleanup's sampled pickup coords into fine ~100m hotspot cells.
+  const addHot = (map, d) => {
+    let pts = null;
+    try { pts = d.pickups ? (typeof d.pickups === 'string' ? JSON.parse(d.pickups) : d.pickups) : null; } catch {}
+    if (!Array.isArray(pts)) return;
+    for (const pr of pts) {
+      const la = Array.isArray(pr) ? pr[0] : (pr && pr.lat);
+      const lo = Array.isArray(pr) ? pr[1] : (pr && pr.lon);
+      if (typeof la !== 'number' || typeof lo !== 'number') continue;
+      const key = `${la.toFixed(3)},${lo.toFixed(3)}`;
+      map.set(key, (map.get(key) || 0) + 1);
+    }
+  };
+  const shapeHot = (map, limit) => [...map.entries()]
+    .map(([k, n]) => { const [lat, lon] = k.split(',').map(Number); return { lat, lon, n }; })
+    .sort((a, b) => b.n - a.n)
+    .slice(0, limit);
 
   const snap = await db.collection('cleanups').get();
   snap.forEach((doc) => {
@@ -243,13 +262,15 @@ async function rebuildPublicStats() {
     const uid = d.userId || '';
 
     addToAgg(global, d, inWeek, pickups, bags, seconds, uid);
+    addHot(hot, d);
 
     const cityName = (d.city || '').trim();
     if (cityName) {
       const slug = citySlug(cityName);
       let c = cities.get(slug);
-      if (!c) { c = { name: cityName, agg: newAgg() }; cities.set(slug, c); }
+      if (!c) { c = { name: cityName, agg: newAgg(), hot: new Map() }; cities.set(slug, c); }
       addToAgg(c.agg, d, inWeek, pickups, bags, seconds, uid);
+      addHot(c.hot, d);
     }
 
     if (inWeek && Number.isFinite(d.location_lat) && Number.isFinite(d.location_lon)) {
@@ -262,6 +283,8 @@ async function rebuildPublicStats() {
     .map(([k, n]) => { const [lat, lon] = k.split(',').map(Number); return { lat, lon, n }; })
     .sort((a, b) => b.n - a.n)
     .slice(0, 600);
+
+  const hotspots = shapeHot(hot, 800);
 
   const topCities = [...cities.entries()]
     .map(([slug, c]) => ({ slug, city: c.name, week: shapeWeek(c.agg), allTime: shapeAll(c.agg) }))
@@ -276,6 +299,7 @@ async function rebuildPublicStats() {
     topCities,
     topPickers: topPickers(global, namesById, 25),
     recentTiles,
+    hotspots,
   });
 
   // Per-city docs (write in parallel).
@@ -287,6 +311,7 @@ async function rebuildPublicStats() {
       allTime: shapeAll(c.agg),
       week: shapeWeek(c.agg),
       topPickers: topPickers(c.agg, namesById, 10),
+      hotspots: shapeHot(c.hot, 400),
     })
   ));
 
