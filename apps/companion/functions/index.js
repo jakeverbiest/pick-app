@@ -20,14 +20,18 @@
  * Deploy:  firebase deploy --only functions      (from apps/companion)
  */
 
-const { onDocumentWritten } = require('firebase-functions/v2/firestore');
+const { onDocumentWritten, onDocumentCreated } = require('firebase-functions/v2/firestore');
 const { onCall, HttpsError, onRequest } = require('firebase-functions/v2/https');
 const { onSchedule } = require('firebase-functions/v2/scheduler');
 const { initializeApp } = require('firebase-admin/app');
 const { getFirestore } = require('firebase-admin/firestore');
+const { getAuth } = require('firebase-admin/auth');
 
 initializeApp();
 const db = getFirestore();
+
+// Owner alerts (new signups, etc.) go here.
+const OWNER_EMAIL = 'jlverbie@gmail.com';
 
 // Solo walks aren't a "team" — don't lump every solo user into one row.
 const NON_TEAM = new Set(['', 'solo', 'Solo', 'SOLO']);
@@ -434,6 +438,59 @@ async function checkAdoptions() {
 /** Daily scan for stale adopted streets. */
 exports.scheduledAdoptionCheck = onSchedule('every 24 hours', async () => {
   await checkAdoptions();
+});
+
+/**
+ * Instant confirmation: the moment a picker adopts a spot, email them so they
+ * get something immediately (the nudge job only fires once it's gone stale).
+ * Fires on adoptions/{id} create; the email address is stored on the adoption
+ * doc, so no Auth lookup is needed. Writes to the `mail` collection like every
+ * other email here — the Trigger Email extension delivers it.
+ */
+exports.onAdoptionCreated = onDocumentCreated('adoptions/{adoptionId}', async (event) => {
+  const a = (event.data && event.data.data()) || {};
+  if (!a.email) return; // nothing to send to
+  const label = a.label || 'your spot';
+  const thresh = num(a.thresholdDays) || 7;
+  await db.collection('mail').add({
+    to: [a.email],
+    message: {
+      subject: `You adopted ${label}`,
+      text: `Nice — you just adopted ${label} on PICK.\n\nWe'll keep an eye on it. If it goes more than ${thresh} days without a cleanup nearby, we'll send you a friendly nudge to swing by and give it a pick.\n\nThanks for looking after your streets. — PICK`,
+      html: `<p>Nice — you just adopted <strong>${esc(label)}</strong> on PICK.</p><p>We'll keep an eye on it. If it goes more than ${thresh} days without a cleanup nearby, we'll send you a friendly nudge to swing by and give it a pick.</p><p>Thanks for looking after your streets.</p><p>— PICK</p>`,
+    },
+  });
+  console.log(`📬 Adoption confirmation queued: ${a.email} (${label})`);
+});
+
+/**
+ * Notify the owner whenever a new user signs up. Fires when a user's profile
+ * doc is first created (which happens right after account creation). Pulls the
+ * email from the Auth record and drops a message in the `mail` collection so
+ * the Trigger Email extension sends it.
+ */
+exports.notifyNewSignup = onDocumentCreated('users/{uid}', async (event) => {
+  const uid = event.params.uid;
+  const data = (event.data && event.data.data()) || {};
+  let email = '(unknown)';
+  let name = data.display_name || data.name || '';
+  try {
+    const u = await getAuth().getUser(uid);
+    email = u.email || email;
+    if (!name) name = u.displayName || '';
+  } catch (e) {
+    // Auth record may be unreadable; send with whatever the profile has.
+  }
+  const when = new Date().toLocaleString('en-US', { timeZone: 'America/New_York' });
+  await db.collection('mail').add({
+    to: [OWNER_EMAIL],
+    message: {
+      subject: `New Pick signup${name ? `: ${name}` : ''}`,
+      text: `A new Picker just joined.\n\nName: ${name || '(none)'}\nEmail: ${email}\nNeighborhood: ${data.neighborhood || '(none)'}\nUID: ${uid}\nWhen: ${when} ET`,
+      html: `<p>A new Picker just joined.</p><ul><li><strong>Name:</strong> ${esc(name || '(none)')}</li><li><strong>Email:</strong> ${esc(email)}</li><li><strong>Neighborhood:</strong> ${esc(data.neighborhood || '(none)')}</li><li><strong>UID:</strong> ${esc(uid)}</li><li><strong>When:</strong> ${when} ET</li></ul>`,
+    },
+  });
+  console.log(`📬 New signup notified to owner: ${email} (${uid})`);
 });
 
 // Secret gate for the manual adoption-check trigger below. Change this value if

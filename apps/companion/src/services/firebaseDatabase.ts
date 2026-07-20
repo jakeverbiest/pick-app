@@ -23,7 +23,7 @@ import {
   arrayRemove,
   Timestamp,
 } from 'firebase/firestore';
-import { getStorage, ref as storageRef, uploadBytes, getDownloadURL, deleteObject } from 'firebase/storage';
+import { getStorage, ref as storageRef, uploadBytes, uploadBytesResumable, getDownloadURL, deleteObject } from 'firebase/storage';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { app } from './firebaseConfig';
 import { aggregateBags, itemsToBags } from './impactMetrics';
@@ -113,6 +113,23 @@ export interface TeamStats {
 }
 
 /** A community feed post: a cleanup photo + caption. No precise location. */
+/** Numbers shown on an impact post's stat summary. */
+export interface ImpactStats {
+  pctGreen?: number;   // % of the area cleaned ("green")
+  adopted: number;     // adopted blocks
+  toGo?: number;       // blocks left to reach the goal
+  cleanups?: number;
+  bags?: number;
+}
+
+/** Compact, re-renderable "map snapshot" — drawn as SVG from coords (no image
+ *  file). Kept small: cap the block count before saving. */
+export interface ImpactCoverage {
+  bbox: [number, number, number, number]; // [minLat, minLon, maxLat, maxLon]
+  blocks: [number, number][][];            // adopted/cleaned block polylines
+  tiles?: [number, number][];              // optional cleaned-tile centers
+}
+
 export interface Post {
   id: string;
   uid: string;
@@ -123,6 +140,10 @@ export interface Post {
   storage_path: string;
   liked_by: string[];
   created_at: number;
+  /** 'photo' (default, legacy) or 'impact' (map snapshot + stat summary). */
+  kind?: 'photo' | 'impact';
+  stats?: ImpactStats;
+  coverage?: ImpactCoverage;
 }
 
 /** Per-user public leaderboard aggregate (no routes — totals + name only). */
@@ -155,6 +176,41 @@ export interface TeamDirWithStats extends TeamDir {
 // Get Firestore instance
 const db = getFirestore(app);
 const storage = getStorage(app);
+
+/**
+ * Upload an image blob resiliently. Plain uploadBytes() has no timeout and hangs
+ * indefinitely if the device switches networks (cellular↔wifi) mid-transfer —
+ * the reason community posting only worked with wifi turned off. This uses
+ * uploadBytesResumable with a timeout so a stalled attempt is cancelled and
+ * retried once on the (now-settled) connection.
+ */
+async function uploadImageResilient(
+  sref: ReturnType<typeof storageRef>,
+  blob: Blob,
+  { timeoutMs = 20000, retries = 1 }: { timeoutMs?: number; retries?: number } = {},
+): Promise<void> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const task = uploadBytesResumable(sref, blob, { contentType: 'image/jpeg' });
+        const timer = setTimeout(() => {
+          try { task.cancel(); } catch {}
+          reject(new Error('upload-timeout'));
+        }, timeoutMs);
+        task.on(
+          'state_changed',
+          undefined,
+          (err) => { clearTimeout(timer); reject(err); },
+          () => { clearTimeout(timer); resolve(); },
+        );
+      });
+      return;
+    } catch (e) {
+      if (attempt >= retries) throw e;
+      await new Promise((r) => setTimeout(r, 1500)); // brief backoff, then retry
+    }
+  }
+}
 
 class FirebaseDatabase {
   private currentUserId: string | null = null;
@@ -1032,7 +1088,7 @@ class FirebaseDatabase {
       const sref = storageRef(storage, path);
       // Declare contentType explicitly: Expo file blobs often have an empty
       // type, which fails the Storage rule's `image/.*` check (silent denial).
-      await uploadBytes(sref, blob, { contentType: 'image/jpeg' });
+      await uploadImageResilient(sref, blob);
       const image_url = await getDownloadURL(sref);
       const post = {
         uid,
@@ -1060,6 +1116,73 @@ class FirebaseDatabase {
       return snapshot.docs.map((d) => ({ id: d.id, ...(d.data() as any) })) as Post[];
     } catch (error) {
       console.error('Failed to get posts:', error);
+      return [];
+    }
+  }
+
+  /**
+   * Share your impact: a map snapshot (re-rendered from `coverage` coords, no
+   * photo upload) plus a stat summary. Stored in the same `posts` feed, tagged
+   * kind:'impact' so the feed renders it differently.
+   */
+  async createImpactPost(input: {
+    caption?: string;
+    neighborhood?: string;
+    stats: ImpactStats;
+    coverage: ImpactCoverage;
+  }): Promise<Post | null> {
+    const uid = this.currentUserId;
+    if (!uid) return null;
+    try {
+      const settings = await this.getUserSettings(uid);
+      // Trim coverage so a doc can't blow past Firestore's 1 MB limit.
+      const blocks = (input.coverage.blocks || []).slice(0, 400);
+      const tiles = (input.coverage.tiles || []).slice(0, 600);
+      const post = {
+        uid,
+        display_name: settings?.display_name || 'Picker',
+        neighborhood: input.neighborhood || settings?.neighborhood || '',
+        caption: (input.caption || '').slice(0, 280),
+        image_url: '',
+        storage_path: '',
+        liked_by: [] as string[],
+        kind: 'impact' as const,
+        stats: input.stats,
+        coverage: { bbox: input.coverage.bbox, blocks, tiles },
+        created_at: Date.now(),
+      };
+      const docRef = await addDoc(collection(db, 'posts'), post);
+      console.log(`✅ Impact post created: ${docRef.id}`);
+      return { id: docRef.id, ...post };
+    } catch (error) {
+      console.error('Failed to create impact post:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Posts from a specific set of authors, newest first — powers the "Following"
+   * feed. Firestore `in` allows ≤10 values, so we chunk and merge.
+   */
+  async getPostsByUsers(uids: string[], limitCount = 50): Promise<Post[]> {
+    const ids = Array.from(new Set(uids)).filter(Boolean);
+    if (ids.length === 0) return [];
+    try {
+      const chunks: string[][] = [];
+      for (let i = 0; i < ids.length; i += 10) chunks.push(ids.slice(i, i + 10));
+      // No orderBy here on purpose: an `in` filter + orderBy would require a
+      // composite index. We over-fetch by equality (index-free) and sort +
+      // trim client-side below, so the Following feed works with no index setup.
+      const results = await Promise.all(
+        chunks.map((chunk) =>
+          getDocs(query(collection(db, 'posts'), where('uid', 'in', chunk), limit(limitCount)))
+        )
+      );
+      const merged: Post[] = [];
+      for (const snap of results) snap.docs.forEach((d) => merged.push({ id: d.id, ...(d.data() as any) } as Post));
+      return merged.sort((a, b) => b.created_at - a.created_at).slice(0, limitCount);
+    } catch (error) {
+      console.error('Failed to get posts by users:', error);
       return [];
     }
   }

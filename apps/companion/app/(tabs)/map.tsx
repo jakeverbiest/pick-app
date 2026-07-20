@@ -17,6 +17,8 @@ import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import Constants from 'expo-constants';
 import { startBackgroundSession, stopBackgroundSession } from '../../src/services/backgroundSession';
 import { beginSessionTrace, heartbeat, endSessionTrace } from '../../src/services/crashRecorder';
+import { saveWalkDraft, loadWalkDraft, clearWalkDraft } from '../../src/services/sessionRecovery';
+import { computeNeed, parseRoute, needColor, needTileKey, type NeedTile } from '../../src/services/needMap';
 import { syncWorkoutToHealth, isHealthSyncEnabled } from '../../src/services/healthService';
 import { simplifyRoute, simplifyCoordPairs, privacyTrimRoute } from '../../src/services/routeUtils';
 import { getFitnessService } from '../../src/services/fitnessService';
@@ -31,12 +33,17 @@ export default function MapScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const webviewRef = useRef<WebView>(null);
-  const heatmapWebviewRef = useRef<WebView>(null);
   const [pickupCount, setPickupCount] = useState(0);
   const [isListening, setIsListening] = useState(false);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const locationRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Wall-clock anchor for the timer: elapsed is derived from this, not counted
+  // tick-by-tick, so a suspended app (screen locked in pocket) shows the true
+  // duration on resume instead of under-counting.
+  const sessionStartRef = useRef(0);
+  // Show the "foreground-only" heads-up at most once per app launch.
+  const fgWarnedRef = useRef(false);
   const [showSummary, setShowSummary] = useState(false);
   const [showResults, setShowResults] = useState(false);
   const [photoUri, setPhotoUri] = useState<string | null>(null);
@@ -80,9 +87,33 @@ export default function MapScreen() {
   const [bagFullness, setBagFullness] = useState(50);
   // True once the user touches the bag report — their report then wins over the estimate.
   const [bagReported, setBagReported] = useState(false);
+  // Plain-language "how much did you collect?" chips. Each maps to the
+  // (size, fullness) the impact math already understands (reportedBags), so
+  // saving, the leaderboard, and sharing stay unchanged. The resulting
+  // standard-bag equivalents are: handful 0.2, half 0.5, full 1, 2+ = 2.
+  const AMOUNT_OPTIONS: { key: string; label: string; size: 'small' | 'large'; fullness: number }[] = [
+    { key: 'handful', label: 'Just a handful', size: 'small', fullness: 20 },
+    { key: 'half', label: 'Half a bag', size: 'small', fullness: 50 },
+    { key: 'full', label: 'A full bag', size: 'small', fullness: 100 },
+    { key: 'multi', label: '2+ bags', size: 'large', fullness: 50 },
+  ];
   const [stats, setStats] = useState<any>(null);
   const [user, setUser] = useState<any>(null);
   const [userTeam, setUserTeam] = useState<string>('');
+  // User's preferred distance unit ('mi' | 'km'), loaded from settings.
+  const [distanceUnit, setDistanceUnit] = useState<'mi' | 'km'>('mi');
+  // Bumped to remount the map WebView after a session ends — works around the
+  // RN/iOS quirk where a WebView stops receiving touches once a Modal (the
+  // results recap) has been shown over it.
+  const [mapKey, setMapKey] = useState(0);
+  // "Need" map: overlay that colors blocks by how much they need a cleanup.
+  const [needMode, setNeedMode] = useState(false);
+  const [needTop, setNeedTop] = useState<NeedTile[]>([]);
+  // "My impact" overlay: which blocks you've touched + pickups over a window.
+  const [impactWindow, setImpactWindow] = useState<null | '24h' | '7d'>(null);
+  const [impactStats, setImpactStats] = useState({ pickups: 0, blocks: 0, walks: 0 });
+  // The consolidated map-tools button (press/hold to reveal Impact + Adopt).
+  const [toolsOpen, setToolsOpen] = useState(false);
   const [superlative, setSuperlative] = useState<string>('');
   const [sessionRoute, setSessionRoute] = useState<any[]>([]);
   // Drives unmounting the heavy map WebView when backgrounded mid-cleanup
@@ -497,6 +528,55 @@ export default function MapScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionRoute, isListening]);
 
+  // Restore an unsaved walk on launch. If the last walk was stopped but never
+  // saved (summary dismissed, app force-quit, or a crash at the summary), a
+  // draft survived on disk — offer to bring it back so it can be logged.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const draft = await loadWalkDraft();
+      if (cancelled || !draft || isListening) return;
+      Alert.alert(
+        'Recover your last walk?',
+        `A walk from ${new Date(draft.startedAt).toLocaleString()} with ${draft.pickupCount} pickup${draft.pickupCount === 1 ? '' : 's'} was never saved. Restore it so you can log it?`,
+        [
+          { text: 'Discard', style: 'destructive', onPress: () => { clearWalkDraft(); } },
+          {
+            text: 'Restore',
+            onPress: () => {
+              setSessionRoute(draft.route || []);
+              setPickupLocations(draft.pickups || []);
+              setPickupCount(draft.pickupCount || 0);
+              setElapsedSeconds(draft.elapsedSeconds || 0);
+              setShowSummary(true);
+            },
+          },
+        ],
+      );
+    })();
+    return () => { cancelled = true; };
+    // Run once on mount.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Continuous autosave (throttled to ~20s) so even a mid-walk crash leaves the
+  // full route + pickups recoverable — not just the crash-recorder's counts.
+  const lastAutosaveRef = useRef(0);
+  useEffect(() => {
+    if (!isListening) return;
+    const now = Date.now();
+    if (now - lastAutosaveRef.current < 20000) return;
+    lastAutosaveRef.current = now;
+    saveWalkDraft({
+      startedAt: now - elapsedSeconds * 1000,
+      savedAt: now,
+      pickupCount,
+      elapsedSeconds,
+      route: sessionRoute,
+      pickups: pickupLocations,
+    });
+  }, [sessionRoute, pickupLocations, isListening, elapsedSeconds, pickupCount]);
+
   // Re-draw the tappable hood outlines + coverage around a point (used when
   // returning to the overview so neighborhoods are immediately selectable).
   const refreshOverviewAround = (lat: number, lon: number) => {
@@ -507,6 +587,8 @@ export default function MapScreen() {
   // Close the results recap and return to a fresh, tappable overview where you
   // are now — so you can immediately pick a new neighborhood after submitting.
   const finishSession = () => {
+    // Walk is fully done and saved — make sure no recovery draft lingers.
+    clearWalkDraft();
     setShowResults(false);
     setPickupCount(0);
     setElapsedSeconds(0);
@@ -516,6 +598,106 @@ export default function MapScreen() {
     setShowShare(false);
     if (activeLevelRef.current) exitLevel();
     else if (currentLocation) refreshOverviewAround(currentLocation.lat, currentLocation.lon);
+    // Remount the map WebView so it regains touch after the results Modal
+    // (RN/iOS quirk). Reset readiness + coverage flags so the fresh map reloads
+    // its hoods/coverage on load.
+    coverageLoadedRef.current = false;
+    setMapReady(false);
+    setMapKey((k) => k + 1);
+    // Remounted map starts clean — drop any Need/Impact overlays.
+    setNeedMode(false);
+    setNeedTop([]);
+    setImpactWindow(null);
+    setCoverageVisible(true);
+  };
+
+  // Normalize a stored cleanup timestamp (ms, seconds, or Firestore Timestamp) to ms.
+  const toMs = (v: any): number => {
+    if (!v) return 0;
+    if (typeof v === 'number') return v > 1e12 ? v : v * 1000;
+    if (typeof v?.toMillis === 'function') return v.toMillis();
+    if (typeof v?._seconds === 'number') return v._seconds * 1000;
+    const p = Date.parse(v);
+    return Number.isNaN(p) ? 0 : p;
+  };
+
+  // Toggle the "Need" layer: recolors ~110m tiles by how much they need a
+  // cleanup (overdue + often-cleaned), computed from your walk history.
+  const toggleNeed = async () => {
+    const next = !needMode;
+    setNeedMode(next);
+    if (!next) {
+      webviewRef.current?.injectJavaScript('if (window.clearNeed) { window.clearNeed(); } true;');
+      setNeedTop([]);
+      return;
+    }
+    try {
+      const db = await getDatabase();
+      const cleanups = await db.getCleanups(1000);
+      const lite = cleanups.map((c: any) => ({
+        timestamp: toMs(c.timestamp),
+        items: c.items_count || 0,
+        route: parseRoute(c.route_points),
+        userId: c.userId,
+      }));
+      const tiles = computeNeed(lite);
+      setNeedTop(tiles.slice(0, 5));
+      const payload = tiles.slice(0, 400).map((t) => ({ lat: t.lat, lon: t.lon, color: needColor(t.needScore) }));
+      webviewRef.current?.injectJavaScript(
+        `if (window.renderNeed) { window.renderNeed(${JSON.stringify(payload)}); } true;`,
+      );
+    } catch (e) {
+      console.error('Need map failed:', e);
+    }
+  };
+
+  // Show "My impact": the routes you've touched + your pickups over a window
+  // (last 24h or last 7 days), with a quick stat line.
+  const showImpact = async (win: '24h' | '7d') => {
+    setImpactWindow(win);
+    // My Impact shows ONLY your streets — hide the community coverage layer
+    // (everyone's cleaned streets) so what's left is just your own routes.
+    setCoverageVisible(false);
+    webviewRef.current?.injectJavaScript('if (window.setCoverageVisible) { window.setCoverageVisible(false); } true;');
+    if (needMode) {
+      setNeedMode(false);
+      setNeedTop([]);
+      webviewRef.current?.injectJavaScript('if (window.clearNeed) { window.clearNeed(); } true;');
+    }
+    try {
+      const db = await getDatabase();
+      const cleanups = await db.getCleanups(1000);
+      const cutoff = Date.now() - (win === '24h' ? 86_400_000 : 7 * 86_400_000);
+      const routes: [number, number][][] = [];
+      const pickups: [number, number][] = [];
+      const tiles = new Set<string>();
+      let items = 0;
+      let walks = 0;
+      for (const c of cleanups as any[]) {
+        if (toMs(c.timestamp) < cutoff) continue;
+        walks++;
+        const r = parseRoute(c.route_points);
+        if (r.length) routes.push(r);
+        for (const p of parseRoute(c.pickups)) pickups.push(p);
+        items += c.items_count || 0;
+        for (const [la, lo] of r) tiles.add(needTileKey(la, lo));
+      }
+      setImpactStats({ pickups: items, blocks: tiles.size, walks });
+      webviewRef.current?.injectJavaScript(
+        `if (window.renderImpact) { window.renderImpact(${JSON.stringify(routes)}, ${JSON.stringify(pickups)}); } true;`,
+      );
+    } catch (e) {
+      console.error('Impact view failed:', e);
+    }
+  };
+
+  const hideImpact = () => {
+    setImpactWindow(null);
+    // Bring the community coverage layer back and redraw the normal overview so
+    // it reliably reappears (not just an add/remove of possibly-stale layers).
+    setCoverageVisible(true);
+    webviewRef.current?.injectJavaScript('if (window.clearImpact) { window.clearImpact(); } if (window.setCoverageVisible) { window.setCoverageVisible(true); } true;');
+    if (currentLocation) refreshOverviewAround(currentLocation.lat, currentLocation.lon);
   };
 
   // Leave level mode → back to the overview of all hoods, recentered on you.
@@ -574,8 +756,13 @@ export default function MapScreen() {
 
   useEffect(() => {
     if (isListening) {
+      // Anchor "now minus already-elapsed" so a restored/continued walk keeps
+      // its clock. Each tick recomputes from wall-clock time, so if iOS suspended
+      // us while locked, the timer snaps to the correct value on resume rather
+      // than losing the pocket seconds.
+      sessionStartRef.current = Date.now() - elapsedSeconds * 1000;
       timerRef.current = setInterval(() => {
-        setElapsedSeconds((s) => s + 1);
+        setElapsedSeconds(Math.round((Date.now() - sessionStartRef.current) / 1000));
       }, 1000);
 
       // Dense GPS during active cleanup: 20s gaps (~25m walking) skip street
@@ -629,7 +816,10 @@ export default function MapScreen() {
       }
       if (latitude === undefined || longitude === undefined) {
         // Idle path (map centering before a session): one-off fix
-        const accuracy = batterySaver ? Location.Accuracy.Low : Location.Accuracy.Balanced;
+        // Street-level accuracy for cleanup tracking. Balanced (~100m) was
+        // landing pickups across the street; High (~5-10m) keeps them on the
+        // right block. Battery-saver eases off to Balanced.
+        const accuracy = batterySaver ? Location.Accuracy.Balanced : Location.Accuracy.High;
         const location = await Location.getCurrentPositionAsync({ accuracy });
         latitude = location.coords.latitude;
         longitude = location.coords.longitude;
@@ -769,35 +959,7 @@ export default function MapScreen() {
       const db = await getDatabase();
       const cleanups = await db.getCleanups(100); // Load recent cleanups
       setHistoricalCleanups(cleanups);
-
-      // We no longer draw the PATH someone walked — a squiggle means nothing to
-      // anyone else. What's interesting is WHERE pickups happen. Aggregate the
-      // sampled pickup coordinates from recent cleanups into weighted hotspots.
-      const bins = new Map<string, { lat: number; lon: number; n: number }>();
-      for (const c of cleanups as any[]) {
-        let pts: any = null;
-        try { pts = c.pickups ? (typeof c.pickups === 'string' ? JSON.parse(c.pickups) : c.pickups) : null; } catch {}
-        if (!Array.isArray(pts)) continue;
-        for (const pr of pts) {
-          const la = Array.isArray(pr) ? pr[0] : pr.lat;
-          const lo = Array.isArray(pr) ? pr[1] : pr.lon;
-          if (typeof la !== 'number' || typeof lo !== 'number') continue;
-          // ~11m cells so nearby picks stack into one hot dot
-          const key = la.toFixed(4) + ',' + lo.toFixed(4);
-          const b = bins.get(key);
-          if (b) b.n += 1;
-          else bins.set(key, { lat: la, lon: lo, n: 1 });
-        }
-      }
-      const hotspots = Array.from(bins.values()).slice(0, 400);
-
-      // Always inject — an empty array clears the layer when there's no data yet.
-      if (webviewRef.current) {
-        webviewRef.current.injectJavaScript(`
-          if (window.drawHotspots) { window.drawHotspots(${JSON.stringify(hotspots)}); }
-          true;
-        `);
-      }
+      // Pickup heatmap removed from the app — litter hotspots now live on the web dashboard.
     } catch (error) {
       console.error('Failed to load historical cleanups:', error);
     }
@@ -821,6 +983,7 @@ export default function MapScreen() {
       setNeighborhood(settings?.neighborhood || '');
       setCommunitySharing(settings?.community_sharing_enabled !== false);
       setCommunityAutoPost(!!settings?.community_auto_post);
+      setDistanceUnit((settings?.distance_unit as 'mi' | 'km') || 'mi');
 
       // Calculate superlative if no team
       if (!settings?.team_name) {
@@ -955,6 +1118,16 @@ export default function MapScreen() {
       setSessionMode(mode);
       if (mode === 'foreground') {
         console.log('💡 Foreground-only (Expo Go or "Always" location not granted) — keeping screen on for this walk.');
+        // Tell the user why locking the screen will pause their walk, and how to
+        // fix it. Once per launch so it never becomes a nag.
+        if (!fgWarnedRef.current) {
+          fgWarnedRef.current = true;
+          Alert.alert(
+            'Keep the screen on for this walk',
+            'This phone hasn’t granted “Always” location, so PICK can’t track with the screen locked — locking it will pause your timer and pickups.\n\nTap “Pocket” to keep the screen safely on, or enable Settings → PICK → Location → Always to walk with the phone locked.',
+            [{ text: 'Got it' }],
+          );
+        }
       } else {
         console.log('🌙 Background session active — screen may sleep; no keep-awake or Pocket Mode needed.');
       }
@@ -978,6 +1151,19 @@ export default function MapScreen() {
     setBagReported(false);
     setBagSize('small');
     setBagFullness(50);
+
+    // SAVE-FIRST: persist the whole walk to disk the instant Stop is pressed —
+    // BEFORE the summary sheet renders. If the summary is dismissed, the app is
+    // killed, or it crashes here, the walk is recoverable on next launch. The
+    // draft is only cleared after a durable DB save or a confirmed discard.
+    saveWalkDraft({
+      startedAt: Date.now() - elapsedSeconds * 1000,
+      savedAt: Date.now(),
+      pickupCount: correctedCount,
+      elapsedSeconds,
+      route: sessionRoute,
+      pickups: pickupLocations,
+    });
 
     // Debug logging
     console.log('Session stopped');
@@ -1047,13 +1233,29 @@ export default function MapScreen() {
         // Where pickups actually happened — powers the litter-hotspot layer.
         // Rounded to ~11m so it maps a block, never a doorstep.
         pickups: JSON.stringify(
-          pickupLocations.slice(0, 60).map((p) => [Number(p.lat.toFixed(4)), Number(p.lon.toFixed(4))])
+          // Dedupe pickups to unique ~11m cells (privacy + doc size) but keep
+          // them from across the WHOLE walk — the old slice(0,60) truncated to
+          // the first 60, starving the litter-need map of spatial coverage on
+          // long walks.
+          Array.from(
+            new Map(
+              pickupLocations.map((p) => {
+                const cell: number[] = [Number(p.lat.toFixed(4)), Number(p.lon.toFixed(4))];
+                return [cell.join(','), cell] as [string, number[]];
+              }),
+            ).values(),
+          ).slice(0, 300),
         ),
         motion_log: JSON.stringify(MotionDetector.getSessionEvents()),
       } as any);
 
       const updatedStats = await db.getCleanupStats();
       setStats(updatedStats);
+
+      // Walk is now durably saved (the DB layer caches offline with synced=false
+      // and syncs later), so the recovery draft can be dropped. If addCleanup
+      // above threw, we skip this and the draft survives for next-launch restore.
+      clearWalkDraft();
 
       // Mark walked street segments AND any park walked through as cleaned.
       if (sessionRoute.length > 0) {
@@ -1125,6 +1327,15 @@ export default function MapScreen() {
     };
   };
 
+  // Format a distance given in KM into the user's chosen unit, e.g. "0.42 mi".
+  const fmtDistance = (km: number) => {
+    const n = distanceUnit === 'mi' ? km * 0.621371 : km;
+    return `${n.toFixed(2)} ${distanceUnit}`;
+  };
+  // Just the number, for stat boxes that show the unit as a separate label.
+  const distanceValue = (km: number) =>
+    (distanceUnit === 'mi' ? km * 0.621371 : km).toFixed(2);
+
   const exportSession = async () => {
     const coverage = calculateCoverage();
     const estBags = itemsToBags(pickupCount);
@@ -1166,7 +1377,7 @@ User: ${user?.displayName || 'Unknown'}
 ═══════════════════════════════════════════════════════════
 
 Duration: ${formatTime(elapsedSeconds)}
-Distance Walked: ${coverage.distance} km
+Distance Walked: ${fmtDistance(parseFloat(String(coverage.distance || '0')))}
 Location Points Tracked: ${coverage.points}
 Pickups Detected: ${pickupCount}
 Pickup Locations Recorded: ${pickupLocations.length}
@@ -1392,13 +1603,41 @@ Generated by Pick App - Share this with the development team
                 <Text style={styles.completionLbl}>green</Text>
               </View>
             )}
-            <TouchableOpacity
-              style={styles.mapButton}
-              onPress={() => setShowScaleInfo(true)}
-              accessibilityLabel="Cleanliness scale"
-            >
-              <Icon name="leaf" size={20} color={COLORS.sage} />
+          </View>
+        </View>
+      )}
+
+      {/* My impact — blocks touched + pickups over 24h / 7d */}
+      {impactWindow && !isListening && (
+        <View style={{ position: 'absolute', left: 12, right: 12, bottom: insets.bottom + 100, backgroundColor: '#fff', borderRadius: 16, padding: 14, shadowColor: '#000', shadowOpacity: 0.12, shadowRadius: 10, shadowOffset: { width: 0, height: 4 }, elevation: 6 }}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+            <Text style={{ fontSize: 14, fontWeight: '800', color: COLORS.darkSage }}>Your impact</Text>
+            <View style={{ flexDirection: 'row', backgroundColor: '#EDF1E9', borderRadius: 999, padding: 2 }}>
+              {(['24h', '7d'] as const).map((w) => (
+                <TouchableOpacity
+                  key={w}
+                  onPress={() => showImpact(w)}
+                  style={{ paddingVertical: 5, paddingHorizontal: 14, borderRadius: 999, backgroundColor: impactWindow === w ? COLORS.sage : 'transparent' }}
+                >
+                  <Text style={{ fontSize: 12, fontWeight: '700', color: impactWindow === w ? '#fff' : COLORS.mutedSage }}>{w === '24h' ? '24h' : '7 days'}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+            <TouchableOpacity onPress={hideImpact} hitSlop={8} style={{ marginLeft: 8 }}>
+              <Icon name="close" size={18} color={COLORS.mutedSage} sw={2.2} />
             </TouchableOpacity>
+          </View>
+          <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
+            {[
+              { n: impactStats.pickups, l: 'pickups' },
+              { n: impactStats.blocks, l: 'blocks touched' },
+              { n: impactStats.walks, l: 'walks' },
+            ].map((s) => (
+              <View key={s.l} style={{ flex: 1, alignItems: 'center' }}>
+                <Text style={{ fontSize: 22, fontWeight: '800', color: COLORS.darkSage }}>{s.n}</Text>
+                <Text style={{ fontSize: 11, color: COLORS.mutedSage, marginTop: 2 }}>{s.l}</Text>
+              </View>
+            ))}
           </View>
         </View>
       )}
@@ -1446,7 +1685,7 @@ Generated by Pick App - Share this with the development team
             <Text style={styles.topBarLabel}>Pickups</Text>
           </View>
           <View style={styles.topBarStat}>
-            <Text style={styles.topBarValue}>{(parseFloat(String(calculateCoverage().distance || '0')) * 0.621371).toFixed(1)} mi</Text>
+            <Text style={styles.topBarValue}>{fmtDistance(parseFloat(String(calculateCoverage().distance || '0')))}</Text>
             <Text style={styles.topBarLabel}>Distance</Text>
           </View>
           <TouchableOpacity
@@ -1489,26 +1728,64 @@ Generated by Pick App - Share this with the development team
 
       {/* Real Map - Expands when cleaning */}
       <View style={[styles.mapContainer, isListening && styles.mapContainerExpanded]}>
-        {/* Recenter on my location — always available above the zoom control */}
-        {!isListening && !activating && currentLocation && (
-          <TouchableOpacity
-            style={styles.locateButton}
-            onPress={recenter}
-            accessibilityLabel="Recenter on my location"
-          >
-            <Icon name="target" size={22} color={COLORS.sage} />
-          </TouchableOpacity>
-        )}
-
-        {/* Adopt-a-block toggle — enter adopt mode, then tap a block */}
+        {/* Map tools — one button; press or hold to reveal options. Sits where
+            the adopt button used to. */}
         {!isListening && !activating && (
-          <TouchableOpacity
-            style={[styles.adoptButton, adoptMode && styles.adoptButtonActive]}
-            onPress={() => setAdoptMode((v) => !v)}
-            accessibilityLabel="Adopt a block"
-          >
-            <Icon name="pin" size={22} color={adoptMode ? '#fff' : COLORS.sage} />
-          </TouchableOpacity>
+          <>
+            {toolsOpen && (
+              <>
+                <View style={[styles.toolOption, { bottom: 190 + 58 * 4 }]}>
+                  <Text style={styles.toolOptionLabel}>My impact</Text>
+                  <TouchableOpacity
+                    style={[styles.toolOptionBtn, impactWindow && styles.adoptButtonActive]}
+                    onPress={() => { setToolsOpen(false); if (impactWindow) { hideImpact(); } else { showImpact('24h'); } }}
+                    accessibilityLabel="My impact"
+                  >
+                    <Icon name="route" size={20} color={impactWindow ? '#fff' : COLORS.sage} />
+                  </TouchableOpacity>
+                </View>
+                <View style={[styles.toolOption, { bottom: 190 + 58 * 3 }]}>
+                  <Text style={styles.toolOptionLabel}>Adopt a block</Text>
+                  <TouchableOpacity
+                    style={[styles.toolOptionBtn, adoptMode && styles.adoptButtonActive]}
+                    onPress={() => { setToolsOpen(false); setAdoptMode(true); }}
+                    accessibilityLabel="Adopt a block"
+                  >
+                    <Icon name="pin" size={20} color={adoptMode ? '#fff' : COLORS.sage} />
+                  </TouchableOpacity>
+                </View>
+                <View style={[styles.toolOption, { bottom: 190 + 58 * 2 }]}>
+                  <Text style={styles.toolOptionLabel}>Recenter</Text>
+                  <TouchableOpacity
+                    style={styles.toolOptionBtn}
+                    onPress={() => { setToolsOpen(false); recenter(); }}
+                    accessibilityLabel="Recenter on my location"
+                  >
+                    <Icon name="target" size={20} color={COLORS.sage} />
+                  </TouchableOpacity>
+                </View>
+                <View style={[styles.toolOption, { bottom: 190 + 58 }]}>
+                  <Text style={styles.toolOptionLabel}>Guide</Text>
+                  <TouchableOpacity
+                    style={styles.toolOptionBtn}
+                    onPress={() => { setToolsOpen(false); setShowScaleInfo(true); }}
+                    accessibilityLabel="Cleanliness guide"
+                  >
+                    <Icon name="leaf" size={20} color={COLORS.sage} />
+                  </TouchableOpacity>
+                </View>
+              </>
+            )}
+            <TouchableOpacity
+              style={[styles.adoptButton, (toolsOpen || !!impactWindow || adoptMode) && styles.adoptButtonActive]}
+              onPress={() => setToolsOpen((v) => !v)}
+              onLongPress={() => setToolsOpen(true)}
+              delayLongPress={220}
+              accessibilityLabel="Map tools"
+            >
+              <Icon name={toolsOpen ? 'close' : 'plus'} size={22} color={(toolsOpen || !!impactWindow || adoptMode) ? '#fff' : COLORS.sage} />
+            </TouchableOpacity>
+          </>
         )}
 
         {adoptMode && !isListening && (
@@ -1524,6 +1801,7 @@ Generated by Pick App - Share this with the development team
 
         {(currentLocation && (appActive || !isListening)) ? (
           <WebView
+            key={mapKey}
             ref={webviewRef}
             originWhitelist={['*']}
             onMessage={handleMapMessage}
@@ -1554,7 +1832,7 @@ Generated by Pick App - Share this with the development team
     /* Attribution anchored to the very bottom-left corner of the map */
     .leaflet-bottom.leaflet-left { margin-bottom: 0; margin-left: 0; }
     .leaflet-control-attribution { font-size: 10px; padding: 1px 5px; background: rgba(255,255,255,0.7) !important; }
-    .leaflet-control-zoom { border: none !important; box-shadow: 0 2px 8px rgba(27,46,26,0.18) !important; border-radius: 12px !important; overflow: hidden; }
+    .leaflet-control-zoom { margin: 0 !important; border: none !important; box-shadow: 0 2px 8px rgba(27,46,26,0.18) !important; border-radius: 12px !important; overflow: hidden; }
     .leaflet-control-zoom a { width: 38px !important; height: 38px !important; line-height: 38px !important; color: #2D5016 !important; font-size: 20px !important; font-weight: 600 !important; background: #fff !important; }
     .leaflet-control-zoom a:hover { background: #EEF3E6 !important; }
     /* Our own neighborhood labels (cities the basemap doesn't label, e.g. Atlanta).
@@ -1564,6 +1842,11 @@ Generated by Pick App - Share this with the development team
       color: #7C8A74; font-weight: 600; font-size: 12px; letter-spacing: 1px; text-transform: uppercase;
       white-space: nowrap; pointer-events: none;
       text-shadow: 0 0 3px #F5F5F0, 0 0 3px #F5F5F0, 0 0 4px #F5F5F0; }
+    .seg-popup .leaflet-popup-content-wrapper { background: #1B2E1A; color: #fff; border-radius: 10px; box-shadow: 0 4px 14px rgba(27,46,26,0.28); }
+    .seg-popup .leaflet-popup-content { margin: 8px 12px; font-size: 13px; font-weight: 600; line-height: 1.2; }
+    .seg-popup .leaflet-popup-tip { background: #1B2E1A; }
+    .seg-popup a.leaflet-popup-close-button { display: none; }
+    .seg-popup-text { white-space: nowrap; }
   </style>
 </head>
 <body>
@@ -1619,6 +1902,32 @@ Generated by Pick App - Share this with the development team
 
     let routePolyline = L.polyline([], { color: '#34C759', weight: 14, opacity: 0.55, lineCap: 'round', lineJoin: 'round' }).addTo(map);
     let pickupGroup = L.featureGroup([]).addTo(map);
+
+    // "Need" layer — ~110m tiles colored by how much a block needs a cleanup.
+    let needGroup = L.featureGroup([]).addTo(map);
+    window.renderNeed = function(tiles) {
+      needGroup.clearLayers();
+      (tiles || []).forEach(function(t) {
+        L.circleMarker([t.lat, t.lon], {
+          radius: 11, color: '#ffffff', weight: 1, fillColor: t.color, fillOpacity: 0.6
+        }).addTo(needGroup);
+      });
+    };
+    window.clearNeed = function() { needGroup.clearLayers(); };
+
+    // "My impact" layer — routes touched + pickups over a time window.
+    let impactGroup = L.featureGroup([]).addTo(map);
+    window.renderImpact = function(routes, pickups) {
+      impactGroup.clearLayers();
+      (routes || []).forEach(function(r) {
+        if (r && r.length > 1) L.polyline(r, { color: '#2D5016', weight: 5, opacity: 0.7, lineCap: 'round', lineJoin: 'round', interactive: false }).addTo(impactGroup);
+      });
+      (pickups || []).forEach(function(p) {
+        L.circleMarker(p, { radius: 5, color: '#ffffff', weight: 1, fillColor: '#34C759', fillOpacity: 0.95, interactive: false }).addTo(impactGroup);
+      });
+      try { if (routes && routes.length) map.fitBounds(impactGroup.getBounds().pad(0.25)); } catch (e) {}
+    };
+    window.clearImpact = function() { impactGroup.clearLayers(); };
     let neighborhoodGroup = L.featureGroup([]).addTo(map);
 
     window.updateLocation = function(lat, lon) {
@@ -1671,6 +1980,46 @@ Generated by Pick App - Share this with the development team
       console.log('Map init: ' + lat.toFixed(4) + ', ' + lon.toFixed(4));
     };
 
+    // ── Freshness: one shared ramp for every layer ──────────────────────────
+    // Clean → deteriorating → unclean → gone: vivid green the day it's cleaned,
+    // through a strong yellow as it deteriorates, to rust once it's unclean —
+    // then that rust fades toward nothing as the block ages out, dissolving back
+    // into the blank basemap. Never-cleaned streets are that faint "nothing" too.
+    var FADE_START_DAYS = 12; // rust starts dissolving toward nothing here…
+    var FADE_END_DAYS = 30;   // …and is all but gone by here
+    var NEVER_COLOR = '#C4C8BD'; // never cleaned — the faint, dashed "blank"
+    function _lerp(a, b, t) { return Math.round(a + (b - a) * t); }
+    function freshRGB(daysOld) {
+      var stops = [
+        [0,  [47, 180, 87]],   // just cleaned — vivid green (#2FB457)
+        [7,  [242, 197, 0]],   // deteriorating — yellow (#F2C500)
+        [14, [190, 85, 40]]    // unclean — rust (#BE5528)
+      ];
+      var last = stops[stops.length - 1];
+      var d = daysOld < 0 ? 0 : daysOld;
+      if (d >= last[0]) return last[1];
+      for (var i = 1; i < stops.length; i++) {
+        if (d <= stops[i][0]) {
+          var t = (d - stops[i - 1][0]) / (stops[i][0] - stops[i - 1][0]);
+          return [
+            _lerp(stops[i - 1][1][0], stops[i][1][0], t),
+            _lerp(stops[i - 1][1][1], stops[i][1][1], t),
+            _lerp(stops[i - 1][1][2], stops[i][1][2], t)
+          ];
+        }
+      }
+      return last[1];
+    }
+    function freshColor(daysOld) { var c = freshRGB(daysOld); return 'rgb(' + c[0] + ',' + c[1] + ',' + c[2] + ')'; }
+    // 1 while the block still matters (green→yellow→rust), then fading to a
+    // whisper as it ages out — so old rust "fades into nothing," toward blank.
+    function tailFade(daysOld) {
+      var d = daysOld < 0 ? 0 : daysOld;
+      if (d <= FADE_START_DAYS) return 1;
+      if (d >= FADE_END_DAYS) return 0.12;
+      return 1 - 0.88 * ((d - FADE_START_DAYS) / (FADE_END_DAYS - FADE_START_DAYS));
+    }
+
     // Walks render as freshness-colored route corridors, not center-point blobs.
     // Tiny dot fallback only for legacy cleanups saved before route tracking.
     let historicalGroup = L.featureGroup([]).addTo(map);
@@ -1678,18 +2027,9 @@ Generated by Pick App - Share this with the development team
       historicalGroup.clearLayers();
       cleanups.forEach(function(cleanup) {
         const daysOld = (Date.now() - cleanup.timestamp) / (1000 * 60 * 60 * 24);
-        let color, opacity;
-
-        // NYC Scale: fresh=5, dusty=9, attention=13, beyond=not counted
-        if (daysOld <= 5) {
-          color = '#34C759'; opacity = 0.55; // Fresh
-        } else if (daysOld <= 9) {
-          color = '#FFCC00'; opacity = 0.5; // Yellow - Getting dusty
-        } else if (daysOld <= 13) {
-          color = '#FF9500'; opacity = 0.45; // Orange - Needs attention
-        } else {
-          color = '#FF3B30'; opacity = 0.35; // Red - Not counted
-        }
+        // Vitality fade: bright green when fresh, quietly graying as it ages.
+        const color = freshColor(daysOld);
+        const opacity = 0.55 * tailFade(daysOld);
 
         let drewRoute = false;
         if (cleanup.route_points) {
@@ -1722,27 +2062,9 @@ Generated by Pick App - Share this with the development team
       historicalGroup.bringToBack();
     };
 
-    // Litter-hotspot layer — where pickups actually happen, not the path walked.
-    // Each point is {lat, lon, n}; bigger + hotter = more pickups logged there.
-    let hotspotGroup = L.featureGroup([]).addTo(map);
-    window.drawHotspots = function(points) {
-      hotspotGroup.clearLayers();
-      if (!points || !points.length) return;
-      var maxN = 1;
-      points.forEach(function(p){ if (p.n > maxN) maxN = p.n; });
-      points.forEach(function(p) {
-        var t = Math.min(1, p.n / maxN);
-        // soft glow underneath + solid core, warm ramp yellow→red
-        var color = t > 0.66 ? '#FF3B30' : t > 0.33 ? '#FF9500' : '#FFCC00';
-        var r = 9 + Math.sqrt(p.n) * 5;
-        L.circleMarker([p.lat, p.lon], {
-          radius: r, fillColor: color, color: color, weight: 0, fillOpacity: 0.14
-        }).addTo(hotspotGroup);
-        L.circleMarker([p.lat, p.lon], {
-          radius: Math.max(4, r * 0.4), fillColor: color, color: '#fff', weight: 1, fillOpacity: 0.85
-        }).addTo(hotspotGroup);
-      });
-    };
+    // Litter-hotspot (pickup heatmap) removed from the app — it now lives on the
+    // web dashboard. Stub kept so any stray call is a harmless no-op.
+    window.drawHotspots = function() {};
 
     // Street-segment coverage layer (shared across ALL users).
     // Grey dashes = never cleaned; green→red = freshness since last clean.
@@ -1759,10 +2081,7 @@ Generated by Pick App - Share this with the development team
     var CLEANED_CAP = 4000; // hard ceiling so a marathon session can't grow unbounded
 
     function segFresh(daysOld) {
-      if (daysOld <= 5) return ['#34C759', 0.8];
-      if (daysOld <= 9) return ['#FFCC00', 0.75];
-      if (daysOld <= 13) return ['#FF9500', 0.7];
-      return ['#FF3B30', 0.65];
+      return [freshColor(daysOld), 0.85 * tailFade(daysOld)];
     }
 
     function redrawCleaned() {
@@ -1784,7 +2103,7 @@ Generated by Pick App - Share this with the development team
       var cleanedTouched = false;
       segments.forEach(function(seg) {
         if (seg.daysOld === null || seg.daysOld === undefined) {
-          L.polyline(seg.coords, { color: '#C7CAC1', weight: 4, opacity: 0.35, dashArray: '2 9', lineCap: 'round', lineJoin: 'round' }).addTo(todoGroup);
+          L.polyline(seg.coords, { color: NEVER_COLOR, weight: 4, opacity: 0.4, dashArray: '2 9', lineCap: 'round', lineJoin: 'round' }).addTo(todoGroup);
         } else {
           cleanedById[seg.id] = { coords: seg.coords, daysOld: seg.daysOld };
           cleanedTouched = true;
@@ -1874,11 +2193,9 @@ Generated by Pick App - Share this with the development team
     var WORLD_RING = [[-85, -180], [-85, 180], [85, 180], [85, -180]];
 
     function levelColor(daysOld) {
-      if (daysOld === null || daysOld === undefined) return ['#D6D9D0', 2, 0.4]; // untouched — very thin, light gray so it recedes and street names read through
-      if (daysOld <= 5) return ['#34C759', 5, 0.95];
-      if (daysOld <= 9) return ['#FFCC00', 5, 0.9];
-      if (daysOld <= 13) return ['#FF9500', 5, 0.9];
-      return ['#FF3B30', 5, 0.9];
+      if (daysOld === null || daysOld === undefined) return [NEVER_COLOR, 2, 0.35]; // untouched — thin, faint (dashed) so it reads as "blank / nothing"
+      var tf = tailFade(daysOld);
+      return [freshColor(daysOld), 2.6 + 2.4 * tf, 0.95 * tf];
     }
 
     // Overview layers we fade out on entry so the neighborhood is the only focus.
@@ -1919,16 +2236,37 @@ Generated by Pick App - Share this with the development team
     };
 
     var levelLayersById = {};
+    var levelDaysById = {}; // id → { daysOld } so a tap can report last-cleaned age (mutable: live-cleaning updates it)
     var levelRenderToken = 0;
+
+    // Human "last cleaned" phrasing for a block's age (in days), for tap popups.
+    function freshnessText(d) {
+      if (d === null || d === undefined) return 'Not cleaned yet';
+      var n = Math.round(d);
+      if (n <= 0) return 'Cleaned today';
+      if (n === 1) return 'Cleaned 1 day ago';
+      return 'Cleaned ' + n + ' days ago';
+    }
     // Draw the level's streets in small async chunks. A big neighborhood (e.g.
     // Atlanta's official hoods, which are far larger than NYC's) can hold
     // thousands of segments; drawing them in one synchronous loop froze the UI
     // for seconds. Yielding between chunks keeps the map — and the entry
     // animation — responsive while streets stream in. A new render supersedes
     // any in-flight one via the token.
+    function openSegPopup(id, latlng) {
+      if (window.__adoptMode) return; // adopt mode: a tap adopts the block, not this
+      var rec = levelDaysById[id];
+      var days = rec ? rec.daysOld : null;
+      L.popup({ closeButton: false, className: 'seg-popup', offset: [0, -1], autoPan: true })
+        .setLatLng(latlng)
+        .setContent('<span class="seg-popup-text">' + freshnessText(days) + '</span>')
+        .openOn(map);
+    }
+
     window.renderLevel = function(list) {
       levelGroup.clearLayers();
       levelLayersById = {};
+      levelDaysById = {};
       var token = ++levelRenderToken;
       if (!list || !list.length) return;
       var i = 0;
@@ -1939,8 +2277,15 @@ Generated by Pick App - Share this with the development team
         for (; i < end; i++) {
           var s = list[i];
           var c = levelColor(s.daysOld);
-          var pl = L.polyline(s.coords, { pane: 'levelPane', color: c[0], weight: c[1], opacity: c[2], lineCap: 'round', lineJoin: 'round' }).addTo(levelGroup);
-          if (s.id) levelLayersById[s.id] = pl;
+          var untouched = (s.daysOld === null || s.daysOld === undefined);
+          var pl = L.polyline(s.coords, { pane: 'levelPane', color: c[0], weight: c[1], opacity: c[2], dashArray: untouched ? '2 9' : null, lineCap: 'round', lineJoin: 'round' }).addTo(levelGroup);
+          if (s.id) { levelLayersById[s.id] = pl; levelDaysById[s.id] = { daysOld: s.daysOld }; }
+          // Invisible fat tap target so thin blocks are easy to hit → tap shows
+          // when this block was last cleaned.
+          if (s.id) {
+            var hit = L.polyline(s.coords, { pane: 'levelPane', color: '#000', weight: 18, opacity: 0, lineCap: 'round', lineJoin: 'round' }).addTo(levelGroup);
+            hit.on('click', (function (segId) { return function (ev) { openSegPopup(segId, ev.latlng); }; })(s.id));
+          }
         }
         if (i < list.length) setTimeout(step, 0);
       }
@@ -1950,7 +2295,8 @@ Generated by Pick App - Share this with the development team
     // Live recolor a single street to fresh-green as you cover it on a walk.
     window.markLevelClean = function(id) {
       var pl = levelLayersById[id];
-      if (pl) pl.setStyle({ color: '#34C759', weight: 5, opacity: 0.95 });
+      if (pl) pl.setStyle({ color: '#2FB457', weight: 5, opacity: 0.95 });
+      if (levelDaysById[id]) levelDaysById[id].daysOld = 0; // tapping it now says "Cleaned today"
     };
 
     window.exitLevel = function() {
@@ -1967,15 +2313,10 @@ Generated by Pick App - Share this with the development team
       parks.forEach(function(park) {
         let color, fill;
         if (park.daysOld === null || park.daysOld === undefined) {
-          color = '#8E8E93'; fill = 0.10; // never cleaned
-        } else if (park.daysOld <= 5) {
-          color = '#34C759'; fill = 0.28;
-        } else if (park.daysOld <= 9) {
-          color = '#FFCC00'; fill = 0.24;
-        } else if (park.daysOld <= 13) {
-          color = '#FF9500'; fill = 0.20;
+          color = NEVER_COLOR; fill = 0.08; // never cleaned — faint neutral gray
         } else {
-          color = '#FF3B30'; fill = 0.18;
+          color = freshColor(park.daysOld);
+          fill = 0.28 * tailFade(park.daysOld); // full when fresh → dissolves as it ages
         }
         L.polygon(park.polygon, {
           color: color,
@@ -1997,17 +2338,8 @@ Generated by Pick App - Share this with the development team
       let linesDrawn = 0;
       cleanups.forEach(function(cleanup, idx) {
         const daysOld = (Date.now() - cleanup.timestamp) / (1000 * 60 * 60 * 24);
-        let color, opacity;
-
-        if (daysOld <= 5) {
-          color = '#34C759'; opacity = 0.6;
-        } else if (daysOld <= 9) {
-          color = '#FFCC00'; opacity = 0.5;
-        } else if (daysOld <= 13) {
-          color = '#FF9500'; opacity = 0.4;
-        } else {
-          color = '#FF3B30'; opacity = 0.3;
-        }
+        const color = freshColor(daysOld);
+        const opacity = 0.6 * tailFade(daysOld);
 
         // Draw route line if available
         if (cleanup.route_points) {
@@ -2185,73 +2517,41 @@ Generated by Pick App - Share this with the development team
           {/* Tap the dimmed area to dismiss the (done-less) decimal keypad */}
           <TouchableOpacity style={StyleSheet.absoluteFill} activeOpacity={1} onPress={() => Keyboard.dismiss()} />
           <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>Session summary</Text>
+            <View style={styles.grabber} />
+            <Text style={styles.doneTitle}>Nice walk!</Text>
+            <Text style={styles.doneSub}>Here’s what you logged.</Text>
 
-            <View style={styles.summaryBox}>
-              <Text style={styles.summaryLabel}>Detected by Motion:</Text>
-              <View style={styles.summaryRow}>
-                <View style={styles.summaryItem}>
-                  <Text style={styles.summaryValue}>{pickupCount}</Text>
-                  <Text style={styles.summaryItemLabel}>Pickups</Text>
-                </View>
-                <View style={styles.summaryItem}>
-                  <Text style={styles.summaryValue}>{formatTime(elapsedSeconds)}</Text>
-                  <Text style={styles.summaryItemLabel}>Duration</Text>
-                </View>
+            <View style={styles.heroRow}>
+              <View style={styles.heroStat}>
+                <Text style={styles.heroNum}>{pickupCount}</Text>
+                <Text style={styles.heroLabel}>{pickupCount === 1 ? 'pickup' : 'pickups'}</Text>
               </View>
-              <Text style={styles.summaryEstimate}>
-                Est. collected: {formatKitchenBags(itemsToBags(pickupCount))}
-              </Text>
+              <View style={styles.heroDivider} />
+              <View style={styles.heroStat}>
+                <Text style={styles.heroNum}>{formatTime(elapsedSeconds)}</Text>
+                <Text style={styles.heroLabel}>on the walk</Text>
+              </View>
             </View>
+            <Text style={styles.estLine}>
+              Est. {formatKitchenBags(itemsToBags(pickupCount))} collected
+            </Text>
 
-            <View style={styles.summaryBox}>
-              <Text style={styles.summaryLabel}>Fill a bag? Tell us how big (optional)</Text>
-
-              <View style={styles.bagSizeOptions}>
-                {['small', 'medium', 'large', 'xl'].map((size) => (
+            <Text style={styles.qLabel}>How much did you collect?</Text>
+            <View style={styles.amountGrid}>
+              {AMOUNT_OPTIONS.map((a) => {
+                const active = bagReported && bagSize === a.size && bagFullness === a.fullness;
+                return (
                   <TouchableOpacity
-                    key={size}
-                    style={[styles.bagOption, bagReported && bagSize === size && styles.bagOptionActive]}
-                    onPress={() => { setBagSize(size as any); setBagReported(true); }}
+                    key={a.key}
+                    style={[styles.amountChip, active && styles.amountChipActive]}
+                    onPress={() => { setBagSize(a.size); setBagFullness(a.fullness); setBagReported(true); }}
                   >
-                    <Text style={[styles.bagOptionText, bagReported && bagSize === size && styles.bagOptionTextActive]}>
-                      {size === 'small' ? 'Small\n(13-15 gal)' :
-                       size === 'medium' ? 'Medium\n(30-35 gal)' :
-                       size === 'large' ? 'Large\n(45-60 gal)' :
-                       'XL\n(60+ gal)'}
-                    </Text>
+                    <Text style={[styles.amountChipText, active && styles.amountChipTextActive]}>{a.label}</Text>
                   </TouchableOpacity>
-                ))}
-              </View>
-
-              <View style={styles.fullnessContainer}>
-                <Text style={styles.fullnessLabel}>
-                  Fullness: {bagFullness}%
-                </Text>
-                <View style={styles.sliderTrack}>
-                  <View
-                    style={[
-                      styles.sliderFill,
-                      { width: `${bagFullness}%` }
-                    ]}
-                  />
-                </View>
-                <View style={styles.sliderButtons}>
-                  <TouchableOpacity onPress={() => { setBagFullness(Math.max(0, bagFullness - 10)); setBagReported(true); }}>
-                    <Text style={styles.sliderButton}>−</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity onPress={() => { setBagFullness(Math.min(100, bagFullness + 10)); setBagReported(true); }}>
-                    <Text style={styles.sliderButton}>+</Text>
-                  </TouchableOpacity>
-                </View>
-              </View>
-
-              <Text style={styles.comparisonText}>
-                {bagReported
-                  ? `Saving ${formatBags(reportedBags(bagSize, bagFullness))} — your report beats our estimate`
-                  : `Skip this and we'll estimate from your ${pickupCount} pickups`}
-              </Text>
+                );
+              })}
             </View>
+            <Text style={styles.optionalNote}>Optional — we’ll estimate from your pickups if you skip.</Text>
 
             {/* Photo intake */}
             {photoUri ? (
@@ -2273,25 +2573,38 @@ Generated by Pick App - Share this with the development team
               </TouchableOpacity>
             )}
 
-            <View style={styles.buttonRow}>
-              <TouchableOpacity
-                style={[styles.summaryButton, styles.cancelButton]}
-                onPress={() => {
-                  setShowSummary(false);
-                  setPickupCount(0);
-                  setElapsedSeconds(0);
-                  setPhotoUri(null);
-                }}
-              >
-                <Text style={styles.cancelButtonText}>Cancel</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.summaryButton, styles.saveButton]}
-                onPress={saveSummary}
-              >
-                <Text style={styles.saveButtonText}>Save & log</Text>
-              </TouchableOpacity>
-            </View>
+            <TouchableOpacity style={styles.primarySave} onPress={saveSummary} activeOpacity={0.85}>
+              <Text style={styles.primarySaveText}>Save & log</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.discardLink}
+              onPress={() => {
+                // Guarded discard — a single mistap must never throw away a
+                // walk. Require an explicit, counted confirmation.
+                Alert.alert(
+                  'Discard this walk?',
+                  `You logged ${pickupCount} pickup${pickupCount === 1 ? '' : 's'}${elapsedSeconds ? ` over ${formatTime(elapsedSeconds)}` : ''}. This can’t be undone.`,
+                  [
+                    { text: 'Keep walk', style: 'cancel' },
+                    {
+                      text: 'Discard',
+                      style: 'destructive',
+                      onPress: () => {
+                        clearWalkDraft();
+                        setShowSummary(false);
+                        setPickupCount(0);
+                        setElapsedSeconds(0);
+                        setPhotoUri(null);
+                        setSessionRoute([]);
+                        setPickupLocations([]);
+                      },
+                    },
+                  ],
+                );
+              }}
+            >
+              <Text style={styles.discardLinkText}>Discard walk</Text>
+            </TouchableOpacity>
           </View>
         </KeyboardAvoidingView>
       </Modal>
@@ -2318,9 +2631,9 @@ Generated by Pick App - Share this with the development team
               <View style={styles.statsGrid}>
                 <View style={styles.resultStatBox}>
                   <Text style={styles.resultStatValue}>
-                    {calculateCoverage().distance}
+                    {distanceValue(parseFloat(String(calculateCoverage().distance || '0')))}
                   </Text>
-                  <Text style={styles.resultStatLabel}>km walked</Text>
+                  <Text style={styles.resultStatLabel}>{distanceUnit} walked</Text>
                 </View>
                 <View style={styles.resultStatBox}>
                   <Text style={styles.resultStatValue}>{pickupCount}</Text>
@@ -2333,150 +2646,6 @@ Generated by Pick App - Share this with the development team
               </View>
             </View>
 
-            {/* Pickup Heatmap - Show actual map with route + pickups */}
-            <View style={styles.resultsSection}>
-              <Text style={styles.resultsSubtitle}>Pickup map</Text>
-              {pickupLocations.length > 0 && sessionRoute.length > 0 ? (
-                <View style={styles.heatmapBox}>
-                  <Text style={styles.heatmapTitle}>
-                    {pickupLocations.length} pickups across {calculateCoverage().points} location points
-                  </Text>
-
-                  {/* Embedded map showing route + pickups */}
-                  <WebView
-                    ref={heatmapWebviewRef}
-                    style={styles.heatmapMapView}
-                    scrollEnabled={false}
-                    originWhitelist={['*']}
-                    onLoad={() => {
-                      console.log('Heatmap WebView loaded');
-                      // Wait a moment for Leaflet to load, then inject data
-                      setTimeout(() => {
-                        if (heatmapWebviewRef.current) {
-                          const routeCoords = sessionRoute.map(p => [p.lat, p.lon]);
-                          console.log(`📍 Injecting heatmap: ${routeCoords.length} route points, ${pickupLocations.length} pickups`);
-                          heatmapWebviewRef.current.injectJavaScript(`
-                            try {
-                              if (window.L && window.drawRoute && window.drawPickups) {
-                                window.drawRoute(${JSON.stringify(routeCoords)});
-                                window.drawPickups(${JSON.stringify(pickupLocations)});
-                                console.log('Heatmap data injected');
-                              } else {
-                                console.log('⏳ Waiting for Leaflet: L=' + (typeof window.L) + ', drawRoute=' + (typeof window.drawRoute));
-                              }
-                            } catch(e) {
-                              console.error('Heatmap injection error: ' + e.toString());
-                            }
-                          `);
-                        }
-                      }, 500);
-                    }}
-                    onError={(error) => console.error('Heatmap WebView error:', error)}
-                    source={{
-                      html: `<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
-  <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    html, body, #map { width: 100%; height: 100%; }
-    body { background: #f0f0f0; font-family: -apple-system, BlinkMacSystemFont, sans-serif; }
-  </style>
-</head>
-<body>
-  <div id="map"></div>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
-  <script>
-    console.log('HTML + Leaflet script loaded');
-
-    let mapInstance = null;
-    let ready = false;
-
-    // Wait for Leaflet to be available
-    function waitForLeaflet(callback, attempts = 0) {
-      if (typeof L !== 'undefined' && document.getElementById('map')) {
-        console.log('Leaflet ready');
-        callback();
-      } else if (attempts < 20) {
-        setTimeout(() => waitForLeaflet(callback, attempts + 1), 100);
-      } else {
-        console.error('Leaflet failed to load');
-      }
-    }
-
-    waitForLeaflet(function() {
-      try {
-        mapInstance = L.map('map').setView([40.7128, -74.0060], 17);
-        L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png', {
-          attribution: '© OpenStreetMap © CARTO',
-          subdomains: 'abcd',
-          maxZoom: 19,
-          updateWhenIdle: true,
-          keepBuffer: 1
-        }).addTo(mapInstance);
-        ready = true;
-        console.log('Map initialized');
-      } catch(e) {
-        console.error('Map init failed: ' + e.toString());
-      }
-    });
-
-    window.drawRoute = function(coords) {
-      console.log('drawRoute called with ' + (coords ? coords.length : 'null'));
-      if (!ready) {
-        console.log('Map not ready yet');
-        return;
-      }
-      if (!coords || coords.length < 2) return;
-
-      L.polyline(coords, {
-        color: '#34C759',
-        weight: 3.5,
-        opacity: 0.9,
-        dashArray: '',
-        lineCap: 'round',
-        lineJoin: 'round'
-      }).addTo(mapInstance);
-      const group = L.featureGroup(coords.map(c => L.marker(c)));
-      mapInstance.fitBounds(group.getBounds().pad(0.1));
-      console.log('Route drawn');
-    };
-
-    window.drawPickups = function(pickups) {
-      console.log('drawPickups called with ' + (pickups ? pickups.length : 'null'));
-      if (!ready || !pickups) return;
-
-      pickups.forEach((p, i) => {
-        L.circleMarker([p.lat, p.lon], {
-          radius: 4,
-          fillColor: '#FF3B30',
-          color: '#fff',
-          weight: 1,
-          opacity: 1,
-          fillOpacity: 0.9
-        }).bindPopup('Pickup #' + (i+1)).addTo(mapInstance);
-      });
-      console.log('Pickups drawn');
-    };
-
-    console.log('Functions defined');
-  </script>
-</body>
-</html>`,
-                    }}
-                  />
-
-                  <Text style={styles.heatmapData}>
-                    Red markers = pickup locations{'\n'}
-                    Green line = your route
-                  </Text>
-                </View>
-              ) : (
-                <Text style={styles.noData}>Need both route and pickups to show map</Text>
-              )}
-            </View>
 
             {/* Route Summary */}
             <View style={styles.resultsSection}>
@@ -2494,7 +2663,7 @@ Generated by Pick App - Share this with the development team
 
                 <Text style={styles.routeLabel}>Coverage Area (approx)</Text>
                 <Text style={styles.routeCoords}>
-                  {calculateCoverage().distance} km walked
+                  {fmtDistance(parseFloat(String(calculateCoverage().distance || '0')))} walked
                 </Text>
               </View>
             </View>
@@ -2509,7 +2678,7 @@ Generated by Pick App - Share this with the development team
             {/* Share your impact */}
             <View style={styles.resultsSection}>
               <Text style={styles.resultsSubtitle}>Share your impact</Text>
-              <TouchableOpacity style={styles.shareCta} onPress={() => setShowShare(true)}>
+              <TouchableOpacity style={styles.shareCta} onPress={() => { setShowResults(false); setShowShare(true); }}>
                 <Icon name="share" size={20} color="#fff" sw={2} />
                 <Text style={styles.shareCtaText}>Share your cleanup</Text>
               </TouchableOpacity>
@@ -2611,7 +2780,7 @@ Generated by Pick App - Share this with the development team
 
       <ShareComposer
         visible={showShare}
-        onClose={() => setShowShare(false)}
+        onClose={() => { setShowShare(false); finishSession(); }}
         pieces={pickupCount}
         bags={bagReported ? reportedBags(bagSize, bagFullness) : itemsToBags(pickupCount)}
         distanceMi={parseFloat(String(calculateCoverage().distance || '0')) * 0.621371}
@@ -3011,6 +3180,93 @@ const styles = StyleSheet.create({
     marginBottom: 20,
     textAlign: 'center',
   },
+
+  // ── Redesigned session summary ──────────────────────────────────────────
+  grabber: {
+    alignSelf: 'center',
+    width: 40,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: '#E3E7DC',
+    marginBottom: 14,
+  },
+  doneTitle: {
+    fontSize: 26,
+    fontWeight: '800',
+    color: COLORS.darkSage,
+    textAlign: 'center',
+    letterSpacing: -0.4,
+  },
+  doneSub: {
+    fontSize: 14,
+    color: COLORS.mutedSage,
+    textAlign: 'center',
+    marginTop: 4,
+    marginBottom: 20,
+  },
+  heroRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#F4F7EF',
+    borderRadius: 16,
+    paddingVertical: 18,
+  },
+  heroStat: { flex: 1, alignItems: 'center' },
+  heroDivider: { width: 1, height: 40, backgroundColor: '#E1E7D8' },
+  heroNum: { fontSize: 30, fontWeight: '800', color: COLORS.accent, letterSpacing: -0.5 },
+  heroLabel: { fontSize: 13, color: COLORS.mutedSage, marginTop: 3 },
+  estLine: {
+    fontSize: 13,
+    color: COLORS.mutedSage,
+    textAlign: 'center',
+    marginTop: 10,
+    marginBottom: 22,
+  },
+  qLabel: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: COLORS.darkSage,
+    marginBottom: 12,
+  },
+  amountGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+  },
+  amountChip: {
+    width: '47.8%',
+    flexGrow: 1,
+    paddingVertical: 16,
+    borderRadius: 14,
+    borderWidth: 1.5,
+    borderColor: COLORS.border,
+    backgroundColor: '#fff',
+    alignItems: 'center',
+  },
+  amountChipActive: {
+    borderColor: COLORS.accent,
+    backgroundColor: COLORS.light,
+  },
+  amountChipText: { fontSize: 15, fontWeight: '700', color: COLORS.darkSage },
+  amountChipTextActive: { color: '#2D5016' },
+  optionalNote: {
+    fontSize: 12.5,
+    color: COLORS.mutedSage,
+    textAlign: 'center',
+    marginTop: 10,
+    marginBottom: 20,
+  },
+  primarySave: {
+    backgroundColor: COLORS.accent,
+    borderRadius: 14,
+    height: 54,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  primarySaveText: { fontSize: 17, fontWeight: '800', color: '#fff' },
+  discardLink: { alignItems: 'center', paddingVertical: 14, marginTop: 2 },
+  discardLinkText: { fontSize: 14, fontWeight: '600', color: COLORS.mutedSage },
   summaryBox: {
     backgroundColor: '#f9f9f9',
     borderRadius: 12,
@@ -3151,29 +3407,6 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: COLORS.mutedSage,
     textAlign: 'center',
-  },
-  heatmapBox: {
-    backgroundColor: '#fff',
-    borderRadius: 10,
-    padding: 16,
-  },
-  heatmapTitle: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: COLORS.darkSage,
-    marginBottom: 12,
-  },
-  heatmapMapView: {
-    height: 300,
-    borderRadius: 8,
-    marginBottom: 12,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-  },
-  heatmapData: {
-    fontSize: 12,
-    color: COLORS.mutedSage,
-    lineHeight: 18,
   },
   noData: {
     fontSize: 13,
@@ -3398,8 +3631,12 @@ const styles = StyleSheet.create({
   },
   adoptButton: {
     position: 'absolute',
-    right: 16,
-    bottom: 236,
+    // Centered over the Leaflet zoom control below it. That control's own
+    // margin is zeroed in CSS, so it sits 8px from the right at 38px wide →
+    // center = 8 + 19 = 27px from the right edge. This 44px button matches:
+    // right = 27 − 22 = 5.
+    right: 5,
+    bottom: 170,
     width: 44,
     height: 44,
     borderRadius: 22,
@@ -3414,6 +3651,9 @@ const styles = StyleSheet.create({
     elevation: 4,
   },
   adoptButtonActive: { backgroundColor: COLORS.sage },
+  toolOption: { position: 'absolute', right: 12, flexDirection: 'row', alignItems: 'center', gap: 10, zIndex: 11 },
+  toolOptionLabel: { backgroundColor: '#fff', color: COLORS.darkSage, fontSize: 13, fontWeight: '700', paddingVertical: 6, paddingHorizontal: 12, borderRadius: 14, overflow: 'hidden', shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.12, shadowRadius: 5, elevation: 3 },
+  toolOptionBtn: { width: 44, height: 44, borderRadius: 22, backgroundColor: COLORS.white, alignItems: 'center', justifyContent: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.15, shadowRadius: 5, elevation: 4 },
   adoptBanner: { position: 'absolute', left: 0, right: 0, alignItems: 'center', zIndex: 20 },
   adoptBannerPill: {
     flexDirection: 'row',

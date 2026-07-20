@@ -185,6 +185,54 @@ service cloud.firestore {
       allow read, update, delete: if false;
     }
 
+    // --- Public profiles: name, neighborhood, and handle for discovery. Any
+    //     signed-in user can read (that's what lets people find and follow each
+    //     other); only the owner writes their own. Deliberately holds NO email
+    //     — email lookup goes through the hashed email_index below. ---
+    match /profiles/{userId} {
+      allow read: if signedIn();
+      allow create, update: if isOwner(userId)
+        && request.resource.data.uid == userId;
+      allow delete: if isOwner(userId);
+    }
+
+    // --- Handle claims: handles/{handleLower} = { uid }. Enforces unique
+    //     handles. Readable so the app can tell a handle is taken; a claim can
+    //     only be written/cleared by the user who owns it (uid == caller), and
+    //     an existing claim can't be stolen (checked in the create branch). ---
+    match /handles/{handleLower} {
+      allow read: if signedIn();
+      allow create: if signedIn() && request.resource.data.uid == request.auth.uid;
+      // Re-affirming your own claim is fine; taking someone else's is not.
+      allow update: if signedIn()
+        && resource.data.uid == request.auth.uid
+        && request.resource.data.uid == request.auth.uid;
+      allow delete: if signedIn() && resource.data.uid == request.auth.uid;
+    }
+
+    // --- Email index: email_index/{encodedEmail} = { uid }. Lets someone who
+    //     ALREADY knows your email find you. `get` is allowed (you must know
+    //     the exact email to form the doc id) but `list` is denied, so nobody
+    //     can enumerate the collection to harvest addresses. A user may only
+    //     write the entry that points at themselves. ---
+    match /email_index/{emailId} {
+      allow get: if signedIn();
+      allow list: if false;
+      allow write: if signedIn() && request.resource.data.uid == request.auth.uid;
+    }
+
+    // --- Follows: one-way follow graph. doc id = "{follower}_{following}".
+    //     Anyone signed-in may read (feeds, counts, follow-state); you may only
+    //     create/delete edges where YOU are the follower. ---
+    match /follows/{edgeId} {
+      allow read: if signedIn();
+      allow create: if isOwner(request.resource.data.followerId)
+        && request.resource.data.followerId != request.resource.data.followingId
+        && edgeId == request.resource.data.followerId + '_' + request.resource.data.followingId;
+      allow delete: if isOwner(resource.data.followerId);
+      allow update: if false;
+    }
+
     // Everything else: denied
     match /{document=**} {
       allow read, write: if false;

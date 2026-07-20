@@ -22,13 +22,14 @@ const TIPS: Array<{ title: string; body: string }> = [
 
 const LAST = 4;
 
-// Street-freshness legend — mirrors the map's coloring (green = just cleaned,
-// fading through yellow/red, gray = never cleaned).
-const FRESHNESS: Array<{ color: string; label: string; sub: string }> = [
-  { color: '#34C759', label: 'Just cleaned', sub: 'fresh in the last few days' },
-  { color: '#FFCC00', label: 'Starting to fade', sub: 'about a week old' },
-  { color: '#FF3B30', label: 'Needs a pass', sub: 'time for some love' },
-  { color: '#BFC4B8', label: 'Not cleaned yet', sub: 'blank territory to claim' },
+// Street-freshness legend — mirrors the map's "vitality fade": bright green
+// when just cleaned, quietly graying as it ages. Never-cleaned is a hollow ring
+// (dashed on the map) so "blank" reads differently from "cleaned long ago".
+const FRESHNESS: Array<{ color: string; label: string; sub: string; hollow?: boolean }> = [
+  { color: '#2FB457', label: 'Just cleaned', sub: 'fresh in the last few days' },
+  { color: '#F2C500', label: 'Deteriorating', sub: 'about a week on' },
+  { color: '#BE5528', label: 'Needs a pass', sub: 'unclean — go get it' },
+  { color: '#C4C8BD', label: 'Not cleaned yet', sub: 'faded to blank', hollow: true },
 ];
 
 export default function OnboardingScreen() {
@@ -78,10 +79,10 @@ export default function OnboardingScreen() {
           <Image source={require('../assets/images/logo-mark.png')} style={styles.logo} resizeMode="contain" />
           <Text style={styles.title}>Welcome to PICK</Text>
           <Text style={styles.body}>
-            Drop your phone in your pocket, take a walk, and pick up litter. PICK counts every piece
-            automatically with your phone's motion sensors — no buttons while you walk.
+            Start by picking your neighborhood or city, then check the map to see how fresh your streets
+            are — bright where they've just been cleaned, fading where they need a pass.
           </Text>
-          <Text style={styles.note}>It's an educated guess at your impact, not an exact count.</Text>
+          <Text style={styles.note}>Tap any street or neighborhood to see how long since its last pick.</Text>
         </ScrollView>
 
         {/* 2 — Track */}
@@ -89,11 +90,12 @@ export default function OnboardingScreen() {
           <View style={styles.well}><Icon name="route" size={40} color={COLORS.sage} sw={1.7} /></View>
           <Text style={styles.title}>Start, then just walk</Text>
           <Text style={styles.body}>
-            On the Map tab, tap <Text style={styles.bold}>Start cleanup</Text>, pocket your phone, and go.
-            PICK tracks your pickups as you move. Tap <Text style={styles.bold}>Stop &amp; save</Text> when
-            you're done and report your bag.
+            On the Map tab, tap <Text style={styles.bold}>Start cleanup</Text>, drop your phone in your
+            pocket, and go. PICK counts your pickups automatically with your phone's motion sensors — no
+            buttons while you walk. Tap <Text style={styles.bold}>Stop &amp; save</Text> when you're done
+            and report your bag.
           </Text>
-          <Text style={styles.note}>You have to start it — nothing is tracked until you tap Start.</Text>
+          <Text style={styles.note}>You have to start it — nothing is tracked until you tap Start, and counts are a friendly estimate, not exact.</Text>
         </ScrollView>
 
         {/* 3 — Explore */}
@@ -119,7 +121,7 @@ export default function OnboardingScreen() {
           <View style={styles.legend}>
             {FRESHNESS.map((f) => (
               <View key={f.label} style={styles.legendRow}>
-                <View style={[styles.legendDot, { backgroundColor: f.color }]} />
+                <View style={[styles.legendDot, f.hollow ? { borderWidth: 2, borderColor: f.color, backgroundColor: 'transparent' } : { backgroundColor: f.color }]} />
                 <Text style={styles.legendLabel}>{f.label}</Text>
                 <Text style={styles.legendSub}>{f.sub}</Text>
               </View>

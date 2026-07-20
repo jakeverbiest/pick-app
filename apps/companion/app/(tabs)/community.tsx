@@ -2,12 +2,18 @@ import { useCallback, useState } from 'react';
 import { Alert, Image, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { useRouter } from 'expo-router';
 
 import { getDatabase } from '../../src/services/firebaseDatabase';
 import type { Post } from '../../src/services/firebaseDatabase';
 import { getAuthService } from '../../src/services/authService';
+import { listFollowingIds } from '../../src/services/follows';
 import { Icon } from '../../src/pick/Icon';
+import { ImpactMap } from '../../src/pick/ImpactMap';
+import { ImpactComposer } from '../../src/pick/ImpactComposer';
 import { C, radius, shadow } from '../../src/pick/theme';
+
+type FeedMode = 'following' | 'everyone';
 
 function timeAgo(ts: number): string {
   const mins = Math.floor((Date.now() - ts) / 60000);
@@ -18,18 +24,38 @@ function timeAgo(ts: number): string {
   return `${Math.floor(hrs / 24)}d ago`;
 }
 
+/** The stat chips shown on an impact post. */
+function impactChips(post: Post): { value: string; label: string }[] {
+  const s = post.stats;
+  if (!s) return [];
+  const out: { value: string; label: string }[] = [];
+  if (s.pctGreen != null) out.push({ value: `${s.pctGreen}%`, label: 'green' });
+  out.push({ value: String(s.adopted ?? 0), label: (s.adopted === 1 ? 'block' : 'blocks') + ' adopted' });
+  if (s.toGo != null) out.push({ value: String(s.toGo), label: 'to go' });
+  if (s.cleanups != null) out.push({ value: String(s.cleanups), label: 'cleanups' });
+  return out;
+}
+
 export default function CommunityScreen() {
+  const router = useRouter();
   const [posts, setPosts] = useState<Post[]>([]);
   const [uid, setUid] = useState('');
   const [loading, setLoading] = useState(true);
+  const [mode, setMode] = useState<FeedMode>('everyone');
+  const [composerOpen, setComposerOpen] = useState(false);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (feedMode: FeedMode) => {
     try {
       setLoading(true);
       const db = await getDatabase();
       const user = getAuthService().getCurrentUser();
       setUid(user?.uid || '');
-      setPosts(await db.getPosts(50));
+      if (feedMode === 'following') {
+        const ids = await listFollowingIds();
+        setPosts(await db.getPostsByUsers(ids, 50));
+      } else {
+        setPosts(await db.getPosts(50));
+      }
     } catch (error) {
       console.error('Failed to load community feed:', error);
     } finally {
@@ -39,9 +65,15 @@ export default function CommunityScreen() {
 
   useFocusEffect(
     useCallback(() => {
-      load();
-    }, [load])
+      load(mode);
+    }, [load, mode])
   );
+
+  const switchMode = (m: FeedMode) => {
+    if (m === mode) return;
+    setMode(m);
+    load(m);
+  };
 
   const toggleLike = async (post: Post) => {
     const liked = post.liked_by?.includes(uid);
@@ -57,12 +89,12 @@ export default function CommunityScreen() {
       await db.toggleLikePost(post.id, !liked);
     } catch (error) {
       console.error('Failed to toggle like:', error);
-      load(); // resync on failure
+      load(mode); // resync on failure
     }
   };
 
   const removePost = (post: Post) => {
-    Alert.alert('Delete post?', 'This removes your photo from the community feed.', [
+    Alert.alert('Delete post?', 'This removes it from the community feed.', [
       { text: 'Cancel', style: 'cancel' },
       {
         text: 'Delete',
@@ -77,11 +109,38 @@ export default function CommunityScreen() {
     ]);
   };
 
+  const emptyCopy =
+    mode === 'following'
+      ? { title: 'Nothing here yet', text: 'Follow some pickers and their posts will show up here.' }
+      : { title: 'No posts yet', text: 'Finish a cleanup, add a photo, or share your impact to be the first.' };
+
   return (
     <SafeAreaView style={styles.root} edges={['top']}>
       <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
-        <Text style={styles.h1}>Community</Text>
-        <Text style={styles.sub}>Cleanups from your neighbors.</Text>
+        <View style={styles.titleRow}>
+          <Text style={styles.h1}>Community</Text>
+          <View style={styles.headerActions}>
+            <Pressable onPress={() => router.push('/people' as any)} hitSlop={6} style={styles.actionBtn}>
+              <Icon name="user" size={16} color={C.primary} sw={2} />
+              <Text style={styles.actionText}>Find people</Text>
+            </Pressable>
+            <Pressable onPress={() => setComposerOpen(true)} hitSlop={6} style={[styles.actionBtn, styles.actionPrimary]}>
+              <Icon name="leaf" size={16} color="#fff" sw={2} />
+              <Text style={[styles.actionText, { color: '#fff' }]}>Share impact</Text>
+            </Pressable>
+          </View>
+        </View>
+
+        {/* Feed toggle */}
+        <View style={styles.segmentWrap}>
+          {(['following', 'everyone'] as FeedMode[]).map((m) => (
+            <Pressable key={m} onPress={() => switchMode(m)} style={[styles.segment, mode === m && styles.segmentActive]}>
+              <Text style={[styles.segmentText, mode === m && styles.segmentTextActive]}>
+                {m === 'following' ? 'Following' : 'Everyone'}
+              </Text>
+            </Pressable>
+          ))}
+        </View>
 
         {loading ? (
           <View style={styles.center}>
@@ -90,12 +149,15 @@ export default function CommunityScreen() {
         ) : posts.length === 0 ? (
           <View style={styles.emptyCard}>
             <View style={styles.emptyWell}>
-              <Icon name="camera" size={26} color={C.primary} sw={1.7} />
+              <Icon name={mode === 'following' ? 'user' : 'camera'} size={26} color={C.primary} sw={1.7} />
             </View>
-            <Text style={styles.emptyTitle}>No posts yet</Text>
-            <Text style={styles.emptyText}>
-              Finish a cleanup, add a photo, and tap “Share to community” to be the first.
-            </Text>
+            <Text style={styles.emptyTitle}>{emptyCopy.title}</Text>
+            <Text style={styles.emptyText}>{emptyCopy.text}</Text>
+            {mode === 'following' && (
+              <Pressable onPress={() => router.push('/people' as any)} style={styles.emptyCta}>
+                <Text style={styles.emptyCtaText}>Find people to follow</Text>
+              </Pressable>
+            )}
           </View>
         ) : (
           <View style={{ gap: 16 }}>
@@ -103,13 +165,29 @@ export default function CommunityScreen() {
               const liked = post.liked_by?.includes(uid);
               const likes = post.liked_by?.length || 0;
               const mine = post.uid === uid;
+              const isImpact = post.kind === 'impact';
               return (
                 <View key={post.id} style={styles.card}>
-                  {post.image_url ? (
+                  {isImpact && post.coverage ? (
+                    <View>
+                      <ImpactMap coverage={post.coverage} height={170} />
+                      <View style={styles.statsRow}>
+                        {impactChips(post).map((c, i) => (
+                          <View key={i} style={styles.stat}>
+                            <Text style={styles.statValue}>{c.value}</Text>
+                            <Text style={styles.statLabel}>{c.label}</Text>
+                          </View>
+                        ))}
+                      </View>
+                    </View>
+                  ) : post.image_url ? (
                     <Image source={{ uri: post.image_url }} style={styles.photo} resizeMode="cover" />
                   ) : null}
 
                   <View style={styles.body}>
+                    {!!post.display_name && isImpact && (
+                      <Text style={styles.author}>{post.display_name}</Text>
+                    )}
                     {!!post.caption && <Text style={styles.caption}>{post.caption}</Text>}
 
                     <View style={styles.metaRow}>
@@ -144,6 +222,8 @@ export default function CommunityScreen() {
           </View>
         )}
       </ScrollView>
+
+      <ImpactComposer visible={composerOpen} onClose={() => setComposerOpen(false)} onPosted={() => load(mode)} />
     </SafeAreaView>
   );
 }
@@ -154,12 +234,29 @@ const styles = StyleSheet.create({
   center: { paddingVertical: 60, alignItems: 'center' },
   loading: { fontSize: 16, color: C.muted },
 
+  titleRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 },
   h1: { fontSize: 28, fontWeight: '700', letterSpacing: -0.4, color: C.dark },
-  sub: { fontSize: 14, color: C.text3, marginTop: 4, marginBottom: 18 },
+  headerActions: { flexDirection: 'row', gap: 8 },
+  actionBtn: { flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: '#fff', borderRadius: 999, paddingHorizontal: 12, paddingVertical: 7, borderWidth: 1, borderColor: C.border },
+  actionPrimary: { backgroundColor: C.primary, borderColor: C.primary },
+  actionText: { fontSize: 13, fontWeight: '700', color: C.primary },
+
+  segmentWrap: { flexDirection: 'row', backgroundColor: C.border2, borderRadius: 999, padding: 3, marginTop: 16, marginBottom: 18 },
+  segment: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingVertical: 8, borderRadius: 999 },
+  segmentActive: { backgroundColor: '#fff', ...shadow.card },
+  segmentText: { fontSize: 14, fontWeight: '700', color: C.muted },
+  segmentTextActive: { color: C.dark },
 
   card: { backgroundColor: '#fff', borderRadius: radius.card, overflow: 'hidden', ...shadow.card },
   photo: { width: '100%', aspectRatio: 1.25, backgroundColor: C.tint },
+
+  statsRow: { flexDirection: 'row', flexWrap: 'wrap', paddingVertical: 12, paddingHorizontal: 6, borderTopWidth: 1, borderTopColor: C.border2 },
+  stat: { minWidth: '25%', alignItems: 'center', paddingVertical: 6 },
+  statValue: { fontSize: 19, fontWeight: '700', color: C.primary },
+  statLabel: { fontSize: 11.5, color: C.text3, marginTop: 2, textAlign: 'center' },
+
   body: { padding: 14 },
+  author: { fontSize: 14, fontWeight: '700', color: C.dark, marginBottom: 6 },
   caption: { fontSize: 15, color: C.dark, fontWeight: '500', lineHeight: 21, marginBottom: 10 },
 
   metaRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10 },
@@ -173,13 +270,10 @@ const styles = StyleSheet.create({
   likeBtn: { flexDirection: 'row', alignItems: 'center', gap: 5 },
   likeCount: { fontSize: 13, fontWeight: '700', color: C.muted },
 
-  verifyBanner: { backgroundColor: '#FFF7E6', borderRadius: radius.card, padding: 14, marginBottom: 16, borderWidth: 1, borderColor: '#F5D88A' },
-  verifyText: { fontSize: 13, color: '#7A5B12', fontWeight: '600' },
-  verifyActions: { flexDirection: 'row', gap: 18, marginTop: 8 },
-  verifyBtn: { fontSize: 13, fontWeight: '700', color: C.primary },
-
   emptyCard: { backgroundColor: '#fff', borderRadius: radius.card, padding: 28, alignItems: 'center', ...shadow.card },
   emptyWell: { width: 56, height: 56, borderRadius: 18, backgroundColor: C.tint, alignItems: 'center', justifyContent: 'center', marginBottom: 14 },
   emptyTitle: { fontSize: 17, fontWeight: '700', color: C.dark, marginBottom: 6 },
   emptyText: { fontSize: 14, color: C.muted, textAlign: 'center', lineHeight: 20 },
+  emptyCta: { marginTop: 16, backgroundColor: C.primary, borderRadius: 999, paddingHorizontal: 20, paddingVertical: 10 },
+  emptyCtaText: { color: '#fff', fontWeight: '700', fontSize: 14 },
 });
