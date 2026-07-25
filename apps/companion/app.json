@@ -11,6 +11,7 @@
     "ios": {
       "supportsTablet": false,
       "bundleIdentifier": "com.jakeverbiest.pickapp",
+      "appleTeamId": "H77DJ6QPJC",
       "infoPlist": {
         "NSLocationWhenInUseUsageDescription": "PICK maps your cleanup route and marks which streets you've cleaned. Location is only tracked during an active cleanup session.",
         "NSLocationAlwaysAndWhenInUseUsageDescription": "Allowing background location lets PICK keep tracking your cleanup with the phone in your pocket and the screen off. Location is only used during active cleanup sessions.",
@@ -19,7 +20,9 @@
         "NSHealthUpdateUsageDescription": "PICK logs each cleanup as a walking workout so your trash pickup counts toward your activity rings and exercise minutes.",
         "NSCameraUsageDescription": "PICK lets you snap a photo of the spot you cleaned up to share your impact.",
         "NSPhotoLibraryUsageDescription": "PICK lets you attach a photo from your library to share your cleanup impact.",
-        "UIBackgroundModes": ["location"],
+        "UIBackgroundModes": [
+          "location"
+        ],
         "ITSAppUsesNonExemptEncryption": false
       }
     },
@@ -47,6 +50,7 @@
       "favicon": "./assets/images/favicon.png"
     },
     "plugins": [
+      "@bacons/apple-targets",
       "expo-router",
       [
         "expo-splash-screen",
@@ -75,6 +79,12 @@
           "locationAlwaysAndWhenInUsePermission": "Background location lets PICK keep tracking your cleanup with the screen off.",
           "isAndroidBackgroundLocationEnabled": true,
           "isAndroidForegroundServiceEnabled": true
+        }
+      ],
+      [
+        "expo-notifications",
+        {
+          "color": "#2D5016"
         }
       ]
     ],

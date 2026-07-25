@@ -1047,6 +1047,23 @@ class FirebaseDatabase {
   }
 
   /**
+   * Public stats for one user (their profile page). Reads the privacy-safe
+   * `user_stats/{uid}` aggregate; returns null if the user opted out (hidden)
+   * or has no aggregate yet. Rules allow the read only when hidden == false.
+   */
+  async getUserStats(uid: string): Promise<UserStats | null> {
+    if (!uid) return null;
+    try {
+      const snap = await getDoc(doc(db, 'user_stats', uid));
+      if (!snap.exists()) return null;
+      const s = snap.data() as UserStats;
+      return s.hidden ? null : s;
+    } catch {
+      return null; // read denied (hidden) or offline
+    }
+  }
+
+  /**
    * Cross-user individual leaderboard. Reads the privacy-safe `user_stats`
    * aggregate; opted-out users (hidden) are filtered out. Sorted in-memory by
    * the chosen metric to avoid composite-index setup.

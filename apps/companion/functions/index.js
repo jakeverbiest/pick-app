@@ -507,3 +507,66 @@ exports.runAdoptionCheck = onRequest(async (req, res) => {
     res.status(500).json({ ok: false, error: String((e && e.message) || e) });
   }
 });
+
+// ==========================================================================
+// PUSH NOTIFICATIONS — the friendly nudges. Tokens are stored on the user doc
+// (users/{uid}.pushToken) by the app; we POST to Expo's push service. Kept to
+// follow + like + adoption (no comments/DMs in the product).
+// ==========================================================================
+
+/** Send one Expo push. Best-effort — never throws into the trigger. */
+async function sendExpoPush(token, title, body, data) {
+  if (!token || typeof token !== 'string' || !token.startsWith('ExponentPushToken')) return;
+  try {
+    await fetch('https://exp.host/--/api/v2/push/send', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify({ to: token, title, body, sound: 'default', data: data || {} }),
+    });
+  } catch (e) {
+    console.warn('sendExpoPush failed:', e && e.message);
+  }
+}
+
+async function pushTokenFor(uid) {
+  try {
+    const snap = await db.collection('users').doc(uid).get();
+    return snap.exists ? (snap.data() || {}).pushToken : null;
+  } catch { return null; }
+}
+async function nameFor(uid) {
+  try {
+    const p = await db.collection('profiles').doc(uid).get();
+    if (p.exists && (p.data() || {}).display_name) return p.data().display_name;
+  } catch {}
+  return 'Someone';
+}
+
+/** New follower → notify the followed user. follows/{follower_following}. */
+exports.onFollowCreated = onDocumentCreated('follows/{edgeId}', async (event) => {
+  const f = (event.data && event.data.data()) || {};
+  if (!f.followerId || !f.followingId || f.followerId === f.followingId) return;
+  const token = await pushTokenFor(f.followingId);
+  if (!token) return;
+  const who = await nameFor(f.followerId);
+  await sendExpoPush(token, 'New follower', `${who} started following you on Pick.`, {
+    type: 'follow', actorUid: f.followerId,
+  });
+});
+
+/** Post liked → notify the author when a NEW uid appears in liked_by. */
+exports.onPostLiked = onDocumentWritten('posts/{postId}', async (event) => {
+  const before = (event.data && event.data.before && event.data.before.data()) || null;
+  const after = (event.data && event.data.after && event.data.after.data()) || null;
+  if (!before || !after) return; // create/delete — not a like change
+  const prev = new Set(before.liked_by || []);
+  const now = after.liked_by || [];
+  const authorUid = after.uid;
+  const newLikers = now.filter((u) => !prev.has(u) && u !== authorUid);
+  if (newLikers.length === 0 || !authorUid) return;
+  const token = await pushTokenFor(authorUid);
+  if (!token) return;
+  const who = await nameFor(newLikers[newLikers.length - 1]);
+  const extra = newLikers.length > 1 ? ` and ${newLikers.length - 1} other${newLikers.length > 2 ? 's' : ''}` : '';
+  await sendExpoPush(token, 'Nice work!', `${who}${extra} liked your post.`, { type: 'like', postId: event.params.postId });
+});

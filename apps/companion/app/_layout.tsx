@@ -10,6 +10,7 @@ import * as Location from 'expo-location';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { useAppInitialization } from '@/src/hooks/useAppInitialization';
 import { prefetchHoodsNear } from '@/src/services/neighborhoods';
+import { registerForPush, setupNotificationRouting } from '@/src/services/notifications';
 import { LoadingView, ErrorView } from '@/src/pick/LoadingView';
 
 // Keep the native splash up until our own branded loading view is on screen,
@@ -23,6 +24,17 @@ export const unstable_settings = {
 export default function RootLayout() {
   const colorScheme = useColorScheme();
   const { isInitialized, authUser, error } = useAppInitialization();
+
+  // Route taps on push notifications to the right screen (once, at root).
+  useEffect(() => {
+    const unsub = setupNotificationRouting();
+    return unsub;
+  }, []);
+
+  // Register this device for push once the user is signed in.
+  useEffect(() => {
+    if (isInitialized && authUser) void registerForPush();
+  }, [isInitialized, authUser]);
 
   // Hand off from the native splash to our branded view on first render.
   useEffect(() => {

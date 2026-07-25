@@ -11,6 +11,8 @@ import { getCoverageStats } from '../../src/services/streetSegments';
 import { Icon, IconName } from '../../src/pick/Icon';
 import { C, radius, shadow } from '../../src/pick/theme';
 import { Card, ProgressBar } from '../../src/pick/ui';
+import { StreakCard } from '../../src/pick/StreakCard';
+import { WeeklyImpactChart } from '../../src/pick/WeeklyImpactChart';
 import { cleanupBags, formatBagsShort } from '../../src/services/impactMetrics';
 
 const MILESTONE = 50;
@@ -209,6 +211,9 @@ export default function ActivityScreen() {
     <SafeAreaView style={styles.root} edges={['top']}>
       <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
         <Text style={styles.h1}>Your impact</Text>
+
+        <StreakCard />
+        <WeeklyImpactChart />
 
         {/* cumulative hero */}
         <View style={styles.hero}>

@@ -221,6 +221,21 @@ service cloud.firestore {
       allow write: if signedIn() && request.resource.data.uid == request.auth.uid;
     }
 
+    // --- Live walks: "who's cleaning now" presence, one doc per active walker
+    //     at live_walks/{uid}. Any signed-in user reads (the live count); you may
+    //     only write your OWN doc, and lastPing must be a fresh, non-backdated
+    //     timestamp so presence can't be spoofed or held open. No coordinates are
+    //     stored — neighborhood name only. ---
+    match /live_walks/{userId} {
+      allow read: if signedIn();
+      allow write: if isOwner(userId)
+        && (request.method == 'delete' || (
+             request.resource.data.userId == userId
+             && request.resource.data.lastPing is number
+             && request.resource.data.lastPing <= request.time.toMillis() + 60000
+             && request.resource.data.lastPing > request.time.toMillis() - 300000));
+    }
+
     // --- Follows: one-way follow graph. doc id = "{follower}_{following}".
     //     Anyone signed-in may read (feeds, counts, follow-state); you may only
     //     create/delete edges where YOU are the follower. ---

@@ -62,7 +62,9 @@ export async function startBackgroundSession(): Promise<'background' | 'foregrou
     }
 
     await Location.startLocationUpdatesAsync(LOCATION_TASK, {
-      accuracy: Location.Accuracy.Balanced,
+      // High (~5-10m) so screen-off/pocket tracking stays on the correct block.
+      // Balanced (~100m) was mapping pickups across the street.
+      accuracy: Location.Accuracy.High,
       timeInterval: 5000,
       distanceInterval: 5,
       showsBackgroundLocationIndicator: true, // iOS blue pill — honest UX

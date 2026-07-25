@@ -168,17 +168,23 @@ export default function PeopleScreen() {
             const isBusy = busy.has(p.uid);
             return (
               <View key={p.uid} style={styles.personCard}>
-                <View style={styles.avatar}>
-                  <Text style={styles.avatarText}>
-                    {(p.display_name || p.handle || '?').slice(0, 1).toUpperCase()}
-                  </Text>
-                </View>
-                <View style={{ flex: 1, minWidth: 0 }}>
-                  <Text style={styles.name} numberOfLines={1}>{p.display_name || 'Picker'}</Text>
-                  <Text style={styles.handle} numberOfLines={1}>
-                    @{p.handle}{p.neighborhood ? ` · ${p.neighborhood}` : ''}
-                  </Text>
-                </View>
+                <Pressable
+                  onPress={() => router.push(`/profile/${p.uid}` as any)}
+                  style={styles.personTap}
+                  hitSlop={4}
+                >
+                  <View style={styles.avatar}>
+                    <Text style={styles.avatarText}>
+                      {(p.display_name || p.handle || '?').slice(0, 1).toUpperCase()}
+                    </Text>
+                  </View>
+                  <View style={{ flex: 1, minWidth: 0 }}>
+                    <Text style={styles.name} numberOfLines={1}>{p.display_name || 'Picker'}</Text>
+                    <Text style={styles.handle} numberOfLines={1}>
+                      @{p.handle}{p.neighborhood ? ` · ${p.neighborhood}` : ''}
+                    </Text>
+                  </View>
+                </Pressable>
                 <Pressable
                   onPress={() => toggleFollow(p)}
                   disabled={isBusy}
@@ -229,6 +235,7 @@ const styles = StyleSheet.create({
   searchInput: { flex: 1, fontSize: 16, color: C.dark },
 
   personCard: { flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: '#fff', borderRadius: radius.card, padding: 12, ...shadow.card },
+  personTap: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 12 },
   avatar: { width: 42, height: 42, borderRadius: 21, backgroundColor: C.cream, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: C.border },
   avatarText: { fontSize: 17, fontWeight: '700', color: C.primary },
   name: { fontSize: 15.5, fontWeight: '600', color: C.dark },

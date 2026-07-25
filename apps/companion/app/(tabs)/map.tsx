@@ -18,6 +18,7 @@ import Constants from 'expo-constants';
 import { startBackgroundSession, stopBackgroundSession } from '../../src/services/backgroundSession';
 import { beginSessionTrace, heartbeat, endSessionTrace } from '../../src/services/crashRecorder';
 import { saveWalkDraft, loadWalkDraft, clearWalkDraft } from '../../src/services/sessionRecovery';
+import { startPresence, pingPresence, endPresence } from '../../src/services/presence';
 import { computeNeed, parseRoute, needColor, needTileKey, type NeedTile } from '../../src/services/needMap';
 import { syncWorkoutToHealth, isHealthSyncEnabled } from '../../src/services/healthService';
 import { simplifyRoute, simplifyCoordPairs, privacyTrimRoute } from '../../src/services/routeUtils';
@@ -28,6 +29,7 @@ import { getBadgeService } from '../../src/services/badgeService';
 import { COLORS, SPACING, RADIUS, TYPOGRAPHY } from '../../src/constants/colors';
 import { Icon } from '../../src/pick/Icon';
 import { ShareComposer } from '../../src/pick/ShareComposer';
+import { addWatchCommandListener, sendStatsToWatch } from '../../modules/watch-session';
 
 export default function MapScreen() {
   const router = useRouter();
@@ -38,6 +40,7 @@ export default function MapScreen() {
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const locationRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const presenceRef = useRef<ReturnType<typeof setInterval> | null>(null);
   // Wall-clock anchor for the timer: elapsed is derived from this, not counted
   // tick-by-tick, so a suspended app (screen locked in pocket) shows the true
   // duration on resume instead of under-counting.
@@ -164,16 +167,7 @@ export default function MapScreen() {
   const [currentArea, setCurrentArea] = useState<{ city: string; neighborhood: string }>({ city: '', neighborhood: '' });
   const coverageLoadedRef = useRef(false);
   const panLoadRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const [pocketMode, setPocketMode] = useState(false);
-  const pocketTapsRef = useRef<number[]>([]);
-  const pocketModeRef = useRef(false);
   const appActiveRef = useRef(true);
-
-  // The map must NOT render during pocket/screen-off stretches — hours of
-  // invisible tile streaming + redraws is what memory-killed long walks.
-  useEffect(() => {
-    pocketModeRef.current = pocketMode;
-  }, [pocketMode]);
 
   useEffect(() => {
     const sub = AppState.addEventListener('change', (state) => {
@@ -183,7 +177,9 @@ export default function MapScreen() {
     return () => sub.remove();
   }, []);
 
-  const mapVisible = () => appActiveRef.current && !pocketModeRef.current;
+  // The map must NOT render during screen-off/background stretches — hours of
+  // invisible tile streaming + redraws is what memory-killed long walks.
+  const mapVisible = () => appActiveRef.current;
 
   // When the map WebView unmounts on background-during-cleanup, reset mapReady
   // so coverage + route re-inject cleanly once it remounts on return.
@@ -193,9 +189,9 @@ export default function MapScreen() {
 
   // Keep the screen awake ONLY when we can't run in the background. When a real
   // background-location session is active ('background'), let the screen lock in
-  // the pocket — the walk survives via the OS, there's nothing to touch, and no
-  // Pocket Mode is needed. Until the mode resolves (null) we keep it awake to be
-  // safe, so we never silently drop a foreground-only session.
+  // the pocket — the walk survives via the OS and there's nothing to touch.
+  // Until the mode resolves (null) we keep it awake to be safe, so we never
+  // silently drop a foreground-only session.
   useEffect(() => {
     if (isListening && sessionMode !== 'background') {
       activateKeepAwakeAsync('cleanup');
@@ -203,26 +199,12 @@ export default function MapScreen() {
       deactivateKeepAwake('cleanup');
     }
     if (!isListening) {
-      setPocketMode(false);
       setSessionMode(null);
     }
     return () => {
       deactivateKeepAwake('cleanup');
     };
   }, [isListening, sessionMode]);
-
-  // Pocket mode exits on triple-tap within 1.2s. Exiting also trims the
-  // last few seconds of "pickups" — that motion was you pulling the phone out.
-  const handlePocketTap = () => {
-    const now = Date.now();
-    pocketTapsRef.current = [...pocketTapsRef.current.filter((t) => now - t < 1200), now];
-    if (pocketTapsRef.current.length >= 3) {
-      pocketTapsRef.current = [];
-      setPocketMode(false);
-      const corrected = MotionDetector.trimRecentPickups(4000);
-      setPickupCount(corrected);
-    }
-  };
 
   useEffect(() => {
     loadUserStats();
@@ -772,13 +754,22 @@ export default function MapScreen() {
       locationRef.current = setInterval(() => {
         trackLocation();
       }, activeInterval);
+
+      // "Who's cleaning now" presence — announce the walk (neighborhood name
+      // only, never coordinates) and heartbeat so it stays counted as live.
+      startPresence(currentArea.neighborhood || neighborhood || '');
+      presenceRef.current = setInterval(() => { void pingPresence(); }, 45000);
     } else {
       if (timerRef.current) clearInterval(timerRef.current);
       if (locationRef.current) clearInterval(locationRef.current);
+      if (presenceRef.current) clearInterval(presenceRef.current);
+      void endPresence();
     }
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
       if (locationRef.current) clearInterval(locationRef.current);
+      if (presenceRef.current) clearInterval(presenceRef.current);
+      void endPresence();
     };
   }, [isListening]);
 
@@ -807,11 +798,13 @@ export default function MapScreen() {
       // requesting our own fixes — one radio stream instead of three.
       let latitude: number | undefined;
       let longitude: number | undefined;
+      let fixAccuracy: number | undefined;
       if (MotionDetector.isActive()) {
         const last = MotionDetector.getLastLocation();
         if (last) {
           latitude = last.latitude;
           longitude = last.longitude;
+          fixAccuracy = last.accuracy;
         }
       }
       if (latitude === undefined || longitude === undefined) {
@@ -823,9 +816,18 @@ export default function MapScreen() {
         const location = await Location.getCurrentPositionAsync({ accuracy });
         latitude = location.coords.latitude;
         longitude = location.coords.longitude;
+        fixAccuracy = location.coords.accuracy ?? undefined;
       }
       setCurrentLocation({ lat: latitude, lon: longitude });
       currentLocationRef.current = { lat: latitude, lon: longitude };
+
+      // Noisy fixes (>25m) still move the on-map dot, but never enter the
+      // route — one bad ping can spill the route across the street and poison
+      // sidewalk-level segment snapping (11m snap radius).
+      if (fixAccuracy !== undefined && fixAccuracy > 25) {
+        console.log(`📍 Skipped low-accuracy fix (${Math.round(fixAccuracy)}m)`);
+        return;
+      }
 
       setSessionRoute((prev) => {
         const updated = [
@@ -1124,7 +1126,7 @@ export default function MapScreen() {
           fgWarnedRef.current = true;
           Alert.alert(
             'Keep the screen on for this walk',
-            'This phone hasn’t granted “Always” location, so PICK can’t track with the screen locked — locking it will pause your timer and pickups.\n\nTap “Pocket” to keep the screen safely on, or enable Settings → PICK → Location → Always to walk with the phone locked.',
+            'This phone hasn’t granted “Always” location, so PICK can’t track with the screen locked — locking it will pause your timer and pickups.\n\nThe screen will stay on during this walk, or enable Settings → PICK → Location → Always to walk with the phone locked.',
             [{ text: 'Got it' }],
           );
         }
@@ -1174,6 +1176,40 @@ export default function MapScreen() {
       console.log(`Last point: ${sessionRoute[sessionRoute.length-1].lat}, ${sessionRoute[sessionRoute.length-1].lon}`);
     }
   };
+
+  // ── Apple Watch bridge ──────────────────────────────────────────────────
+  // The watch is a remote control + mirror: start/end commands come in as
+  // events; stats go out every few seconds. All no-ops without the native
+  // module (Android / Expo Go).
+  const startCleanupRef = useRef(startCleanup);
+  const stopCleanupRef = useRef(stopCleanup);
+  startCleanupRef.current = startCleanup;
+  stopCleanupRef.current = stopCleanup;
+  const isListeningRef = useRef(isListening);
+  isListeningRef.current = isListening;
+
+  useEffect(() => {
+    const sub = addWatchCommandListener((cmd) => {
+      if (cmd === 'startWalk' && !isListeningRef.current) {
+        void startCleanupRef.current();
+      } else if (cmd === 'endWalk' && isListeningRef.current) {
+        stopCleanupRef.current();
+      }
+    });
+    return () => sub.remove();
+  }, []);
+
+  useEffect(() => {
+    // On state changes push immediately; while active, throttle to every 3s
+    // (elapsedSeconds ticks at 1Hz — applicationContext coalesces anyway).
+    if (!isListening) {
+      sendStatsToWatch(pickupCount, elapsedSeconds, 'idle');
+      return;
+    }
+    if (elapsedSeconds % 3 === 0) {
+      sendStatsToWatch(pickupCount, elapsedSeconds, 'active');
+    }
+  }, [isListening, pickupCount, elapsedSeconds]);
 
   const saveSummary = async () => {
     setShowSummary(false);
@@ -1701,9 +1737,6 @@ Generated by Pick App - Share this with the development team
           >
             <Icon name="route" size={18} color={coverageVisible ? COLORS.sage : COLORS.mutedSage} />
           </TouchableOpacity>
-          <TouchableOpacity style={styles.pocketButton} onPress={() => setPocketMode(true)}>
-            <Text style={styles.pocketButtonLabel}>Pocket</Text>
-          </TouchableOpacity>
         </View>
       )}
 
@@ -1717,16 +1750,7 @@ Generated by Pick App - Share this with the development team
         </View>
       )}
 
-      {/* Pocket Mode — black touch-shield, dim counter, triple-tap to exit */}
-      <Modal visible={pocketMode} animationType="fade" transparent={false}>
-        <TouchableOpacity style={styles.pocketOverlay} activeOpacity={1} onPress={handlePocketTap}>
-          <Text style={styles.pocketCount}>{pickupCount}</Text>
-          <Text style={styles.pocketTimer}>{formatTime(elapsedSeconds)}</Text>
-          <Text style={styles.pocketHint}>triple-tap to exit</Text>
-        </TouchableOpacity>
-      </Modal>
-
-      {/* Real Map - Expands when cleaning */}
+{/* Real Map - Expands when cleaning */}
       <View style={[styles.mapContainer, isListening && styles.mapContainerExpanded]}>
         {/* Map tools — one button; press or hold to reveal options. Sits where
             the adopt button used to. */}
@@ -1981,19 +2005,21 @@ Generated by Pick App - Share this with the development team
     };
 
     // ── Freshness: one shared ramp for every layer ──────────────────────────
-    // Clean → deteriorating → unclean → gone: vivid green the day it's cleaned,
-    // through a strong yellow as it deteriorates, to rust once it's unclean —
-    // then that rust fades toward nothing as the block ages out, dissolving back
-    // into the blank basemap. Never-cleaned streets are that faint "nothing" too.
-    var FADE_START_DAYS = 12; // rust starts dissolving toward nothing here…
-    var FADE_END_DAYS = 30;   // …and is all but gone by here
+    // Clean → deteriorating → unclean: vivid green the day it's cleaned, through
+    // yellow and orange as it deteriorates, to a strong RED once it's unclean —
+    // the "worst" state stays boldly visible (the whole point: go clean it). Only
+    // NEVER-cleaned streets are the faint dashed "blank". Old cleaned blocks dim
+    // slightly with age but keep their color, so the worst never disappears.
+    var FADE_START_DAYS = 12; // opacity eases down a touch from here…
+    var FADE_END_DAYS = 30;   // …to a still-visible floor (not gone)
     var NEVER_COLOR = '#C4C8BD'; // never cleaned — the faint, dashed "blank"
     function _lerp(a, b, t) { return Math.round(a + (b - a) * t); }
     function freshRGB(daysOld) {
       var stops = [
-        [0,  [47, 180, 87]],   // just cleaned — vivid green (#2FB457)
-        [7,  [242, 197, 0]],   // deteriorating — yellow (#F2C500)
-        [14, [190, 85, 40]]    // unclean — rust (#BE5528)
+        [0,  [47, 180, 87]],    // just cleaned — vivid green (#2FB457)
+        [6,  [242, 197, 0]],    // deteriorating — yellow (#F2C500)
+        [12, [238, 122, 30]],   // getting bad — orange (#EE7A1E)
+        [20, [210, 50, 28]]     // worst — strong, visible red (#D2321C)
       ];
       var last = stops[stops.length - 1];
       var d = daysOld < 0 ? 0 : daysOld;
@@ -2011,13 +2037,13 @@ Generated by Pick App - Share this with the development team
       return last[1];
     }
     function freshColor(daysOld) { var c = freshRGB(daysOld); return 'rgb(' + c[0] + ',' + c[1] + ',' + c[2] + ')'; }
-    // 1 while the block still matters (green→yellow→rust), then fading to a
-    // whisper as it ages out — so old rust "fades into nothing," toward blank.
+    // Full strength while fresh, easing to a still-clearly-visible floor as a
+    // block ages — the worst (red) blocks must stay legible, not dissolve.
     function tailFade(daysOld) {
       var d = daysOld < 0 ? 0 : daysOld;
       if (d <= FADE_START_DAYS) return 1;
-      if (d >= FADE_END_DAYS) return 0.12;
-      return 1 - 0.88 * ((d - FADE_START_DAYS) / (FADE_END_DAYS - FADE_START_DAYS));
+      if (d >= FADE_END_DAYS) return 0.6;
+      return 1 - 0.4 * ((d - FADE_START_DAYS) / (FADE_END_DAYS - FADE_START_DAYS));
     }
 
     // Walks render as freshness-colored route corridors, not center-point blobs.
@@ -2915,6 +2941,7 @@ const styles = StyleSheet.create({
     elevation: 6,
   },
   topBarStat: {
+    flex: 1,
     alignItems: 'center',
   },
   topBarValue: {
@@ -2934,44 +2961,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
     paddingVertical: 6,
     marginRight: 2,
-  },
-  pocketButton: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#1c1c1e',
-    borderRadius: 8,
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-  },
-  pocketButtonText: {
-    fontSize: 16,
-  },
-  pocketButtonLabel: {
-    fontSize: 9,
-    color: '#999',
-    fontWeight: '600',
-  },
-  pocketOverlay: {
-    flex: 1,
-    backgroundColor: '#000',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  pocketCount: {
-    fontSize: 96,
-    fontWeight: '200',
-    color: '#1f4d2a', // dim green — visible if you peek, minimal OLED battery use
-  },
-  pocketTimer: {
-    fontSize: 18,
-    color: '#27331f',
-    marginTop: 8,
-  },
-  pocketHint: {
-    fontSize: 12,
-    color: '#222',
-    position: 'absolute',
-    bottom: 40,
   },
   mapContainer: {
     position: 'absolute',

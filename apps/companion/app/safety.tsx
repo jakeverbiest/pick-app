@@ -28,8 +28,8 @@ const LAST = 4;
 const FRESHNESS: Array<{ color: string; label: string; sub: string; hollow?: boolean }> = [
   { color: '#2FB457', label: 'Just cleaned', sub: 'fresh in the last few days' },
   { color: '#F2C500', label: 'Deteriorating', sub: 'about a week on' },
-  { color: '#BE5528', label: 'Needs a pass', sub: 'unclean — go get it' },
-  { color: '#C4C8BD', label: 'Not cleaned yet', sub: 'faded to blank', hollow: true },
+  { color: '#D2321C', label: 'Needs a pass', sub: 'unclean — go get it' },
+  { color: '#C4C8BD', label: 'Not cleaned yet', sub: 'blank canvas', hollow: true },
 ];
 
 export default function OnboardingScreen() {

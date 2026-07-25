@@ -53,6 +53,12 @@ const POCKET_MIN_GYRO = 1.5; // pocket picks observed at 2.9-7.4; handling/inser
 // "pickup" is almost certainly a stride bounce — real picking pauses to bend,
 // which breaks the rhythm. Tunable; raise to be stricter, lower to be looser.
 const WALKING_CONTEXT_MS = 2500;
+// A real pickup means pausing to bend down, so instantaneous speed is low. Above
+// this, you're moving too fast to have stopped-and-picked — biking, running hard,
+// or in a vehicle — so the event is rejected. ~3.3 m/s ≈ 12 km/h ≈ 7.4 mph, well
+// past a brisk walk (~1.4) or light jog (~2.5). GPS speed of -1 (unknown) is
+// never gated, so a missing fix can't nuke a legitimate pickup.
+const MAX_PICKUP_SPEED_MPS = 3.3;
 const GYRO_BASELINE_WINDOW = 8; // recent events used for auto carry classification
 
 class MotionDetector {
@@ -126,13 +132,16 @@ class MotionDetector {
         console.warn('Location permission denied');
       } else {
         // Start location tracking
-        // Balanced/5s: High@1s was the app's single biggest battery cost.
-        // Segment snapping tolerates 25m; pickup pins don't need sub-meter.
+        // High/3s: Balanced (~100m) scattered route points across the street,
+        // which broke sidewalk-level segment snapping (11m snap + 80% coverage)
+        // — cleaned blocks never registered as fresh. High (~5-10m) keeps the
+        // route on the correct side. 3s cadence (vs 1s) keeps most of the
+        // battery win from the old Balanced/5s config.
         this.locationSubscription = await Location.watchPositionAsync(
           {
-            accuracy: Location.Accuracy.Balanced,
-            timeInterval: 5000,
-            distanceInterval: 3,
+            accuracy: Location.Accuracy.High,
+            timeInterval: 3000,
+            distanceInterval: 2,
           },
           (location) => {
             this.lastLocation = {
@@ -240,6 +249,12 @@ class MotionDetector {
             (this.carryMode === 'auto' && this.lastAutoCarry === 'pocket');
           if (result.confidence > 0 && pocketActive && profile.peakGyro < POCKET_MIN_GYRO) {
             result = { confidence: 0, reason: `low rotation: gyro ${profile.peakGyro.toFixed(2)} < ${POCKET_MIN_GYRO} (handling?)` };
+          }
+
+          // Speed gate: too fast to have stopped-and-picked → not a real pickup.
+          const evSpeed = this.lastLocation?.speed ?? -1;
+          if (result.confidence > 0 && evSpeed >= 0 && evSpeed > MAX_PICKUP_SPEED_MPS) {
+            result = { confidence: 0, reason: `too fast: ${evSpeed.toFixed(1)} m/s > ${MAX_PICKUP_SPEED_MPS} (biking/driving?)` };
           }
 
           const finalConfidence = result.confidence;

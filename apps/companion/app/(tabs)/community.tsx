@@ -11,6 +11,7 @@ import { listFollowingIds } from '../../src/services/follows';
 import { Icon } from '../../src/pick/Icon';
 import { ImpactMap } from '../../src/pick/ImpactMap';
 import { ImpactComposer } from '../../src/pick/ImpactComposer';
+import { LiveNow } from '../../src/pick/LiveNow';
 import { C, radius, shadow } from '../../src/pick/theme';
 
 type FeedMode = 'following' | 'everyone';
@@ -142,6 +143,8 @@ export default function CommunityScreen() {
           ))}
         </View>
 
+        <LiveNow />
+
         {loading ? (
           <View style={styles.center}>
             <Text style={styles.loading}>Loading…</Text>
@@ -185,8 +188,17 @@ export default function CommunityScreen() {
                   ) : null}
 
                   <View style={styles.body}>
-                    {!!post.display_name && isImpact && (
-                      <Text style={styles.author}>{post.display_name}</Text>
+                    {!!post.display_name && (
+                      <Pressable
+                        onPress={() => router.push(`/profile/${post.uid}` as any)}
+                        style={styles.authorRow}
+                        hitSlop={4}
+                      >
+                        <View style={styles.authorAvatar}>
+                          <Text style={styles.authorAvatarText}>{post.display_name.slice(0, 1).toUpperCase()}</Text>
+                        </View>
+                        <Text style={styles.author}>{post.display_name}</Text>
+                      </Pressable>
                     )}
                     {!!post.caption && <Text style={styles.caption}>{post.caption}</Text>}
 
@@ -256,7 +268,10 @@ const styles = StyleSheet.create({
   statLabel: { fontSize: 11.5, color: C.text3, marginTop: 2, textAlign: 'center' },
 
   body: { padding: 14 },
-  author: { fontSize: 14, fontWeight: '700', color: C.dark, marginBottom: 6 },
+  authorRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 8 },
+  authorAvatar: { width: 26, height: 26, borderRadius: 13, backgroundColor: C.tint, alignItems: 'center', justifyContent: 'center' },
+  authorAvatarText: { fontSize: 12, fontWeight: '700', color: C.primary },
+  author: { fontSize: 14, fontWeight: '700', color: C.dark },
   caption: { fontSize: 15, color: C.dark, fontWeight: '500', lineHeight: 21, marginBottom: 10 },
 
   metaRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10 },
