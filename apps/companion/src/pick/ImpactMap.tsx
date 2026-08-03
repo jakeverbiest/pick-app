@@ -69,7 +69,7 @@ export function ImpactMap({
               key={`b${i}`}
               points={pts}
               fill="none"
-              stroke={C.primary}
+              stroke={C.accent}
               strokeWidth={3}
               strokeLinecap="round"
               strokeLinejoin="round"

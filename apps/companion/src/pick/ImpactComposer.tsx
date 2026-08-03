@@ -11,7 +11,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Icon } from './Icon';
-import { C, radius, shadow } from './theme';
+import { C, Fonts, radius } from './theme';
 import { ImpactMap } from './ImpactMap';
 import { buildMyImpact, type MyImpact } from '../services/impactShare';
 import { getDatabase } from '../services/firebaseDatabase';
@@ -135,10 +135,10 @@ export function ImpactComposer({
                   style={[styles.postBtn, posting && { opacity: 0.6 }]}
                 >
                   {posting ? (
-                    <ActivityIndicator color="#fff" />
+                    <ActivityIndicator color={C.creamText} />
                   ) : (
                     <>
-                      <Icon name="leaf" size={18} color="#fff" sw={2} />
+                      <Icon name="leaf" size={18} color={C.creamText} sw={2} />
                       <Text style={styles.postBtnText}>Share to community</Text>
                     </>
                   )}
@@ -153,30 +153,30 @@ export function ImpactComposer({
 }
 
 const styles = StyleSheet.create({
-  backdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.35)', justifyContent: 'flex-end' },
-  sheet: { backgroundColor: C.cream, borderTopLeftRadius: 22, borderTopRightRadius: 22, paddingHorizontal: 18, paddingTop: 10, maxHeight: '88%' },
+  backdrop: { flex: 1, backgroundColor: 'rgba(15,47,102,0.4)', justifyContent: 'flex-end' },
+  sheet: { backgroundColor: C.white, borderTopLeftRadius: 22, borderTopRightRadius: 22, paddingHorizontal: 18, paddingTop: 10, maxHeight: '88%' },
   handleBar: { alignSelf: 'center', width: 40, height: 4, borderRadius: 2, backgroundColor: C.border, marginBottom: 10 },
   headerRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 },
-  title: { fontSize: 20, fontWeight: '700', color: C.dark },
+  title: { fontFamily: Fonts.headlineBold, fontSize: 20, color: C.dark },
   closeBtn: { padding: 4 },
   center: { paddingVertical: 50, alignItems: 'center' },
-  dim: { color: C.muted, fontSize: 15 },
+  dim: { color: C.muted, fontFamily: Fonts.body, fontSize: 15 },
 
-  previewCard: { backgroundColor: '#fff', borderRadius: radius.card, overflow: 'hidden', ...shadow.card },
+  previewCard: { backgroundColor: '#fff', borderRadius: radius.card, overflow: 'hidden', borderWidth: 1.5, borderColor: C.border },
   statsRow: { flexDirection: 'row', flexWrap: 'wrap', paddingVertical: 14, paddingHorizontal: 6 },
   stat: { minWidth: '25%', alignItems: 'center', paddingVertical: 6 },
-  statValue: { fontSize: 20, fontWeight: '700', color: C.primary },
-  statLabel: { fontSize: 12, color: C.text3, marginTop: 2, textAlign: 'center' },
+  statValue: { fontFamily: Fonts.displayBold, fontSize: 20, color: C.primary },
+  statLabel: { fontFamily: Fonts.body, fontSize: 12, color: C.text3, marginTop: 2, textAlign: 'center' },
 
-  hint: { fontSize: 13, color: C.text3, marginTop: 12, lineHeight: 18 },
+  hint: { fontFamily: Fonts.body, fontSize: 13, color: C.text3, marginTop: 12, lineHeight: 18 },
 
   caption: {
     marginTop: 14, minHeight: 70, backgroundColor: '#fff', borderRadius: radius.card,
-    borderWidth: 1, borderColor: C.border, padding: 14, fontSize: 15, color: C.dark, textAlignVertical: 'top',
+    borderWidth: 1, borderColor: C.border, padding: 14, fontFamily: Fonts.body, fontSize: 15, color: C.dark, textAlignVertical: 'top',
   },
   postBtn: {
     marginTop: 16, backgroundColor: C.primary, borderRadius: radius.card, height: 52,
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
   },
-  postBtnText: { color: '#fff', fontSize: 16, fontWeight: '700' },
+  postBtnText: { color: C.creamText, fontFamily: Fonts.bodyBold, fontSize: 16 },
 });

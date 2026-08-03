@@ -87,11 +87,52 @@ service cloud.firestore {
       allow create: if isOwner(request.resource.data.created_by);
       allow update: if signedIn() && (
         resource.data.created_by == request.auth.uid
-        // joining: only the participants array may change
+        // Joining, leaving, inviting, declining. `invited` rides alongside
+        // `participants` because accepting an invite touches both in one write
+        // (added to participants, removed from invited).
+        //
+        // Known looseness, inherited from the original participants-only rule:
+        // this lets a signed-in user add someone OTHER than themselves. Both
+        // arrays are non-destructive social lists — an unwanted invite is
+        // dismissible and joining on someone's behalf only credits work they
+        // actually did — so it's not worth the per-element array diffing that
+        // locking it down would need. Revisit if invites get abused.
         || request.resource.data.diff(resource.data).affectedKeys()
-            .hasOnly(['participants', 'updated_at'])
+            .hasOnly(['participants', 'invited', 'updated_at'])
       );
       allow delete: if signedIn() && resource.data.created_by == request.auth.uid;
+
+      // Published contributions: one doc per participant holding ONLY their
+      // totals for this challenge. Raw cleanups stay owner-only (routes can
+      // reveal home addresses), so each member tallies their own work and
+      // publishes the numbers here; the group total is the sum of these docs.
+      // Any signed-in user may read; you may only write your own, and only
+      // these fields, so nobody can inflate someone else's contribution.
+      match /contrib/{userId} {
+        allow read: if signedIn();
+        allow delete: if isOwner(userId);
+        allow create, update: if isOwner(userId)
+          && request.resource.data.uid == userId
+          && request.resource.data.keys().hasOnly(
+               ['uid', 'display_name', 'pickups', 'bags', 'cleanups', 'updated_at'])
+          && request.resource.data.pickups is number
+          && request.resource.data.pickups >= 0
+          && request.resource.data.pickups < 1000000
+          && request.resource.data.bags is number
+          && request.resource.data.bags >= 0
+          && request.resource.data.cleanups is number
+          && request.resource.data.cleanups >= 0;
+      }
+
+      // Live event counters: one doc per participant, own-doc writes only.
+      // Sums client-side into the real-time team total (watch team bar).
+      match /live/{userId} {
+        allow read: if signedIn();
+        allow write: if isOwner(userId)
+          && request.resource.data.keys().hasOnly(['base', 'session', 'updated_at'])
+          && (!('session' in request.resource.data) || request.resource.data.session is number)
+          && (!('base' in request.resource.data) || request.resource.data.base is number);
+      }
     }
 
     // --- Street segment status: the shared coverage layer.

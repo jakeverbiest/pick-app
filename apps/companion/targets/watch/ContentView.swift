@@ -7,15 +7,18 @@ struct ContentView: View {
   @EnvironmentObject var link: PhoneLink
 
   var body: some View {
-    if link.state == .active {
-      ActiveView()
-    } else {
+    // `.starting` counts as active: the workout screen appears the instant you
+    // tap Start, rather than after the phone finishes acquiring GPS.
+    if link.state == .idle {
       IdleView()
+    } else {
+      ActiveView()
     }
   }
 }
 
-private let pickGreen = Color(red: 0.204, green: 0.780, blue: 0.349) // #34C759
+// Civic Blueprint brand green — #4B7A54 (matches C.accent in the phone app's theme.ts).
+private let pickGreen = Color(red: 0.294, green: 0.478, blue: 0.329) // #4B7A54
 
 struct IdleView: View {
   @EnvironmentObject var link: PhoneLink
@@ -65,35 +68,72 @@ struct ActiveView: View {
 struct StatsPage: View {
   @EnvironmentObject var link: PhoneLink
 
+  private var hasEvent: Bool { !link.eventName.isEmpty }
+
   var body: some View {
-    VStack(alignment: .leading, spacing: 2) {
-      Spacer(minLength: 0)
+    HStack(spacing: 8) {
+      // Main column: pickups centered, time + distance pinned to the bottom.
+      VStack(spacing: 0) {
+        Spacer(minLength: 0)
 
-      // Hero number — pickups
-      Text("\(link.pickups)")
-        .font(.system(size: 64, weight: .semibold, design: .rounded))
-        .foregroundStyle(pickGreen)
-        .contentTransition(.numericText())
-        .minimumScaleFactor(0.5)
-        .lineLimit(1)
-      Text("PICKUPS")
-        .font(.system(.caption2, design: .rounded).weight(.semibold))
-        .foregroundStyle(.secondary)
+        // Hero — pickups, centered and big
+        Text("\(link.pickups)")
+          .font(.system(size: 84, weight: .semibold, design: .rounded))
+          .foregroundStyle(pickGreen)
+          .contentTransition(.numericText())
+          .minimumScaleFactor(0.4)
+          .lineLimit(1)
+        Text(link.state == .starting ? "STARTING…" : "PICKUPS")
+          .font(.system(.caption2, design: .rounded).weight(.semibold))
+          .foregroundStyle(.secondary)
 
-      // Time
-      Text(timeString(link.elapsedSeconds))
-        .font(.system(size: 28, weight: .medium, design: .rounded))
-        .monospacedDigit()
-        .foregroundStyle(.yellow)
-        .padding(.top, 8)
-      Text("TIME")
-        .font(.system(.caption2, design: .rounded).weight(.semibold))
-        .foregroundStyle(.secondary)
+        Spacer(minLength: 0)
 
-      Spacer(minLength: 0)
+        // Bottom row: time + distance
+        HStack(spacing: 10) {
+          VStack(spacing: 0) {
+            Text(timeString(link.elapsedSeconds))
+              .font(.system(size: 20, weight: .medium, design: .rounded))
+              .monospacedDigit()
+              .foregroundStyle(.yellow)
+            Text("TIME")
+              .font(.system(size: 9, weight: .semibold, design: .rounded))
+              .foregroundStyle(.secondary)
+          }
+          if !link.distance.isEmpty {
+            VStack(spacing: 0) {
+              Text(link.distance)
+                .font(.system(size: 20, weight: .medium, design: .rounded))
+                .monospacedDigit()
+                .foregroundStyle(.cyan)
+                .minimumScaleFactor(0.6)
+                .lineLimit(1)
+              Text("DISTANCE")
+                .font(.system(size: 9, weight: .semibold, design: .rounded))
+                .foregroundStyle(.secondary)
+            }
+          }
+        }
+      }
+      .frame(maxWidth: .infinity)
+
     }
-    .frame(maxWidth: .infinity, alignment: .leading)
-    .padding(.horizontal)
+    .padding(.horizontal, 6)
+    .overlay(alignment: .topTrailing) {
+      // Competition mode: the event area's % cleaned, top-right corner.
+      // Only sent by the phone during specific competitions.
+      if hasEvent && !link.eventPct.isEmpty {
+        VStack(alignment: .trailing, spacing: 0) {
+          Text(link.eventPct)
+            .font(.system(size: 22, weight: .bold, design: .rounded))
+            .foregroundStyle(pickGreen)
+          Text("CLEANED")
+            .font(.system(size: 8, weight: .bold, design: .rounded))
+            .foregroundStyle(.secondary)
+        }
+        .padding(.trailing, 4)
+      }
+    }
   }
 
   private func timeString(_ seconds: Int) -> String {

@@ -27,16 +27,17 @@ final class PhoneWatchLink: NSObject, WCSessionDelegate {
     }
   }
 
-  func sendStats(pickups: Int, elapsedSeconds: Int, state: String) {
+  func sendStats(pickups: Int, elapsedSeconds: Int, state: String, extras: [String: String]) {
     guard WCSession.isSupported() else { return }
     let session = WCSession.default
     guard session.activationState == .activated else { return }
-    let payload: [String: Any] = [
+    var payload: [String: Any] = [
       "pickups": pickups,
       "elapsedSeconds": elapsedSeconds,
       "state": state,
       "sentAt": Date().timeIntervalSince1970,
     ]
+    for (k, v) in extras { payload[k] = v }
     // applicationContext = "latest wins" snapshot; ideal for a stats mirror.
     try? session.updateApplicationContext(payload)
     // If the watch app is frontmost, also push instantly for a live feel.
@@ -98,10 +99,11 @@ public class WatchSessionModule: Module {
     }
 
     /// Mirror the current walk to the watch.
-    /// state: "idle" | "active"
-    Function("sendStats") { (pickups: Int, elapsedSeconds: Int, state: String) in
+    /// state: "idle" | "active"; extras: preformatted display strings
+    /// (distance, bags, progress).
+    Function("sendStats") { (pickups: Int, elapsedSeconds: Int, state: String, extras: [String: String]) in
       PhoneWatchLink.shared.sendStats(
-        pickups: pickups, elapsedSeconds: elapsedSeconds, state: state)
+        pickups: pickups, elapsedSeconds: elapsedSeconds, state: state, extras: extras)
     }
 
     Function("isPaired") { () -> Bool in

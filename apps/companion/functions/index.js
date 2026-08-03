@@ -31,7 +31,7 @@ initializeApp();
 const db = getFirestore();
 
 // Owner alerts (new signups, etc.) go here.
-const OWNER_EMAIL = 'jlverbie@gmail.com';
+const OWNER_EMAIL = 'hello@pickglobal.org';
 
 // Solo walks aren't a "team" — don't lump every solo user into one row.
 const NON_TEAM = new Set(['', 'solo', 'Solo', 'SOLO']);
@@ -429,6 +429,17 @@ async function checkAdoptions() {
         html: `<p>Hi!</p><p><strong>${esc(a.label)}</strong> hasn't had a cleanup nearby in over ${thresh} days (last one was ${sinceText}).</p><p>If you're passing by, pop your phone in your pocket and give it a quick pick.</p><p>— PICK</p>`,
       },
     });
+    // Push too — lands on the phone and mirrors to the Apple Watch when the
+    // phone is locked. Same anti-spam window as the email.
+    if (a.userId) {
+      const token = await pushTokenFor(a.userId);
+      await sendExpoPush(
+        token,
+        `${a.label} could use a pick`,
+        `No cleanup nearby in over ${thresh} days. Passing by? Give it a quick pick.`,
+        { type: 'adoption_stale', label: a.label || '' }
+      );
+    }
     await docSnap.ref.update({ lastNotified: now, lastNearTs });
     emailed++;
   }
@@ -461,6 +472,16 @@ exports.onAdoptionCreated = onDocumentCreated('adoptions/{adoptionId}', async (e
     },
   });
   console.log(`📬 Adoption confirmation queued: ${a.email} (${label})`);
+  // Instant push too (mirrors to Apple Watch when the phone is locked).
+  if (a.userId) {
+    const token = await pushTokenFor(a.userId);
+    await sendExpoPush(
+      token,
+      `You adopted ${label}`,
+      `We'll nudge you if it goes ${thresh}+ days without a cleanup.`,
+      { type: 'adoption_created', label }
+    );
+  }
 });
 
 /**

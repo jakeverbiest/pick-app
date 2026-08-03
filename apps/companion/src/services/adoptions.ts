@@ -21,10 +21,44 @@ export interface Adoption {
   thresholdDays: number;
   createdAt: number;
   coords?: [number, number][]; // the block's line, when adopted by tapping the map
+  segmentId?: string;
+}
+
+/** Firestore doc → Adoption, rebuilding `coords` from the flat `path` field. */
+function fromDoc(id: string, data: any): Adoption {
+  const { path, ...rest } = data || {};
+  const coords = unflattenPath(path);
+  return { id, ...(rest as any), ...(coords ? { coords } : {}) };
 }
 
 const DEFAULT_RADIUS_M = 150; // "this street" ≈ a block or two
 export const DEFAULT_THRESHOLD_DAYS = 7;
+
+/**
+ * Firestore rejects nested arrays, so a block's polyline can't be stored as
+ * `[[lat, lon], ...]`. We flatten it to `[lat, lon, lat, lon, ...]` on write
+ * (field `path`) and rebuild the pairs on read. Docs written before this fix
+ * never made it to the server, so there's no legacy shape to migrate.
+ */
+function flattenCoords(coords: [number, number][]): number[] {
+  const flat: number[] = [];
+  for (const c of coords) {
+    if (!c || !isFinite(c[0]) || !isFinite(c[1])) continue;
+    flat.push(c[0], c[1]);
+  }
+  return flat;
+}
+
+function unflattenPath(path: unknown): [number, number][] | undefined {
+  if (!Array.isArray(path) || path.length < 4) return undefined;
+  const out: [number, number][] = [];
+  for (let i = 0; i + 1 < path.length; i += 2) {
+    const lat = Number(path[i]);
+    const lon = Number(path[i + 1]);
+    if (isFinite(lat) && isFinite(lon)) out.push([lat, lon]);
+  }
+  return out.length ? out : undefined;
+}
 
 /** Adopt the street you're standing on right now. */
 export async function adoptCurrentStreet(thresholdDays: number = DEFAULT_THRESHOLD_DAYS): Promise<Adoption> {
@@ -80,14 +114,26 @@ export async function saveAdoptedBlock(
     label: label || 'This block',
     lat: mid[0],
     lon: mid[1],
-    coords: seg.coords,
+    // Flat [lat, lon, lat, lon, …] — Firestore has no nested-array type.
+    path: flattenCoords(seg.coords),
+    segmentId: seg.id || '',
     radiusM: 25,
     thresholdDays,
     lastNotified: 0,
     createdAt: now,
   };
   const ref = await addDoc(collection(db, 'adoptions'), data);
-  return { id: ref.id, label: data.label, lat: mid[0], lon: mid[1], coords: seg.coords, radiusM: 25, thresholdDays, createdAt: now };
+  return {
+    id: ref.id,
+    label: data.label,
+    lat: mid[0],
+    lon: mid[1],
+    coords: seg.coords,
+    segmentId: data.segmentId,
+    radiusM: 25,
+    thresholdDays,
+    createdAt: now,
+  };
 }
 
 export async function listMyAdoptions(): Promise<Adoption[]> {
@@ -97,15 +143,15 @@ export async function listMyAdoptions(): Promise<Adoption[]> {
     const snap = await getDocs(
       query(collection(db, 'adoptions'), where('userId', '==', user.uid), orderBy('createdAt', 'desc'))
     );
-    return snap.docs.map((d) => ({ id: d.id, ...(d.data() as any) }));
+    return snap.docs.map((d) => fromDoc(d.id, d.data()));
   } catch {
     // orderBy may need an index the first time — fall back to unordered.
     const user2 = getAuthService().getCurrentUser();
     if (!user2) return [];
     const snap = await getDocs(query(collection(db, 'adoptions'), where('userId', '==', user2.uid)));
     return snap.docs
-      .map((d) => ({ id: d.id, ...(d.data() as any) }))
-      .sort((a: any, b: any) => (b.createdAt || 0) - (a.createdAt || 0));
+      .map((d) => fromDoc(d.id, d.data()))
+      .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
   }
 }
 

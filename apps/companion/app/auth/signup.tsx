@@ -3,7 +3,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useState } from 'react';
 import { useRouter } from 'expo-router';
 import { getAuthService } from '../../src/services/authService';
-import { COLORS, SPACING, RADIUS } from '../../src/constants/colors';
+import { C, Fonts, radius } from '../../src/pick/theme';
 
 export default function SignupScreen() {
   const router = useRouter();
@@ -77,7 +77,7 @@ export default function SignupScreen() {
           <TextInput
             style={styles.input}
             placeholder="e.g., Jake"
-            placeholderTextColor={COLORS.mutedSage}
+            placeholderTextColor={C.muted}
             value={displayName}
             onChangeText={setDisplayName}
             editable={!loading}
@@ -88,7 +88,7 @@ export default function SignupScreen() {
           <TextInput
             style={styles.input}
             placeholder="e.g., Lower East Side"
-            placeholderTextColor={COLORS.mutedSage}
+            placeholderTextColor={C.muted}
             value={neighborhood}
             onChangeText={setNeighborhood}
             editable={!loading}
@@ -99,7 +99,7 @@ export default function SignupScreen() {
           <TextInput
             style={styles.input}
             placeholder="your@email.com"
-            placeholderTextColor={COLORS.mutedSage}
+            placeholderTextColor={C.muted}
             value={email}
             onChangeText={setEmail}
             editable={!loading}
@@ -112,7 +112,7 @@ export default function SignupScreen() {
             <TextInput
               style={styles.passwordInput}
               placeholder="••••••••"
-              placeholderTextColor={COLORS.mutedSage}
+              placeholderTextColor={C.muted}
               value={password}
               onChangeText={setPassword}
               editable={!loading}
@@ -132,7 +132,7 @@ export default function SignupScreen() {
             <TextInput
               style={styles.passwordInput}
               placeholder="••••••••"
-              placeholderTextColor={COLORS.mutedSage}
+              placeholderTextColor={C.muted}
               value={confirmPassword}
               onChangeText={setConfirmPassword}
               editable={!loading}
@@ -180,7 +180,7 @@ export default function SignupScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: COLORS.cream,
+    backgroundColor: C.white,
   },
   flex: { flex: 1 },
   content: {
@@ -198,57 +198,56 @@ const styles = StyleSheet.create({
     height: 76,
     borderRadius: 20,
     marginBottom: 16,
-    shadowColor: COLORS.sage,
-    shadowOpacity: 0.28,
-    shadowRadius: 14,
-    shadowOffset: { width: 0, height: 10 },
-    elevation: 8,
   },
   title: {
+    fontFamily: Fonts.displayBold,
     fontSize: 28,
-    fontWeight: '700',
-    color: COLORS.darkSage,
+    color: C.dark,
     marginBottom: 4,
+    textTransform: 'uppercase',
   },
   subtitle: {
+    fontFamily: Fonts.body,
     fontSize: 14,
-    color: COLORS.mutedSage,
+    color: C.muted,
   },
   form: {
     gap: 14,
     marginBottom: 20,
   },
   label: {
+    fontFamily: Fonts.bodySemibold,
     fontSize: 13,
-    fontWeight: '600',
-    color: COLORS.darkSage,
+    color: C.dark,
     marginBottom: 6,
   },
   input: {
-    backgroundColor: COLORS.white,
-    borderRadius: RADIUS.md,
+    backgroundColor: C.white,
+    borderRadius: radius.field,
     paddingVertical: 12,
     paddingHorizontal: 14,
+    fontFamily: Fonts.body,
     fontSize: 14,
-    color: COLORS.darkSage,
+    color: C.dark,
     borderWidth: 1,
-    borderColor: COLORS.border,
+    borderColor: C.border,
   },
   passwordContainer: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: COLORS.white,
-    borderRadius: RADIUS.md,
+    backgroundColor: C.white,
+    borderRadius: radius.field,
     borderWidth: 1,
-    borderColor: COLORS.border,
+    borderColor: C.border,
     paddingRight: 8,
   },
   passwordInput: {
     flex: 1,
     paddingVertical: 12,
     paddingHorizontal: 14,
+    fontFamily: Fonts.body,
     fontSize: 14,
-    color: COLORS.darkSage,
+    color: C.dark,
   },
   eyeButton: {
     padding: 8,
@@ -257,16 +256,18 @@ const styles = StyleSheet.create({
     fontSize: 16,
   },
   signupButton: {
-    backgroundColor: COLORS.accent,
-    borderRadius: RADIUS.md,
+    backgroundColor: C.primary,
+    borderRadius: radius.button,
     paddingVertical: 14,
     alignItems: 'center',
     marginTop: 8,
   },
   signupButtonText: {
-    color: COLORS.white,
+    fontFamily: Fonts.bodyBold,
+    color: C.creamText,
     fontSize: 16,
-    fontWeight: '700',
+    textTransform: 'uppercase',
+    letterSpacing: 0.3,
   },
   buttonDisabled: {
     opacity: 0.6,
@@ -278,12 +279,13 @@ const styles = StyleSheet.create({
     paddingBottom: 20,
   },
   footerText: {
-    color: COLORS.mutedSage,
+    fontFamily: Fonts.body,
+    color: C.muted,
     fontSize: 13,
   },
   loginLink: {
-    color: COLORS.accent,
+    fontFamily: Fonts.bodyBold,
+    color: C.rust,
     fontSize: 13,
-    fontWeight: '700',
   },
 });

@@ -161,7 +161,7 @@ class SimpleAuthService {
   async sendPasswordReset(email: string): Promise<void> {
     console.log(`⚠️ Password reset requested for ${email} — not supported with local accounts`);
     throw new Error(
-      'Password reset is not available in the beta. Contact jlverbie@gmail.com to recover your account.'
+      'Password reset is not available in the beta. Contact hello@pickglobal.org to recover your account.'
     );
   }
 

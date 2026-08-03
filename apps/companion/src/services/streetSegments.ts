@@ -50,7 +50,11 @@ const SNAP_DISTANCE_M = 11;
 // A segment counts as cleaned only if the route ran alongside this fraction of
 // its length (sampled). Stops one stray GPS ping from crediting a whole block,
 // and (with the tight snap) avoids crediting the opposite sidewalk you didn't walk.
-const COVERAGE_THRESHOLD = 0.8; // 80% of the segment — one side of a block, not the street
+// 0.6 (was 0.8): 80% was too strict for real GPS on 50m pieces — the start/end
+// pieces of a walk and any dropped fix fell just under, so streets you clearly
+// cleaned didn't turn green. 60% of a 50m piece (~30m walked) still needs a real
+// pass, not a drive-by. Tunable — watch for over-crediting on the next walk.
+const COVERAGE_THRESHOLD = 0.6;
 const SEGMENT_SAMPLE_STEP_M = 5; // sample the segment every ~5m to measure coverage
 const FETCH_RADIUS_M = 600;
 // When we can't get real per-side sidewalks and fall back to a road CENTERLINE,
@@ -846,7 +850,12 @@ export async function getParkCoverage(lat: number, lon: number): Promise<RenderP
     console.error('Park coverage unavailable:', error);
     return [];
   }
-  const statuses = await loadParkStatuses(lat, lon);
+  let statuses = new Map<string, ParkStatus>();
+  try {
+    statuses = await loadParkStatuses(lat, lon);
+  } catch (error) {
+    console.error('Park statuses unavailable (rendering parks as never-cleaned):', error);
+  }
   const now = Date.now();
   return parks.map((park) => {
     const status = statuses.get(park.id);

@@ -3,7 +3,7 @@ import { ActivityIndicator, Alert, Image, Pressable, StyleSheet, Text, TextInput
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { getAuthService } from '../../src/services/authService';
-import { COLORS } from '../../src/constants/colors';
+import { C, Fonts } from '../../src/pick/theme';
 
 export default function LoginScreen() {
   const router = useRouter();
@@ -60,11 +60,11 @@ export default function LoginScreen() {
         {/* Form */}
         <View style={styles.form}>
           <View style={[styles.field, focus === 'email' && styles.fieldFocused]}>
-            <Text style={[styles.fieldLabel, focus === 'email' && { color: COLORS.sage }]}>EMAIL</Text>
+            <Text style={[styles.fieldLabel, focus === 'email' && { color: C.primary }]}>EMAIL</Text>
             <TextInput
               style={styles.input}
               placeholder="your@email.com"
-              placeholderTextColor={COLORS.mutedSage}
+              placeholderTextColor={C.muted}
               value={email}
               onChangeText={setEmail}
               onFocus={() => setFocus('email')}
@@ -72,24 +72,24 @@ export default function LoginScreen() {
               editable={!loading}
               keyboardType="email-address"
               autoCapitalize="none"
-              selectionColor={COLORS.sage}
+              selectionColor={C.primary}
             />
           </View>
 
           <View style={[styles.field, focus === 'password' && styles.fieldFocused]}>
-            <Text style={[styles.fieldLabel, focus === 'password' && { color: COLORS.sage }]}>PASSWORD</Text>
+            <Text style={[styles.fieldLabel, focus === 'password' && { color: C.primary }]}>PASSWORD</Text>
             <View style={styles.passwordRow}>
               <TextInput
                 style={[styles.input, { flex: 1 }]}
                 placeholder="••••••••"
-                placeholderTextColor={COLORS.mutedSage}
+                placeholderTextColor={C.muted}
                 value={password}
                 onChangeText={setPassword}
                 onFocus={() => setFocus('password')}
                 onBlur={() => setFocus(null)}
                 editable={!loading}
                 secureTextEntry={!showPassword}
-                selectionColor={COLORS.sage}
+                selectionColor={C.primary}
               />
               <Pressable onPress={() => setShowPassword((v) => !v)} disabled={loading} hitSlop={8}>
                 <Text style={styles.showText}>{showPassword ? 'Hide' : 'Show'}</Text>
@@ -123,51 +123,37 @@ export default function LoginScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: COLORS.cream },
+  container: { flex: 1, backgroundColor: C.white },
   content: { flex: 1, justifyContent: 'center', paddingHorizontal: 28 },
   header: { alignItems: 'center', marginBottom: 8 },
-  logo: {
-    width: 76,
-    height: 76,
-    borderRadius: 20,
-    shadowColor: COLORS.sage,
-    shadowOpacity: 0.28,
-    shadowRadius: 14,
-    shadowOffset: { width: 0, height: 10 },
-    elevation: 8,
-  },
-  brand: { fontSize: 30, fontWeight: '700', letterSpacing: -0.5, color: COLORS.darkSage, marginTop: 22, marginBottom: 6 },
-  tagline: { fontSize: 15, color: '#6B7A62', textAlign: 'center', lineHeight: 21 },
+  logo: { width: 76, height: 76, borderRadius: 20 },
+  brand: { fontFamily: Fonts.displayBold, fontSize: 30, letterSpacing: -0.5, color: C.dark, marginTop: 22, marginBottom: 6, textTransform: 'uppercase' },
+  tagline: { fontFamily: Fonts.body, fontSize: 15, color: C.text3, textAlign: 'center', lineHeight: 21 },
   form: { marginTop: 36, gap: 12 },
   field: {
-    backgroundColor: '#FAFAF8',
+    backgroundColor: C.field,
     borderWidth: 1,
-    borderColor: COLORS.border,
-    borderRadius: 12,
+    borderColor: C.border,
+    borderRadius: 8,
     paddingHorizontal: 15,
     paddingVertical: 10,
   },
-  fieldFocused: { backgroundColor: COLORS.white, borderWidth: 2, borderColor: COLORS.sage },
-  fieldLabel: { fontSize: 11, fontWeight: '600', color: COLORS.mutedSage, letterSpacing: 0.3 },
+  fieldFocused: { backgroundColor: C.white, borderWidth: 2, borderColor: C.primary },
+  fieldLabel: { fontFamily: Fonts.bodySemibold, fontSize: 11, color: C.muted, letterSpacing: 0.3 },
   passwordRow: { flexDirection: 'row', alignItems: 'center' },
-  input: { fontSize: 15, color: COLORS.darkSage, marginTop: 3, padding: 0 },
-  showText: { fontSize: 13, fontWeight: '600', color: COLORS.sage, paddingHorizontal: 4 },
+  input: { fontFamily: Fonts.body, fontSize: 15, color: C.dark, marginTop: 3, padding: 0 },
+  showText: { fontFamily: Fonts.bodySemibold, fontSize: 13, color: C.primary, paddingHorizontal: 4 },
   signIn: {
     marginTop: 20,
-    backgroundColor: COLORS.sage,
-    borderRadius: 14,
+    backgroundColor: C.primary,
+    borderRadius: 8,
     paddingVertical: 16,
     alignItems: 'center',
-    shadowColor: COLORS.sage,
-    shadowOpacity: 0.22,
-    shadowRadius: 14,
-    shadowOffset: { width: 0, height: 10 },
-    elevation: 8,
   },
-  signInText: { color: '#fff', fontSize: 15, fontWeight: '700' },
+  signInText: { fontFamily: Fonts.bodyBold, color: C.creamText, fontSize: 15, textTransform: 'uppercase', letterSpacing: 0.3 },
   disabled: { opacity: 0.6 },
   forgot: { alignItems: 'center', paddingVertical: 10 },
-  forgotText: { color: COLORS.mutedSage, fontSize: 13, fontWeight: '500' },
-  footer: { textAlign: 'center', marginTop: 18, fontSize: 14, color: '#6B7A62' },
-  create: { color: COLORS.accent, fontWeight: '600' },
+  forgotText: { fontFamily: Fonts.bodyMedium, color: C.muted, fontSize: 13 },
+  footer: { fontFamily: Fonts.body, textAlign: 'center', marginTop: 18, fontSize: 14, color: C.text3 },
+  create: { fontFamily: Fonts.bodyBold, color: C.rust },
 });

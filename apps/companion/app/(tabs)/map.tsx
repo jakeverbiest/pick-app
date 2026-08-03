@@ -18,7 +18,7 @@ import Constants from 'expo-constants';
 import { startBackgroundSession, stopBackgroundSession } from '../../src/services/backgroundSession';
 import { beginSessionTrace, heartbeat, endSessionTrace } from '../../src/services/crashRecorder';
 import { saveWalkDraft, loadWalkDraft, clearWalkDraft } from '../../src/services/sessionRecovery';
-import { startPresence, pingPresence, endPresence } from '../../src/services/presence';
+import { startPresence, pingPresence, endPresence, getLiveWalks } from '../../src/services/presence';
 import { computeNeed, parseRoute, needColor, needTileKey, type NeedTile } from '../../src/services/needMap';
 import { syncWorkoutToHealth, isHealthSyncEnabled } from '../../src/services/healthService';
 import { simplifyRoute, simplifyCoordPairs, privacyTrimRoute } from '../../src/services/routeUtils';
@@ -26,10 +26,19 @@ import { getFitnessService } from '../../src/services/fitnessService';
 import { getDatabase } from '../../src/services/database';
 import { getAuthService } from '../../src/services/authService';
 import { getBadgeService } from '../../src/services/badgeService';
-import { COLORS, SPACING, RADIUS, TYPOGRAPHY } from '../../src/constants/colors';
+import { SPACING } from '../../src/constants/colors';
+import { C, Fonts } from '../../src/pick/theme';
 import { Icon } from '../../src/pick/Icon';
-import { ShareComposer } from '../../src/pick/ShareComposer';
 import { addWatchCommandListener, sendStatsToWatch } from '../../modules/watch-session';
+import { startCleanupActivity, updateCleanupActivity, endCleanupActivity } from '../../modules/live-activity';
+import { findMyLiveEvent, subscribeEventTotal, reportSessionPickups, commitSessionPickups, LiveEvent } from '../../src/services/challengeLive';
+import { refreshMyChallengeContributions } from '../../src/services/challenges';
+import { getWeeklyGoal, syncWeeklyGoalReminder } from '../../src/services/weeklyGoal';
+import { computeStreak } from '../../src/services/streaks';
+import { isSegmentHapticsEnabled, segmentHapticsEnabledSync, segmentCompleteHaptic } from '../../src/services/haptics';
+import { ShareComposer } from '../../src/pick/ShareComposer';
+import { TESTFLIGHT_URL } from '../../src/services/recap';
+import { postToBluesky } from '../../src/services/bluesky';
 
 export default function MapScreen() {
   const router = useRouter();
@@ -53,6 +62,8 @@ export default function MapScreen() {
   const [neighborhood, setNeighborhood] = useState('');
   const [communitySharing, setCommunitySharing] = useState(true);
   const [communityAutoPost, setCommunityAutoPost] = useState(false);
+  const [blueskyAutoPost, setBlueskyAutoPost] = useState(false);
+  const [shareOpen, setShareOpen] = useState(false);
   // 'background' = OS keeps the walk alive screen-off (real build + Always loc);
   // 'foreground' = screen must stay on (Expo Go / permission denied); null = unknown.
   const [sessionMode, setSessionMode] = useState<'background' | 'foreground' | null>(null);
@@ -60,7 +71,6 @@ export default function MapScreen() {
   const [showCommunityCompose, setShowCommunityCompose] = useState(false);
   const [communityCaption, setCommunityCaption] = useState('');
   const [posting, setPosting] = useState(false);
-  const [showShare, setShowShare] = useState(false);
 
   const pickPhoto = () => {
     Alert.alert('Add a photo', 'Show the spot you cleaned up.', [
@@ -125,6 +135,9 @@ export default function MapScreen() {
   const [appActive, setAppActive] = useState(true);
   const [pickupLocations, setPickupLocations] = useState<any[]>([]);
   const [currentLocation, setCurrentLocation] = useState<any>(null);
+  // True when moving too fast to be picking litter (biking/vehicle) — the
+  // detector gates pickups out; we surface it so the user knows why.
+  const [tooFast, setTooFast] = useState(false);
   const [batterySaver, setBatterySaver] = useState(true); // Optimized for battery
   const pickupCounterRef = useRef(0); // Track pickups since last location record
   const currentLocationRef = useRef<{ lat: number; lon: number } | null>(null); // latest fix — pickup-pin fallback
@@ -142,8 +155,7 @@ export default function MapScreen() {
   const citySearchTimer = useRef<any>(null);
   // true where we have neighborhood polygons; false → "your area" radius fallback
   const [neighborhoodMode, setNeighborhoodMode] = useState(true);
-  // adopt-a-block: tap a street to adopt it (toggled by the Adopt button)
-  const [adoptMode, setAdoptMode] = useState(false);
+  // adopt-a-block now lives inside the street-tap popup (no separate mode)
   // Past-cleanup coverage (street shading + dimmed routes) stays visible during
   // an active walk so the cleaned area reads as "cared for"; toggle to declutter.
   const [coverageVisible, setCoverageVisible] = useState(true);
@@ -158,12 +170,26 @@ export default function MapScreen() {
     name: string;
     total: number; fresh: number; freshPct: number; toGo: number; untouched: number;
   } | null>(null);
+  // How many other pickers are live in this neighborhood right now — the
+  // "shared" counterpart to the personal toGo/freshPct stats above.
+  const [liveNowCount, setLiveNowCount] = useState<number | null>(null);
   const [activating, setActivating] = useState<string | null>(null); // hood name during reveal
   const activeLevelRef = useRef<boolean>(false);
   const activationTokenRef = useRef<number>(0); // invalidates stale in-flight activations
   // Live recolor: the active level's segments + a throttle clock.
   const levelSegmentsRef = useRef<Array<{ id: string; coords: [number, number][]; daysOld: number | null; cleaned: boolean }>>([]);
   const lastRecolorRef = useRef<number>(0);
+  // Same live recolor, but for the normal (non-level) overview map: the street
+  // segments last fetched around you, so blocks you finish flip bright green
+  // under the live route instead of waiting for the post-walk refresh.
+  const coverageSegmentsRef = useRef<Array<{ id: string; coords: [number, number][]; daysOld: number | null; cleaned: boolean }>>([]);
+  // Street segments finished on this walk — drives the completion haptic and is
+  // mirrored to the watch so it can buzz too.
+  const [segmentsCompleted, setSegmentsCompleted] = useState(0);
+  // The watch is "active" from the moment Start is tapped, not from when
+  // `isListening` flips — see startCleanup.
+  const [walkIntent, setWalkIntent] = useState(false);
+  const watchSessionRef = useRef('');
   const [currentArea, setCurrentArea] = useState<{ city: string; neighborhood: string }>({ city: '', neighborhood: '' });
   const coverageLoadedRef = useRef(false);
   const panLoadRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -210,6 +236,8 @@ export default function MapScreen() {
     loadUserStats();
     loadHistoricalCleanups();
     requestLocationPermission();
+    // Warm the haptics preference cache so the in-walk path stays synchronous.
+    void isSegmentHapticsEnabled();
     // Get initial location on mount
     trackLocation();
   }, []);
@@ -227,6 +255,22 @@ export default function MapScreen() {
       loadHoodsInView([currentLocation.lat - 0.012, currentLocation.lon - 0.016, currentLocation.lat + 0.012, currentLocation.lon + 0.016]);
     }
   }, [mapReady, currentLocation]);
+
+  // The WebView unmounts when the app backgrounds mid-walk (see the mapReady
+  // reset above), which wipes the coverage layers. Repaint them from the
+  // segments we still hold as soon as the map is back, so returning to a walk
+  // never shows a bare basemap — the history you're adding to stays on screen.
+  useEffect(() => {
+    if (!mapReady || !isListening) return;
+    const segs = coverageSegmentsRef.current;
+    if (!segs.length) return;
+    const payload = segs.map((s) => ({ id: s.id, coords: s.coords, daysOld: s.daysOld }));
+    webviewRef.current?.injectJavaScript(`
+      if (window.renderSegments) { window.renderSegments(${JSON.stringify(payload)}); }
+      true;
+    `);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mapReady, isListening]);
 
   // When the app returns to the foreground while idle, re-fetch location and
   // allow coverage to reload — so opening in a NEW neighborhood updates the map
@@ -284,6 +328,20 @@ export default function MapScreen() {
           if (window.renderSegments) { window.renderSegments(${JSON.stringify(segments)}); }
           true;
         `);
+      }
+      // Keep the fetched segments for live in-walk recoloring. A refetch mid-walk
+      // must not un-green blocks we've already finished (Firestore hasn't caught
+      // up yet), so carry the `cleaned` flags forward by id.
+      if (segments.length > 0) {
+        const alreadyClean = new Set(
+          coverageSegmentsRef.current.filter((s) => s.cleaned).map((s) => s.id),
+        );
+        coverageSegmentsRef.current = segments.map((s) => ({
+          id: s.id,
+          coords: s.coords,
+          daysOld: alreadyClean.has(s.id) ? 0 : s.daysOld,
+          cleaned: alreadyClean.has(s.id),
+        }));
       }
 
       // Parks (open zones, e.g. Carroll Park) — render alongside street segments.
@@ -465,7 +523,14 @@ export default function MapScreen() {
     const agg = Object.values(hoodScoresRef.current).reduce(
       (a, s) => ({ fresh: a.fresh + s.fresh, total: a.total + s.total }), { fresh: 0, total: 0 });
     setCityRollup({ city: currentArea.city || 'City', freshPct: agg.total > 0 ? Math.round((agg.fresh / agg.total) * 100) : 0 });
-    const apply = () => { setActiveLevel({ name, total, fresh, freshPct, toGo, untouched }); setActivating(null); };
+    const apply = () => {
+      setActiveLevel({ name, total, fresh, freshPct, toGo, untouched });
+      setActivating(null);
+      setLiveNowCount(null);
+      getLiveWalks()
+        .then((walks) => { if (activeLevelRef.current) setLiveNowCount(walks.filter((w) => w.neighborhood === name).length); })
+        .catch(() => {});
+    };
     if (reveal) setTimeout(apply, Math.max(400, 2000 - (Date.now() - started)));
     else apply();
   };
@@ -476,17 +541,21 @@ export default function MapScreen() {
     if (ring) activateHood(name, ring, true);
   };
 
-  // Live recolor: while picking inside a level, flip each street green the moment
-  // your route covers ≥80% of it — you watch the hood fill in. Throttled, and
-  // only segments near you are checked, so it stays cheap.
+  // Live recolor: while picking, flip each street bright green the moment your
+  // route covers ≥80% of it — you watch the map fill in as you walk. Runs in
+  // level mode (the hood's own streets) AND on the normal overview map (the
+  // shared coverage layer), so the background of past cleanings stays up and
+  // simply gains a fresh-green block. Throttled, and only segments near you are
+  // checked, so it stays cheap.
   useEffect(() => {
-    if (!isListening || !activeLevelRef.current) return;
+    if (!isListening) return;
     const pts = sessionRoute;
     if (pts.length < 2) return;
     const now = Date.now();
     if (now - lastRecolorRef.current < 2500) return;
     lastRecolorRef.current = now;
-    const segs = levelSegmentsRef.current;
+    const inLevel = activeLevelRef.current;
+    const segs = inLevel ? levelSegmentsRef.current : coverageSegmentsRef.current;
     if (!segs.length) return;
     const last = pts[pts.length - 1];
     const newlyClean: string[] = [];
@@ -496,16 +565,47 @@ export default function MapScreen() {
       const dx = (m[1] - last.lon) * 111320 * Math.cos((last.lat * Math.PI) / 180);
       const dy = (m[0] - last.lat) * 110540;
       if (dx * dx + dy * dy > 90 * 90) continue; // only segments within ~90m of you
-      if (routeCoverageFraction(s.coords, pts, 15) >= 0.8) { s.cleaned = true; newlyClean.push(s.id); }
+      if (routeCoverageFraction(s.coords, pts, 15) >= 0.8) {
+        s.cleaned = true;
+        // Age it to day 0 too, so a WebView remount mid-walk repaints it green
+        // rather than reverting to its pre-walk color.
+        s.daysOld = 0;
+        newlyClean.push(s.id);
+      }
     }
     if (newlyClean.length) {
-      webviewRef.current?.injectJavaScript(
-        newlyClean.map((id) => `if(window.markLevelClean){window.markLevelClean(${JSON.stringify(id)});}`).join('') + ' true;'
-      );
-      const total = segs.length;
-      const fresh = segs.filter((s) => s.cleaned || (s.daysOld !== null && s.daysOld <= 5)).length;
-      const untouched = segs.filter((s) => !s.cleaned && s.daysOld === null).length;
-      setActiveLevel((prev) => prev ? { ...prev, fresh, freshPct: total > 0 ? Math.round((fresh / total) * 100) : 0, toGo: Math.max(0, total - fresh), untouched } : prev);
+      if (inLevel) {
+        webviewRef.current?.injectJavaScript(
+          newlyClean.map((id) => `if(window.markLevelClean){window.markLevelClean(${JSON.stringify(id)});}`).join('') + ' true;'
+        );
+      } else if (mapVisible()) {
+        // One batched call: promoting a never-cleaned street means redrawing
+        // both the grey "to do" layer and the colored one.
+        webviewRef.current?.injectJavaScript(
+          `if(window.markSegmentsClean){window.markSegmentsClean(${JSON.stringify(newlyClean)});} true;`
+        );
+      }
+      // A finished block is the one moment worth feeling through a pocket.
+      segmentCompleteHaptic();
+      setSegmentsCompleted((n) => n + newlyClean.length);
+
+      if (inLevel) {
+        const total = segs.length;
+        const fresh = segs.filter((s) => s.cleaned || (s.daysOld !== null && s.daysOld <= 5)).length;
+        const untouched = segs.filter((s) => !s.cleaned && s.daysOld === null).length;
+        setActiveLevel((prev) => prev ? { ...prev, fresh, freshPct: total > 0 ? Math.round((fresh / total) * 100) : 0, toGo: Math.max(0, total - fresh), untouched } : prev);
+      } else {
+        // Header stats are tile-scoped, so recompute them the same way
+        // loadStreetCoverage does — with this walk's blocks counted as day 0.
+        const tile = getTileStats(
+          last.lat,
+          last.lon,
+          segs.map((s) => ({ id: s.id, coords: s.coords, daysOld: s.cleaned ? 0 : s.daysOld })),
+        );
+        if (tile.total > 0) {
+          setCoverageStats({ freshPct: tile.freshPct, totalSegments: tile.total, toGo: tile.toGo });
+        }
+      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionRoute, isListening]);
@@ -577,7 +677,6 @@ export default function MapScreen() {
     setSessionRoute([]);
     setPickupLocations([]);
     setPhotoUri(null);
-    setShowShare(false);
     if (activeLevelRef.current) exitLevel();
     else if (currentLocation) refreshOverviewAround(currentLocation.lat, currentLocation.lon);
     // Remount the map WebView so it regains touch after the results Modal
@@ -689,6 +788,7 @@ export default function MapScreen() {
     setActiveLevel(null);
     setActivating(null);
     setSelectedHood(null);
+    setLiveNowCount(null);
     levelSegmentsRef.current = [];
     const la = currentLocation?.lat, lo = currentLocation?.lon;
     // Always tear down the veil/level layers; recenter + reload only if we have a fix.
@@ -713,7 +813,7 @@ export default function MapScreen() {
         return;
       }
       if (msg.type === 'adoptTap') {
-        setAdoptMode(false); // one tap = one selection; exit adopt mode
+        // Sent by the "Adopt" link in a street's tap popup.
         if (!isListening) handleAdoptBlockTap(msg.lat, msg.lon);
         return;
       }
@@ -759,17 +859,30 @@ export default function MapScreen() {
       // only, never coordinates) and heartbeat so it stays counted as live.
       startPresence(currentArea.neighborhood || neighborhood || '');
       presenceRef.current = setInterval(() => { void pingPresence(); }, 45000);
+
+      // Live Activity — the "cleanup in progress" lock-screen / Dynamic Island
+      // card. Heartbeat updates ride the existing %3s watch-stats block below.
+      startCleanupActivity({
+        timeText: formatTime(elapsedSeconds),
+        pickups: pickupCount,
+        distanceText: '',
+        progressText: currentArea.neighborhood || neighborhood || '',
+      });
     } else {
       if (timerRef.current) clearInterval(timerRef.current);
       if (locationRef.current) clearInterval(locationRef.current);
       if (presenceRef.current) clearInterval(presenceRef.current);
       void endPresence();
+      endCleanupActivity();
+      setTooFast(false);
     }
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
       if (locationRef.current) clearInterval(locationRef.current);
       if (presenceRef.current) clearInterval(presenceRef.current);
       void endPresence();
+      endCleanupActivity();
+      setTooFast(false);
     };
   }, [isListening]);
 
@@ -799,12 +912,14 @@ export default function MapScreen() {
       let latitude: number | undefined;
       let longitude: number | undefined;
       let fixAccuracy: number | undefined;
+      let evSpeed = -1;
       if (MotionDetector.isActive()) {
         const last = MotionDetector.getLastLocation();
         if (last) {
           latitude = last.latitude;
           longitude = last.longitude;
           fixAccuracy = last.accuracy;
+          evSpeed = (last as any).speed ?? -1;
         }
       }
       if (latitude === undefined || longitude === undefined) {
@@ -820,6 +935,10 @@ export default function MapScreen() {
       }
       setCurrentLocation({ lat: latitude, lon: longitude });
       currentLocationRef.current = { lat: latitude, lon: longitude };
+
+      // Mirror the detector's speed gate (3.3 m/s) so the walk UI can tell the
+      // user pickups are paused while they're moving too fast (biking/vehicle).
+      setTooFast(MotionDetector.isActive() && evSpeed >= 0 && evSpeed > 3.3);
 
       // Noisy fixes (>25m) still move the on-map dot, but never enter the
       // route — one bad ping can spill the route across the street and poison
@@ -985,6 +1104,7 @@ export default function MapScreen() {
       setNeighborhood(settings?.neighborhood || '');
       setCommunitySharing(settings?.community_sharing_enabled !== false);
       setCommunityAutoPost(!!settings?.community_auto_post);
+      setBlueskyAutoPost(!!(settings as any)?.bluesky_auto_post);
       setDistanceUnit((settings?.distance_unit as 'mi' | 'km') || 'mi');
 
       // Calculate superlative if no team
@@ -1045,8 +1165,15 @@ export default function MapScreen() {
     // background session and motion listener (the duplicate logs). Block it.
     if (startingRef.current || isListening) return;
     startingRef.current = true;
+    // Claim the walk for the watch NOW. `isListening` doesn't flip until GPS and
+    // the motion listener are up (seconds later) — and until it did, the watch
+    // bridge below kept pushing `idle`, which bounced the watch straight back to
+    // its Start screen right after you tapped Start on it.
+    watchSessionRef.current = `w${Date.now()}`;
+    setWalkIntent(true);
     try {
     setPickupCount(0);
+    setSegmentsCompleted(0);
     setElapsedSeconds(0);
     setSessionRoute([]);
     setPickupLocations([]);
@@ -1134,12 +1261,21 @@ export default function MapScreen() {
         console.log('🌙 Background session active — screen may sleep; no keep-awake or Pocket Mode needed.');
       }
     });
+    } catch (e) {
+      // Start failed (permissions, sensors) — release the watch so it doesn't
+      // sit on a "starting" screen for a walk that never began.
+      console.error('Start cleanup failed:', e);
+      setWalkIntent(false);
+      watchSessionRef.current = '';
+      Alert.alert('Could not start', 'Please try again in a moment.');
     } finally {
       startingRef.current = false;
     }
   };
 
   const stopCleanup = () => {
+    setWalkIntent(false);
+    watchSessionRef.current = '';
     stopBackgroundSession();
     // Clean stop — clear the black-box sentinel so launch sees no crash.
     endSessionTrace();
@@ -1187,6 +1323,51 @@ export default function MapScreen() {
   stopCleanupRef.current = stopCleanup;
   const isListeningRef = useRef(isListening);
   isListeningRef.current = isListening;
+  // Last snapshot actually pushed, so a pickup can jump the 3s throttle queue.
+  const lastWatchPushRef = useRef<{ pickups: number; segments: number }>({ pickups: -1, segments: -1 });
+
+  // Live team event (challenge): find my active pickup challenge when a walk
+  // starts, stream my session count in, subscribe to everyone's total.
+  const [liveEvent, setLiveEvent] = useState<LiveEvent | null>(null);
+  const [eventTotal, setEventTotal] = useState(0);
+  const liveEventRef = useRef<LiveEvent | null>(null);
+  liveEventRef.current = liveEvent;
+
+  useEffect(() => {
+    if (!isListening) {
+      setLiveEvent(null);
+      setEventTotal(0);
+      return;
+    }
+    let unsubTotal: (() => void) | null = null;
+    let cancelled = false;
+    (async () => {
+      const uid = getAuthService().getCurrentUser()?.uid;
+      if (!uid) return;
+      const event = await findMyLiveEvent(uid);
+      if (cancelled || !event) return;
+      setLiveEvent(event);
+      unsubTotal = subscribeEventTotal(event.id, (total) => setEventTotal(total));
+      void reportSessionPickups(event.id, uid, 0, true);
+    })();
+    return () => {
+      cancelled = true;
+      if (unsubTotal) unsubTotal();
+      // Fold this session into my standing contribution on walk end.
+      const uid = getAuthService().getCurrentUser()?.uid;
+      const ev = liveEventRef.current;
+      if (uid && ev) void commitSessionPickups(ev.id, uid, pickupCounterRef.current);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isListening]);
+
+  // Stream my count to the event as pickups happen (throttled inside).
+  useEffect(() => {
+    if (!isListening || !liveEvent) return;
+    const uid = getAuthService().getCurrentUser()?.uid;
+    if (uid) void reportSessionPickups(liveEvent.id, uid, pickupCount);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pickupCount, isListening, liveEvent]);
 
   useEffect(() => {
     const sub = addWatchCommandListener((cmd) => {
@@ -1200,20 +1381,85 @@ export default function MapScreen() {
   }, []);
 
   useEffect(() => {
-    // On state changes push immediately; while active, throttle to every 3s
-    // (elapsedSeconds ticks at 1Hz — applicationContext coalesces anyway).
-    if (!isListening) {
-      sendStatsToWatch(pickupCount, elapsedSeconds, 'idle');
+    // `walkIntent`, not `isListening`: the watch goes active the instant Start is
+    // tapped. Sending idle during the GPS warm-up is what made the watch flash a
+    // count and then fall back to the Start screen.
+    if (!walkIntent) {
+      lastWatchPushRef.current = { pickups: -1, segments: -1 };
+      // Zeroes, so a cached applicationContext can never resurrect an old count.
+      sendStatsToWatch(0, 0, 'idle', { sessionId: '' });
       return;
     }
+    // Counts push immediately (that number is what you're looking at); the 1Hz
+    // clock tick stays throttled to every 3s.
+    const countsChanged =
+      pickupCount !== lastWatchPushRef.current.pickups ||
+      segmentsCompleted !== lastWatchPushRef.current.segments;
+    if (!countsChanged && elapsedSeconds % 3 !== 0) return;
+    lastWatchPushRef.current = { pickups: pickupCount, segments: segmentsCompleted };
+
+    sendStatsToWatch(pickupCount, elapsedSeconds, 'active', {
+      sessionId: watchSessionRef.current,
+      segments: String(segmentsCompleted),
+      haptics: segmentHapticsEnabledSync() ? '1' : '0',
+      distance: fmtDistance(parseFloat(String(calculateCoverage().distance || '0'))),
+      progress: activeLevel
+        ? `${activeLevel.freshPct}%${activeLevel.toGo > 0 ? ` · ${activeLevel.toGo} to go` : ' · complete!'}`
+        : '',
+      // Competition mode: the event area's % cleaned → watch top-right.
+      // Only sent while in an active competition (liveEvent).
+      eventName: liveEvent?.name ?? '',
+      eventPct: liveEvent && activeLevel ? `${activeLevel.freshPct}%` : '',
+    });
     if (elapsedSeconds % 3 === 0) {
-      sendStatsToWatch(pickupCount, elapsedSeconds, 'active');
+      updateCleanupActivity({
+        timeText: formatTime(elapsedSeconds),
+        pickups: pickupCount,
+        distanceText: fmtDistance(parseFloat(String(calculateCoverage().distance || '0'))),
+        progressText: activeLevel ? `${activeLevel.name} · ${activeLevel.freshPct}%` : (currentArea.neighborhood || ''),
+      });
     }
-  }, [isListening, pickupCount, elapsedSeconds]);
+  }, [walkIntent, pickupCount, segmentsCompleted, elapsedSeconds, liveEvent, eventTotal]);
+
+  // A walk must run ≥2 minutes OR log ≥1 pickup to count as a cleanup —
+  // filters out tap-start-tap-stop test walks without ever losing a real one.
+  const MIN_CLEANUP_SECONDS = 120;
 
   const saveSummary = async () => {
+    if (elapsedSeconds < MIN_CLEANUP_SECONDS && pickupCount === 0) {
+      Alert.alert(
+        'Too short to count',
+        `Walks under ${Math.round(MIN_CLEANUP_SECONDS / 60)} minutes with no pickups aren't saved as cleanups.`,
+        [
+          { text: 'Back', style: 'cancel' },
+          {
+            text: 'Discard walk',
+            style: 'destructive',
+            onPress: () => {
+              clearWalkDraft();
+              setShowSummary(false);
+              setPickupCount(0);
+              setElapsedSeconds(0);
+              setPhotoUri(null);
+              setSessionRoute([]);
+              setPickupLocations([]);
+              finishSession();
+            },
+          },
+        ],
+      );
+      return;
+    }
     setShowSummary(false);
-    setShowResults(true);
+    // One-screen close (design audit): no "Cleanup saved" recap step. If a
+    // photo needs a manual community post, open that sheet; otherwise the
+    // walk just finishes. The recap modal remains only as the community
+    // compose host + session export (dev).
+    if (photoUri && communitySharing && !communityAutoPost) {
+      setShowResults(true);
+    } else {
+      finishSession();
+    }
 
     try {
       // The user's bag report wins; otherwise derive bags from the pickup count.
@@ -1288,6 +1534,24 @@ export default function MapScreen() {
       const updatedStats = await db.getCleanupStats();
       setStats(updatedStats);
 
+      // Republish my contribution to every challenge I've joined. Cleanups are
+      // owner-only reads, so nobody else can tally my work — this is how the
+      // group total learns about the walk that just ended. Non-blocking: a
+      // failure here must never cost the user their saved cleanup.
+      void refreshMyChallengeContributions().catch((e) =>
+        console.warn('Challenge contribution refresh failed (non-fatal):', e)
+      );
+
+      // Weekly goal: the reminder is scheduled against this week's count, so
+      // finishing a walk may mean there's nothing left to nag about.
+      void (async () => {
+        try {
+          const all = await db.getCleanups(500);
+          const ts = (all || []).map((c: any) => c.timestamp).filter((n: any) => typeof n === 'number');
+          await syncWeeklyGoalReminder({ done: computeStreak(ts).thisCalendarWeek, goal: await getWeeklyGoal() });
+        } catch {}
+      })();
+
       // Walk is now durably saved (the DB layer caches offline with synced=false
       // and syncs later), so the recovery draft can be dropped. If addCleanup
       // above threw, we skip this and the draft survives for next-launch restore.
@@ -1327,6 +1591,17 @@ export default function MapScreen() {
         } else {
           console.log('ℹ️ Auto-post skipped — email not verified');
         }
+      }
+
+      // Auto-post to Bluesky if the user connected an account and opted in.
+      // Fire-and-forget — a slow or failed external post must never hold up
+      // or break the save flow the user is already waiting on.
+      if (blueskyAutoPost && photoUri) {
+        const place = area.neighborhood || 'my neighborhood';
+        const text = `${pickupCount} pieces of litter (${formatKitchenBags(finalBags)}) off the streets of ${place} today with Pick. Join me: ${TESTFLIGHT_URL}`;
+        void postToBluesky({ text, photoUri }).then((ok) =>
+          console.log(ok ? '✅ Auto-posted cleanup to Bluesky' : 'ℹ️ Bluesky auto-post skipped or failed')
+        );
       }
     } catch (error) {
       console.error('Failed to save cleanup:', error);
@@ -1587,11 +1862,6 @@ Generated by Pick App - Share this with the development team
     }
   };
 
-  // Push adopt-mode into the map so a tap knows to select a block.
-  useEffect(() => {
-    webviewRef.current?.injectJavaScript(`if (window.setAdoptMode) { window.setAdoptMode(${adoptMode}); } true;`);
-  }, [adoptMode]);
-
   return (
     <View style={styles.container}>
       {/* Header - Show when NOT cleaning and not in a neighborhood level */}
@@ -1645,22 +1915,22 @@ Generated by Pick App - Share this with the development team
 
       {/* My impact — blocks touched + pickups over 24h / 7d */}
       {impactWindow && !isListening && (
-        <View style={{ position: 'absolute', left: 12, right: 12, bottom: insets.bottom + 100, backgroundColor: '#fff', borderRadius: 16, padding: 14, shadowColor: '#000', shadowOpacity: 0.12, shadowRadius: 10, shadowOffset: { width: 0, height: 4 }, elevation: 6 }}>
+        <View style={{ position: 'absolute', left: 12, right: 12, bottom: insets.bottom + 100, backgroundColor: '#fff', borderRadius: 16, padding: 14, borderWidth: 1.5, borderColor: C.border }}>
           <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
-            <Text style={{ fontSize: 14, fontWeight: '800', color: COLORS.darkSage }}>Your impact</Text>
-            <View style={{ flexDirection: 'row', backgroundColor: '#EDF1E9', borderRadius: 999, padding: 2 }}>
+            <Text style={{ fontSize: 14, fontFamily: Fonts.bodyBold, color: C.dark }}>Your impact</Text>
+            <View style={{ flexDirection: 'row', backgroundColor: C.tint, borderRadius: 999, padding: 2 }}>
               {(['24h', '7d'] as const).map((w) => (
                 <TouchableOpacity
                   key={w}
                   onPress={() => showImpact(w)}
-                  style={{ paddingVertical: 5, paddingHorizontal: 14, borderRadius: 999, backgroundColor: impactWindow === w ? COLORS.sage : 'transparent' }}
+                  style={{ paddingVertical: 5, paddingHorizontal: 14, borderRadius: 999, backgroundColor: impactWindow === w ? C.primary : 'transparent' }}
                 >
-                  <Text style={{ fontSize: 12, fontWeight: '700', color: impactWindow === w ? '#fff' : COLORS.mutedSage }}>{w === '24h' ? '24h' : '7 days'}</Text>
+                  <Text style={{ fontSize: 12, fontFamily: Fonts.bodyBold, color: impactWindow === w ? '#fff' : C.muted }}>{w === '24h' ? '24h' : '7 days'}</Text>
                 </TouchableOpacity>
               ))}
             </View>
             <TouchableOpacity onPress={hideImpact} hitSlop={8} style={{ marginLeft: 8 }}>
-              <Icon name="close" size={18} color={COLORS.mutedSage} sw={2.2} />
+              <Icon name="close" size={18} color={C.muted} sw={2.2} />
             </TouchableOpacity>
           </View>
           <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
@@ -1670,8 +1940,8 @@ Generated by Pick App - Share this with the development team
               { n: impactStats.walks, l: 'walks' },
             ].map((s) => (
               <View key={s.l} style={{ flex: 1, alignItems: 'center' }}>
-                <Text style={{ fontSize: 22, fontWeight: '800', color: COLORS.darkSage }}>{s.n}</Text>
-                <Text style={{ fontSize: 11, color: COLORS.mutedSage, marginTop: 2 }}>{s.l}</Text>
+                <Text style={{ fontSize: 22, fontFamily: Fonts.displayBold, color: C.dark }}>{s.n}</Text>
+                <Text style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>{s.l}</Text>
               </View>
             ))}
           </View>
@@ -1698,7 +1968,7 @@ Generated by Pick App - Share this with the development team
             <Text style={styles.coverageText} numberOfLines={1}>
               {activeLevel.toGo === 0
                 ? 'Complete — all green'
-                : `${activeLevel.toGo} to go${activeLevel.untouched > 0 ? `  ·  ${activeLevel.untouched} never cleaned` : ''}`}
+                : `${activeLevel.toGo} to go${liveNowCount ? `  ·  ${liveNowCount} cleaning now` : ''}`}
             </Text>
           </View>
           <View style={styles.completionPill}>
@@ -1713,36 +1983,30 @@ Generated by Pick App - Share this with the development team
       {isListening && (
         <View style={[styles.topBarWhite, { top: insets.top + 8 }]}>
           <View style={styles.topBarStat}>
-            <Text style={styles.topBarValue}>{formatTime(elapsedSeconds)}</Text>
+            <Text style={styles.topBarValue} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.6}>{formatTime(elapsedSeconds)}</Text>
             <Text style={styles.topBarLabel}>Time</Text>
           </View>
           <View style={styles.topBarStat}>
-            <Text style={styles.topBarValue}>{pickupCount}</Text>
+            <Text style={styles.topBarValue} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.6}>{pickupCount}</Text>
             <Text style={styles.topBarLabel}>Pickups</Text>
           </View>
           <View style={styles.topBarStat}>
-            <Text style={styles.topBarValue}>{fmtDistance(parseFloat(String(calculateCoverage().distance || '0')))}</Text>
+            <Text style={styles.topBarValue} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.6}>{fmtDistance(parseFloat(String(calculateCoverage().distance || '0')))}</Text>
             <Text style={styles.topBarLabel}>Distance</Text>
           </View>
-          <TouchableOpacity
-            style={styles.coverageToggle}
-            accessibilityLabel={coverageVisible ? 'Hide area coverage' : 'Show area coverage'}
-            onPress={() => {
-              const v = !coverageVisible;
-              setCoverageVisible(v);
-              webviewRef.current?.injectJavaScript(
-                `if (window.setCoverageVisible) { window.setCoverageVisible(${v}); } true;`
-              );
-            }}
-          >
-            <Icon name="route" size={18} color={coverageVisible ? COLORS.sage : COLORS.mutedSage} />
-          </TouchableOpacity>
+        </View>
+      )}
+
+      {isListening && tooFast && (
+        <View style={[styles.tooFastPill, { top: insets.top + 62 }]} pointerEvents="none">
+          <Icon name="bolt" size={14} color="#8A3B12" sw={2.2} />
+          <Text style={styles.tooFastText}>Moving too fast — pickups paused</Text>
         </View>
       )}
 
       {/* Completion focus while picking — which hood you're filling in */}
       {isListening && activeLevel && (
-        <View style={[styles.pickingBanner, { top: insets.top + 72 }]} pointerEvents="none">
+        <View style={[styles.pickingBanner, { top: insets.top + (tooFast ? 104 : 66) }]} pointerEvents="none">
           <Text style={styles.pickingBannerText} numberOfLines={1}>
             {activeLevel.name} · {activeLevel.freshPct}% done
             {activeLevel.toGo > 0 ? ` · ${activeLevel.toGo} to go` : ' · complete!'}
@@ -1758,24 +2022,14 @@ Generated by Pick App - Share this with the development team
           <>
             {toolsOpen && (
               <>
-                <View style={[styles.toolOption, { bottom: 190 + 58 * 4 }]}>
+                <View style={[styles.toolOption, { bottom: 190 + 58 * 3 }]}>
                   <Text style={styles.toolOptionLabel}>My impact</Text>
                   <TouchableOpacity
                     style={[styles.toolOptionBtn, impactWindow && styles.adoptButtonActive]}
-                    onPress={() => { setToolsOpen(false); if (impactWindow) { hideImpact(); } else { showImpact('24h'); } }}
+                    onPress={() => { setToolsOpen(false); if (impactWindow) { hideImpact(); } else { showImpact('7d'); } }}
                     accessibilityLabel="My impact"
                   >
-                    <Icon name="route" size={20} color={impactWindow ? '#fff' : COLORS.sage} />
-                  </TouchableOpacity>
-                </View>
-                <View style={[styles.toolOption, { bottom: 190 + 58 * 3 }]}>
-                  <Text style={styles.toolOptionLabel}>Adopt a block</Text>
-                  <TouchableOpacity
-                    style={[styles.toolOptionBtn, adoptMode && styles.adoptButtonActive]}
-                    onPress={() => { setToolsOpen(false); setAdoptMode(true); }}
-                    accessibilityLabel="Adopt a block"
-                  >
-                    <Icon name="pin" size={20} color={adoptMode ? '#fff' : COLORS.sage} />
+                    <Icon name="route" size={20} color={impactWindow ? '#fff' : C.primary} />
                   </TouchableOpacity>
                 </View>
                 <View style={[styles.toolOption, { bottom: 190 + 58 * 2 }]}>
@@ -1785,7 +2039,7 @@ Generated by Pick App - Share this with the development team
                     onPress={() => { setToolsOpen(false); recenter(); }}
                     accessibilityLabel="Recenter on my location"
                   >
-                    <Icon name="target" size={20} color={COLORS.sage} />
+                    <Icon name="target" size={20} color={C.primary} />
                   </TouchableOpacity>
                 </View>
                 <View style={[styles.toolOption, { bottom: 190 + 58 }]}>
@@ -1795,32 +2049,21 @@ Generated by Pick App - Share this with the development team
                     onPress={() => { setToolsOpen(false); setShowScaleInfo(true); }}
                     accessibilityLabel="Cleanliness guide"
                   >
-                    <Icon name="leaf" size={20} color={COLORS.sage} />
+                    <Icon name="leaf" size={20} color={C.primary} />
                   </TouchableOpacity>
                 </View>
               </>
             )}
             <TouchableOpacity
-              style={[styles.adoptButton, (toolsOpen || !!impactWindow || adoptMode) && styles.adoptButtonActive]}
+              style={[styles.adoptButton, (toolsOpen || !!impactWindow) && styles.adoptButtonActive]}
               onPress={() => setToolsOpen((v) => !v)}
               onLongPress={() => setToolsOpen(true)}
               delayLongPress={220}
               accessibilityLabel="Map tools"
             >
-              <Icon name={toolsOpen ? 'close' : 'plus'} size={22} color={(toolsOpen || !!impactWindow || adoptMode) ? '#fff' : COLORS.sage} />
+              <Icon name={toolsOpen ? 'close' : 'plus'} size={22} color={(toolsOpen || !!impactWindow) ? '#fff' : C.primary} />
             </TouchableOpacity>
           </>
-        )}
-
-        {adoptMode && !isListening && (
-          <View style={[styles.adoptBanner, { top: insets.top + 64 }]} pointerEvents="box-none">
-            <View style={styles.adoptBannerPill}>
-              <Text style={styles.adoptBannerText}>Tap a block to adopt it</Text>
-              <TouchableOpacity onPress={() => setAdoptMode(false)} hitSlop={8}>
-                <Text style={styles.adoptBannerCancel}>Cancel</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
         )}
 
         {(currentLocation && (appActive || !isListening)) ? (
@@ -1857,7 +2100,7 @@ Generated by Pick App - Share this with the development team
     .leaflet-bottom.leaflet-left { margin-bottom: 0; margin-left: 0; }
     .leaflet-control-attribution { font-size: 10px; padding: 1px 5px; background: rgba(255,255,255,0.7) !important; }
     .leaflet-control-zoom { margin: 0 !important; border: none !important; box-shadow: 0 2px 8px rgba(27,46,26,0.18) !important; border-radius: 12px !important; overflow: hidden; }
-    .leaflet-control-zoom a { width: 38px !important; height: 38px !important; line-height: 38px !important; color: #2D5016 !important; font-size: 20px !important; font-weight: 600 !important; background: #fff !important; }
+    .leaflet-control-zoom a { width: 38px !important; height: 38px !important; line-height: 38px !important; color: #0F2F66 !important; font-size: 20px !important; font-weight: 600 !important; background: #fff !important; }
     .leaflet-control-zoom a:hover { background: #EEF3E6 !important; }
     /* Our own neighborhood labels (cities the basemap doesn't label, e.g. Atlanta).
        Styled to echo the soft grayscale place labels the basemap draws elsewhere. */
@@ -1871,6 +2114,7 @@ Generated by Pick App - Share this with the development team
     .seg-popup .leaflet-popup-tip { background: #1B2E1A; }
     .seg-popup a.leaflet-popup-close-button { display: none; }
     .seg-popup-text { white-space: nowrap; }
+    .seg-popup-adopt { display: inline-block; margin-top: 5px; color: #7BE495; font-weight: 700; text-decoration: none; white-space: nowrap; }
   </style>
 </head>
 <body>
@@ -1904,7 +2148,7 @@ Generated by Pick App - Share this with the development team
     });
     window.highlightBlock = function(coords) {
       adoptGroup.clearLayers();
-      try { L.polyline(coords, { color: '#2D5016', weight: 8, opacity: 0.95, lineCap: 'round', lineJoin: 'round' }).addTo(adoptGroup); } catch (e) {}
+      try { L.polyline(coords, { color: '#4B7A54', weight: 8, opacity: 0.95, lineCap: 'round', lineJoin: 'round' }).addTo(adoptGroup); } catch (e) {}
     };
     window.clearBlockHighlight = function() { adoptGroup.clearLayers(); };
     L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png', {
@@ -1917,14 +2161,14 @@ Generated by Pick App - Share this with the development team
 
     let userMarker = L.circleMarker([40.7128, -74.0060], {
       radius: 8,
-      fillColor: '#34C759',
+      fillColor: '#4B7A54',
       color: '#fff',
       weight: 2,
       opacity: 1,
       fillOpacity: 0.8
     }).addTo(map);
 
-    let routePolyline = L.polyline([], { color: '#34C759', weight: 14, opacity: 0.55, lineCap: 'round', lineJoin: 'round' }).addTo(map);
+    let routePolyline = L.polyline([], { color: '#4B7A54', weight: 14, opacity: 0.55, lineCap: 'round', lineJoin: 'round' }).addTo(map);
     let pickupGroup = L.featureGroup([]).addTo(map);
 
     // "Need" layer — ~110m tiles colored by how much a block needs a cleanup.
@@ -1944,10 +2188,10 @@ Generated by Pick App - Share this with the development team
     window.renderImpact = function(routes, pickups) {
       impactGroup.clearLayers();
       (routes || []).forEach(function(r) {
-        if (r && r.length > 1) L.polyline(r, { color: '#2D5016', weight: 5, opacity: 0.7, lineCap: 'round', lineJoin: 'round', interactive: false }).addTo(impactGroup);
+        if (r && r.length > 1) L.polyline(r, { color: '#4B7A54', weight: 5, opacity: 0.7, lineCap: 'round', lineJoin: 'round', interactive: false }).addTo(impactGroup);
       });
       (pickups || []).forEach(function(p) {
-        L.circleMarker(p, { radius: 5, color: '#ffffff', weight: 1, fillColor: '#34C759', fillOpacity: 0.95, interactive: false }).addTo(impactGroup);
+        L.circleMarker(p, { radius: 5, color: '#ffffff', weight: 1, fillColor: '#4B7A54', fillOpacity: 0.95, interactive: false }).addTo(impactGroup);
       });
       try { if (routes && routes.length) map.fitBounds(impactGroup.getBounds().pad(0.25)); } catch (e) {}
     };
@@ -1974,7 +2218,7 @@ Generated by Pick App - Share this with the development team
       // Remove old polyline and draw the swath — a solid bar, not a thread
       map.removeLayer(routePolyline);
       routePolyline = L.polyline(coords, {
-        color: '#34C759',
+        color: '#4B7A54',
         weight: 14,
         opacity: 0.55,
         lineCap: 'round',
@@ -2104,6 +2348,9 @@ Generated by Pick App - Share this with the development team
     let todoGroup = L.featureGroup([]).addTo(map);
     let cleanedGroup = L.featureGroup([]).addTo(map);
     var cleanedById = {};
+    // Never-cleaned streets are kept by id too, so a block finished mid-walk can
+    // be promoted out of the grey dashes and into the colored layer live.
+    var todoById = {};
     var CLEANED_CAP = 4000; // hard ceiling so a marathon session can't grow unbounded
 
     function segFresh(daysOld) {
@@ -2119,22 +2366,42 @@ Generated by Pick App - Share this with the development team
       }
       ids.forEach(function(id) {
         var s = cleanedById[id];
+        // Cleaned on THIS walk (day 0): brighter and heavier, so the block you
+        // just finished pops out of the surrounding history.
+        var justNow = s.daysOld !== null && s.daysOld <= 0;
         var c = segFresh(s.daysOld);
-        L.polyline(s.coords, { color: c[0], weight: 4, opacity: c[1], lineCap: 'round', lineJoin: 'round' }).addTo(cleanedGroup);
+        L.polyline(s.coords, {
+          color: justNow ? '#2FB457' : c[0],
+          weight: justNow ? 6 : 4,
+          opacity: justNow ? 0.95 : c[1],
+          lineCap: 'round',
+          lineJoin: 'round'
+        }).addTo(cleanedGroup);
+      });
+    }
+
+    function redrawTodo() {
+      todoGroup.clearLayers();
+      Object.keys(todoById).forEach(function(id) {
+        L.polyline(todoById[id].coords, { color: NEVER_COLOR, weight: 4, opacity: 0.4, dashArray: '2 9', lineCap: 'round', lineJoin: 'round' }).addTo(todoGroup);
       });
     }
 
     window.renderSegments = function(segments) {
-      todoGroup.clearLayers();
+      todoById = {};
       var cleanedTouched = false;
       segments.forEach(function(seg) {
         if (seg.daysOld === null || seg.daysOld === undefined) {
-          L.polyline(seg.coords, { color: NEVER_COLOR, weight: 4, opacity: 0.4, dashArray: '2 9', lineCap: 'round', lineJoin: 'round' }).addTo(todoGroup);
+          // Already flipped green earlier in this walk? Don't demote it back to
+          // a grey dash just because the shared data hasn't synced yet.
+          if (cleanedById[seg.id]) return;
+          todoById[seg.id] = { coords: seg.coords };
         } else {
           cleanedById[seg.id] = { coords: seg.coords, daysOld: seg.daysOld };
           cleanedTouched = true;
         }
       });
+      redrawTodo();
       if (cleanedTouched) redrawCleaned();
       // z-order: grey furthest back, green just above it, both under routes/markers
       cleanedGroup.bringToBack();
@@ -2142,10 +2409,35 @@ Generated by Pick App - Share this with the development team
       console.log('Segments: ' + segments.length + ' in view, ' + Object.keys(cleanedById).length + ' cleaned retained');
     };
 
+    // Live in-walk recolor for the overview map: flip finished blocks to
+    // bright fresh-green without disturbing the rest of the coverage history.
+    window.markSegmentsClean = function(ids) {
+      if (!ids || !ids.length) return;
+      var promoted = false;
+      var changed = false;
+      ids.forEach(function(id) {
+        if (cleanedById[id]) {
+          cleanedById[id].daysOld = 0;
+          changed = true;
+        } else if (todoById[id]) {
+          cleanedById[id] = { coords: todoById[id].coords, daysOld: 0 };
+          delete todoById[id];
+          promoted = true;
+          changed = true;
+        }
+      });
+      if (!changed) return;
+      if (promoted) redrawTodo();
+      redrawCleaned();
+      cleanedGroup.bringToBack();
+      todoGroup.bringToBack();
+    };
+
     window.clearSegments = function() {
       todoGroup.clearLayers();
       cleanedGroup.clearLayers();
       cleanedById = {};
+      todoById = {};
     };
 
     // Neighborhood outlines layer: every hood in view drawn as a tappable
@@ -2156,8 +2448,8 @@ Generated by Pick App - Share this with the development team
     var hoodLabels = {};
     var selectedHoodName = null;
     // Recognizable but light: a soft sage line, transparent (but tappable) fill.
-    var HOOD_BASE = { color: '#6F7D64', weight: 1.5, opacity: 0.6, fill: true, fillColor: '#6F7D64', fillOpacity: 0.0, lineJoin: 'round' };
-    var HOOD_SEL = { color: '#2D5016', weight: 2.5, opacity: 0.85, fill: true, fillColor: '#2D5016', fillOpacity: 0.06, lineJoin: 'round' };
+    var HOOD_BASE = { color: '#5A6B8C', weight: 1.5, opacity: 0.6, fill: true, fillColor: '#5A6B8C', fillOpacity: 0.0, lineJoin: 'round' };
+    var HOOD_SEL = { color: '#0F2F66', weight: 2.5, opacity: 0.85, fill: true, fillColor: '#0F2F66', fillOpacity: 0.06, lineJoin: 'round' };
 
     window.renderNeighborhoods = function(list, withLabels) {
       if (!list || !list.length) return;
@@ -2239,8 +2531,8 @@ Generated by Pick App - Share this with the development team
       // Veil = world rectangle with the neighborhood as a hole → the city OUTSIDE
       // the hood fades to soft cream so the neighborhood alone reads clearly
       // (a light scrim, not a dark one).
-      L.polygon([WORLD_RING, ring], { pane: 'maskPane', stroke: false, fillColor: '#F5F5F0', fillOpacity: 0.55, interactive: false }).addTo(spotlightGroup);
-      L.polygon(ring, { pane: 'maskPane', fill: false, color: '#2D5016', weight: 2.5, opacity: 0.95, lineJoin: 'round', interactive: false }).addTo(spotlightGroup);
+      L.polygon([WORLD_RING, ring], { pane: 'maskPane', stroke: false, fillColor: '#FFFFFF', fillOpacity: 0.55, interactive: false }).addTo(spotlightGroup);
+      L.polygon(ring, { pane: 'maskPane', fill: false, color: '#0F2F66', weight: 2.5, opacity: 0.95, lineJoin: 'round', interactive: false }).addTo(spotlightGroup);
     }
 
     window.enterLevel = function(ring) {
@@ -2279,13 +2571,23 @@ Generated by Pick App - Share this with the development team
     // for seconds. Yielding between chunks keeps the map — and the entry
     // animation — responsive while streets stream in. A new render supersedes
     // any in-flight one via the token.
+    // Adopt lives in the popup now (no separate adopt mode): tap a street →
+    // last-cleaned + an Adopt link that hands the latlng to RN.
+    window.__adoptFromPopup = function(lat, lon) {
+      map.closePopup();
+      if (window.ReactNativeWebView) {
+        window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'adoptTap', lat: lat, lon: lon }));
+      }
+    };
     function openSegPopup(id, latlng) {
-      if (window.__adoptMode) return; // adopt mode: a tap adopts the block, not this
       var rec = levelDaysById[id];
       var days = rec ? rec.daysOld : null;
       L.popup({ closeButton: false, className: 'seg-popup', offset: [0, -1], autoPan: true })
         .setLatLng(latlng)
-        .setContent('<span class="seg-popup-text">' + freshnessText(days) + '</span>')
+        .setContent(
+          '<span class="seg-popup-text">' + freshnessText(days) + '</span>' +
+          '<br><a class="seg-popup-adopt" onclick="window.__adoptFromPopup(' + latlng.lat + ',' + latlng.lng + ')">Adopt this block</a>'
+        )
         .openOn(map);
     }
 
@@ -2330,6 +2632,12 @@ Generated by Pick App - Share this with the development team
       levelGroup.clearLayers();
       spotlightGroup.clearLayers();
       showOutsideLayers(); // bring back the overview outlines, labels, routes, parks
+      // enterLevel emptied the coverage layers; repaint them from what we still
+      // hold so the overview isn't blank while a refetch is in flight.
+      redrawTodo();
+      redrawCleaned();
+      cleanedGroup.bringToBack();
+      todoGroup.bringToBack();
     };
 
     // Parks: filled polygons colored by freshness, drawn under the route.
@@ -2419,7 +2727,7 @@ Generated by Pick App - Share this with the development team
           />
         ) : (
           <View style={styles.mapPlaceholder}>
-            <Icon name="pin" size={40} color={COLORS.sage} />
+            <Icon name="pin" size={40} color={C.primary} />
             <Text style={[styles.mapText, { marginTop: 8 }]}>Getting location…</Text>
           </View>
         )}
@@ -2456,7 +2764,7 @@ Generated by Pick App - Share this with the development team
               value={cityQuery}
               onChangeText={onCityQueryChange}
               placeholder="Type a city name…"
-              placeholderTextColor={COLORS.mutedSage}
+              placeholderTextColor={C.muted}
               autoFocus
               autoCorrect={false}
               returnKeyType="search"
@@ -2468,7 +2776,7 @@ Generated by Pick App - Share this with the development team
             )}
             {cityResults.map((c, i) => (
               <TouchableOpacity key={`${c.label}-${i}`} style={styles.cityRow} onPress={() => goToCity({ ...c, zoom: 13 })} activeOpacity={0.7}>
-                <Icon name="pin" size={18} color={COLORS.sage} sw={1.8} />
+                <Icon name="pin" size={18} color={C.primary} sw={1.8} />
                 <Text style={styles.cityRowText} numberOfLines={1}>{c.label}</Text>
               </TouchableOpacity>
             ))}
@@ -2488,41 +2796,50 @@ Generated by Pick App - Share this with the development team
             </View>
 
             <ScrollView style={styles.scaleInfoContent}>
-              <View style={styles.scaleItem}>
-                <View style={[styles.scaleDot, { backgroundColor: '#34C759' }]} />
-                <View style={styles.scaleText}>
-                  <Text style={styles.scaleItemTitle}>Fresh (0-5 days)</Text>
-                  <Text style={styles.scaleItemDesc}>Well-maintained, recently cleaned</Text>
+              {/* Vertical gradient — mirrors the map's continuous freshness
+                  ramp (freshRGB in the WebView): green 0d → yellow 6d →
+                  orange 12d → red 20d+. Keep the stops in sync. */}
+              <View style={styles.scaleRampRow}>
+                <View style={styles.scaleRamp}>
+                  {['#2FB457', '#8DBE2E', '#F2C500', '#F0A012', '#EE7A1E', '#E0561D', '#D2321C', '#D2321C'].map((c, i) => (
+                    <View key={i} style={{ flex: 1, backgroundColor: c }} />
+                  ))}
+                </View>
+                <View style={styles.scaleRampLabels}>
+                  <View>
+                    <Text style={styles.scaleItemTitle}>Just cleaned</Text>
+                    <Text style={styles.scaleItemDesc}>Day 0 — vivid green</Text>
+                  </View>
+                  <View>
+                    <Text style={styles.scaleItemTitle}>Deteriorating</Text>
+                    <Text style={styles.scaleItemDesc}>~Day 6 — litter accumulating</Text>
+                  </View>
+                  <View>
+                    <Text style={styles.scaleItemTitle}>Getting bad</Text>
+                    <Text style={styles.scaleItemDesc}>~Day 12 — cleanup needed</Text>
+                  </View>
+                  <View>
+                    <Text style={styles.scaleItemTitle}>Unclean</Text>
+                    <Text style={styles.scaleItemDesc}>Day 20+ — stays boldly red</Text>
+                  </View>
                 </View>
               </View>
 
-              <View style={styles.scaleItem}>
-                <View style={[styles.scaleDot, { backgroundColor: '#FFCC00' }]} />
-                <View style={styles.scaleText}>
-                  <Text style={styles.scaleItemTitle}>Getting Dusty (6-9 days)</Text>
-                  <Text style={styles.scaleItemDesc}>Litter accumulating, cleanup soon</Text>
+              <View style={[styles.scaleItem, { marginTop: 14 }]}>
+                <View style={styles.scaleNeverSwatch}>
+                  <View style={styles.scaleNeverDash} />
+                  <View style={styles.scaleNeverDash} />
+                  <View style={styles.scaleNeverDash} />
                 </View>
-              </View>
-
-              <View style={styles.scaleItem}>
-                <View style={[styles.scaleDot, { backgroundColor: '#FF9500' }]} />
                 <View style={styles.scaleText}>
-                  <Text style={styles.scaleItemTitle}>Needs Attention (10-13 days)</Text>
-                  <Text style={styles.scaleItemDesc}>Priority area, significant litter</Text>
-                </View>
-              </View>
-
-              <View style={styles.scaleItem}>
-                <View style={[styles.scaleDot, { backgroundColor: '#FF3B30' }]} />
-                <View style={styles.scaleText}>
-                  <Text style={styles.scaleItemTitle}>Not Counted (14+ days)</Text>
-                  <Text style={styles.scaleItemDesc}>Doesn't count—needs immediate re-cleaning</Text>
+                  <Text style={styles.scaleItemTitle}>Never cleaned</Text>
+                  <Text style={styles.scaleItemDesc}>Faint dashed gray — no one has picked here yet</Text>
                 </View>
               </View>
 
               <View style={styles.scaleInfoNote}>
                 <Text style={styles.scaleInfoNoteText}>
-                  NYC's aggressive scale forces regular maintenance. Areas beyond 14 days must be re-cleaned to count toward coverage.
+                  A block counts toward your neighborhood % for 5 days after a cleanup — then it needs another pick to count again. Old blocks dim slightly with age but never disappear.
                 </Text>
               </View>
             </ScrollView>
@@ -2549,12 +2866,12 @@ Generated by Pick App - Share this with the development team
 
             <View style={styles.heroRow}>
               <View style={styles.heroStat}>
-                <Text style={styles.heroNum}>{pickupCount}</Text>
+                <Text style={styles.heroNum} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.5}>{pickupCount}</Text>
                 <Text style={styles.heroLabel}>{pickupCount === 1 ? 'pickup' : 'pickups'}</Text>
               </View>
               <View style={styles.heroDivider} />
               <View style={styles.heroStat}>
-                <Text style={styles.heroNum}>{formatTime(elapsedSeconds)}</Text>
+                <Text style={styles.heroNum} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.5}>{formatTime(elapsedSeconds)}</Text>
                 <Text style={styles.heroLabel}>on the walk</Text>
               </View>
             </View>
@@ -2590,7 +2907,7 @@ Generated by Pick App - Share this with the development team
             ) : (
               <TouchableOpacity style={styles.addPhoto} onPress={pickPhoto}>
                 <View style={styles.addPhotoWell}>
-                  <Icon name="camera" size={22} color={COLORS.sage} sw={1.7} />
+                  <Icon name="camera" size={22} color={C.primary} sw={1.7} />
                 </View>
                 <View style={{ flex: 1 }}>
                   <Text style={styles.addPhotoTitle}>Add a photo</Text>
@@ -2701,21 +3018,35 @@ Generated by Pick App - Share this with the development team
               </View>
             )}
 
-            {/* Share your impact */}
+            {/* Share your impact — both destinations offered right here, at
+                the moment of highest intent, instead of a separate trip to
+                the Community tab. */}
             <View style={styles.resultsSection}>
-              <Text style={styles.resultsSubtitle}>Share your impact</Text>
-              <TouchableOpacity style={styles.shareCta} onPress={() => { setShowResults(false); setShowShare(true); }}>
-                <Icon name="share" size={20} color="#fff" sw={2} />
-                <Text style={styles.shareCtaText}>Share your cleanup</Text>
-              </TouchableOpacity>
               {photoUri && communitySharing && !communityAutoPost && (
                 <TouchableOpacity style={styles.communityCta} onPress={() => setShowCommunityCompose(true)}>
-                  <Icon name="camera" size={20} color={COLORS.sage} sw={2} />
+                  <Icon name="camera" size={20} color={C.primary} sw={2} />
                   <Text style={styles.communityCtaText}>Share to community</Text>
                 </TouchableOpacity>
               )}
               {photoUri && communitySharing && communityAutoPost && (
                 <Text style={styles.autoPostNote}>Auto-posted to community. Manage it from the Community tab.</Text>
+              )}
+
+              <TouchableOpacity
+                style={[styles.communityCta, { marginTop: 10 }]}
+                onPress={() => {
+                  // A second <Modal> can't stack over this one on iOS (same
+                  // issue documented for the community composer and recap
+                  // share) — close this screen first, then open ShareComposer.
+                  setShowResults(false);
+                  setTimeout(() => setShareOpen(true), 400);
+                }}
+              >
+                <Icon name="share" size={20} color={C.primary} sw={2} />
+                <Text style={styles.communityCtaText}>Share externally</Text>
+              </TouchableOpacity>
+              {blueskyAutoPost && photoUri && (
+                <Text style={styles.autoPostNote}>Auto-shared to Bluesky. Manage it from Settings.</Text>
               )}
             </View>
 
@@ -2763,7 +3094,7 @@ Generated by Pick App - Share this with the development team
                 <TextInput
                   style={styles.composeInput}
                   placeholder="Add a caption (optional)"
-                  placeholderTextColor={COLORS.mutedSage}
+                  placeholderTextColor={C.muted}
                   value={communityCaption}
                   onChangeText={setCommunityCaption}
                   multiline
@@ -2805,18 +3136,18 @@ Generated by Pick App - Share this with the development team
       </Modal>
 
       <ShareComposer
-        visible={showShare}
-        onClose={() => { setShowShare(false); finishSession(); }}
+        visible={shareOpen}
+        onClose={() => { setShareOpen(false); finishSession(); }}
         pieces={pickupCount}
         bags={bagReported ? reportedBags(bagSize, bagFullness) : itemsToBags(pickupCount)}
         distanceMi={parseFloat(String(calculateCoverage().distance || '0')) * 0.621371}
         photoUri={photoUri}
-        fullName={user?.displayName || 'You'}
-        initials={((user?.displayName || 'You').trim().split(/\s+/).map((s: string) => s[0]).slice(0, 2).join('') || 'Y').toUpperCase()}
-        team={userTeam || ''}
-        hood={activeLevel?.name || user?.neighborhood || ''}
+        fullName={user?.displayName || 'A Pick user'}
+        initials={(user?.displayName || 'PK').trim().split(/\s+/).map((w: string) => w[0]).join('').slice(0, 2).toUpperCase()}
+        team={userTeam || 'Solo'}
+        hood={neighborhood || currentArea.neighborhood || ''}
         hoodPct={activeLevel?.freshPct}
-        inviteUrl={`https://pick.app/join?ref=${user?.uid || ''}`}
+        inviteUrl={TESTFLIGHT_URL}
       />
     </View>
   );
@@ -2825,11 +3156,11 @@ Generated by Pick App - Share this with the development team
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: COLORS.cream,
+    backgroundColor: C.white,
     flexDirection: 'column',
   },
   containerFullscreen: {
-    backgroundColor: COLORS.cream,
+    backgroundColor: C.white,
   },
   header: {
     position: 'absolute',
@@ -2846,70 +3177,71 @@ const styles = StyleSheet.create({
   },
   userName: {
     fontSize: 24,
-    fontWeight: '700',
-    letterSpacing: -0.3,
-    color: COLORS.darkSage,
-    textShadowColor: 'rgba(245,245,240,0.95)',
+    fontFamily: Fonts.bodyBold,
+    letterSpacing: -0.2,
+    color: C.dark,
+    textShadowColor: 'rgba(255,255,255,0.95)',
     textShadowOffset: { width: 0, height: 1 },
     textShadowRadius: 6,
   },
   coverageText: {
     fontSize: 12,
-    color: COLORS.sage,
-    fontWeight: '600',
+    color: C.primary,
+    fontFamily: Fonts.bodySemibold,
     marginTop: 2,
-    textShadowColor: 'rgba(245,245,240,0.95)',
+    textShadowColor: 'rgba(255,255,255,0.95)',
     textShadowOffset: { width: 0, height: 1 },
     textShadowRadius: 6,
   },
   completionPill: {
-    backgroundColor: COLORS.white,
+    backgroundColor: C.white,
     borderRadius: 16,
     paddingVertical: 6,
     paddingHorizontal: 12,
     alignItems: 'center',
     marginLeft: 10,
-    shadowColor: COLORS.sage,
-    shadowOpacity: 0.18,
-    shadowRadius: 8,
-    shadowOffset: { width: 0, height: 3 },
-    elevation: 3,
+    borderWidth: 1.5,
+    borderColor: C.border,
   },
-  completionPct: { fontSize: 18, fontWeight: '700', color: COLORS.sage, letterSpacing: -0.3 },
-  completionLbl: { fontSize: 9, fontWeight: '600', color: COLORS.mutedSage, textTransform: 'uppercase', letterSpacing: 0.3 },
+  completionPct: { fontSize: 18, fontFamily: Fonts.displayBold, color: C.primary, letterSpacing: -0.3 },
+  completionLbl: { fontSize: 9, fontFamily: Fonts.bodySemibold, color: C.muted, textTransform: 'uppercase', letterSpacing: 0.3 },
   levelReveal: {
     position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
-    backgroundColor: 'rgba(27,46,26,0.82)',
+    backgroundColor: 'rgba(15,47,102,0.82)',
     alignItems: 'center', justifyContent: 'center', zIndex: 50,
   },
-  levelRevealSub: { color: 'rgba(255,255,255,0.75)', fontSize: 13, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 1.5, marginTop: 18 },
-  levelRevealName: { color: '#fff', fontSize: 26, fontWeight: '700', letterSpacing: -0.4, marginTop: 4, textAlign: 'center', paddingHorizontal: 24 },
+  levelRevealSub: { color: 'rgba(255,255,255,0.75)', fontSize: 13, fontFamily: Fonts.bodySemibold, textTransform: 'uppercase', letterSpacing: 1.5, marginTop: 18 },
+  levelRevealName: { color: '#fff', fontSize: 26, fontFamily: Fonts.headlineBold, letterSpacing: -0.4, marginTop: 4, textAlign: 'center', paddingHorizontal: 24 },
   levelBack: {
-    width: 34, height: 34, borderRadius: 17, backgroundColor: COLORS.white,
+    width: 34, height: 34, borderRadius: 17, backgroundColor: C.white,
     alignItems: 'center', justifyContent: 'center', marginRight: 8,
-    shadowColor: COLORS.sage, shadowOpacity: 0.18, shadowRadius: 6, shadowOffset: { width: 0, height: 2 }, elevation: 3,
+    borderWidth: 1.5, borderColor: C.border,
   },
-  levelBackIcon: { fontSize: 26, fontWeight: '700', color: COLORS.sage, marginTop: -4 },
+  levelBackIcon: { fontSize: 26, fontFamily: Fonts.bodyBold, color: C.primary, marginTop: -4 },
   pickingBanner: {
     position: 'absolute', alignSelf: 'center', zIndex: 20,
-    backgroundColor: 'rgba(27,46,26,0.88)', borderRadius: 14,
+    backgroundColor: 'rgba(15,47,102,0.88)', borderRadius: 14,
     paddingVertical: 6, paddingHorizontal: 14, maxWidth: '90%',
   },
-  pickingBannerText: { color: '#fff', fontSize: 13, fontWeight: '600', letterSpacing: 0.2 },
+  pickingBannerText: { color: '#fff', fontSize: 13, fontFamily: Fonts.bodySemibold, letterSpacing: 0.2 },
+  tooFastPill: {
+    position: 'absolute', alignSelf: 'center', zIndex: 21,
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    backgroundColor: '#FCE8CE', borderRadius: 14,
+    paddingVertical: 6, paddingHorizontal: 14, maxWidth: '92%',
+  },
+  tooFastText: { color: '#8A3B12', fontSize: 13, fontFamily: Fonts.bodyBold },
   teamOrSuperlative: {
     fontSize: 13,
-    fontWeight: '600',
-    color: COLORS.sage,
+    fontFamily: Fonts.bodySemibold,
+    color: C.primary,
     overflow: 'hidden',
-    backgroundColor: COLORS.white,
+    backgroundColor: C.white,
     paddingVertical: 8,
     paddingHorizontal: 13,
     borderRadius: 999,
-    shadowColor: '#1B2E1A',
-    shadowOpacity: 0.12,
-    shadowRadius: 8,
-    shadowOffset: { width: 0, height: 2 },
-    elevation: 3,
+    borderWidth: 1.5,
+    borderColor: C.border,
   },
   topBar: {
     flexDirection: 'row',
@@ -2927,18 +3259,12 @@ const styles = StyleSheet.create({
     right: 16,
     zIndex: 6,
     flexDirection: 'row',
-    justifyContent: 'space-around',
     alignItems: 'center',
-    backgroundColor: COLORS.darkSage,
-    paddingVertical: 16,
-    paddingHorizontal: SPACING.lg,
+    backgroundColor: C.dark,
+    paddingVertical: 10,
+    paddingHorizontal: SPACING.md,
     borderRadius: 16,
-    gap: 16,
-    shadowColor: COLORS.darkSage,
-    shadowOpacity: 0.25,
-    shadowRadius: 14,
-    shadowOffset: { width: 0, height: 8 },
-    elevation: 6,
+    gap: 6,
   },
   topBarStat: {
     flex: 1,
@@ -2946,21 +3272,21 @@ const styles = StyleSheet.create({
   },
   topBarValue: {
     fontSize: 22,
-    fontWeight: '700',
+    fontFamily: Fonts.displayBold,
     color: '#fff',
     marginBottom: 4,
   },
   topBarLabel: {
     fontSize: 11,
     color: '#A8B896',
-    fontWeight: '500',
+    fontFamily: Fonts.bodyMedium,
   },
   coverageToggle: {
     alignItems: 'center',
     justifyContent: 'center',
-    paddingHorizontal: 8,
+    paddingHorizontal: 6,
     paddingVertical: 6,
-    marginRight: 2,
+    flexShrink: 0,
   },
   mapContainer: {
     position: 'absolute',
@@ -2977,11 +3303,11 @@ const styles = StyleSheet.create({
   },
   mapPlaceholder: {
     flex: 1,
-    backgroundColor: COLORS.light,
+    backgroundColor: C.tint,
     justifyContent: 'center',
     alignItems: 'center',
     borderWidth: 2,
-    borderColor: COLORS.accent,
+    borderColor: C.accent,
     borderStyle: 'dashed',
   },
   mapPlaceholderFullscreen: {
@@ -2994,8 +3320,8 @@ const styles = StyleSheet.create({
   },
   mapText: {
     fontSize: 16,
-    fontWeight: '600',
-    color: COLORS.darkSage,
+    fontFamily: Fonts.bodySemibold,
+    color: C.dark,
     marginBottom: 4,
   },
   mapTextLarge: {
@@ -3004,22 +3330,22 @@ const styles = StyleSheet.create({
   },
   mapSubtext: {
     fontSize: 12,
-    color: COLORS.mutedSage,
+    color: C.muted,
   },
   mapCoordLarge: {
     fontSize: 28,
-    fontWeight: '700',
-    color: '#34C759',
+    fontFamily: Fonts.displayBold,
+    color: C.accent,
   },
   mapStatus: {
     fontSize: 14,
-    color: '#34C759',
-    fontWeight: '600',
+    color: C.accent,
+    fontFamily: Fonts.bodySemibold,
     marginTop: 12,
   },
   mapRouteInfo: {
     fontSize: 12,
-    color: COLORS.mutedSage,
+    color: C.muted,
     marginTop: 8,
   },
   mapStatsContainer: {
@@ -3029,7 +3355,7 @@ const styles = StyleSheet.create({
   },
   mapStat: {
     fontSize: 16,
-    fontWeight: '600',
+    fontFamily: Fonts.bodySemibold,
     color: '#fff',
   },
   batterySaverBox: {
@@ -3043,31 +3369,31 @@ const styles = StyleSheet.create({
     marginBottom: 12,
     borderRadius: 10,
     borderLeftWidth: 4,
-    borderLeftColor: '#34C759',
+    borderLeftColor: C.accent,
   },
   batterySaverLabel: {
     flex: 1,
   },
   batterySaverText: {
     fontSize: 14,
-    fontWeight: '600',
-    color: COLORS.darkSage,
+    fontFamily: Fonts.bodySemibold,
+    color: C.dark,
     marginBottom: 2,
   },
   batterySaverSubtext: {
     fontSize: 11,
-    color: COLORS.mutedSage,
+    color: C.muted,
   },
   toggleSwitch: {
     width: 50,
     height: 28,
     borderRadius: 14,
-    backgroundColor: '#e0e0e0',
+    backgroundColor: C.toggleOff,
     padding: 2,
     justifyContent: 'flex-start',
   },
   toggleSwitchActive: {
-    backgroundColor: COLORS.accent,
+    backgroundColor: C.accent,
     justifyContent: 'flex-end',
   },
   toggleThumb: {
@@ -3101,19 +3427,19 @@ const styles = StyleSheet.create({
   },
   timerLabel: {
     fontSize: 14,
-    color: COLORS.mutedSage,
+    color: C.muted,
   },
   timerText: {
     fontSize: 48,
-    fontWeight: '300',
-    color: '#34C759',
+    fontFamily: Fonts.displayBold,
+    color: C.accent,
     fontVariant: ['tabular-nums'],
     marginBottom: 4,
   },
   pickupCountText: {
     fontSize: 14,
-    color: COLORS.mutedSage,
-    fontWeight: '500',
+    color: C.muted,
+    fontFamily: Fonts.bodyMedium,
   },
   button: {
     flexDirection: 'row',
@@ -3124,16 +3450,16 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   buttonStart: {
-    backgroundColor: COLORS.sage,
-    shadowColor: COLORS.sage,
+    backgroundColor: C.primary,
+    shadowColor: C.primary,
     shadowOpacity: 0.32,
     shadowRadius: 14,
     shadowOffset: { width: 0, height: 10 },
     elevation: 8,
   },
   buttonStop: {
-    backgroundColor: COLORS.error,
-    shadowColor: COLORS.error,
+    backgroundColor: C.danger,
+    shadowColor: C.danger,
     shadowOpacity: 0.3,
     shadowRadius: 14,
     shadowOffset: { width: 0, height: 10 },
@@ -3147,7 +3473,7 @@ const styles = StyleSheet.create({
   },
   buttonTextLarge: {
     fontSize: 16,
-    fontWeight: '700',
+    fontFamily: Fonts.bodyBold,
     color: '#fff',
   },
   modalContainer: {
@@ -3164,8 +3490,8 @@ const styles = StyleSheet.create({
   },
   modalTitle: {
     fontSize: 24,
-    fontWeight: '700',
-    color: COLORS.darkSage,
+    fontFamily: Fonts.headlineBold,
+    color: C.dark,
     marginBottom: 20,
     textAlign: 'center',
   },
@@ -3176,19 +3502,19 @@ const styles = StyleSheet.create({
     width: 40,
     height: 4,
     borderRadius: 2,
-    backgroundColor: '#E3E7DC',
+    backgroundColor: C.border,
     marginBottom: 14,
   },
   doneTitle: {
     fontSize: 26,
-    fontWeight: '800',
-    color: COLORS.darkSage,
+    fontFamily: Fonts.displayBold,
+    color: C.dark,
     textAlign: 'center',
     letterSpacing: -0.4,
   },
   doneSub: {
     fontSize: 14,
-    color: COLORS.mutedSage,
+    color: C.muted,
     textAlign: 'center',
     marginTop: 4,
     marginBottom: 20,
@@ -3197,25 +3523,25 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#F4F7EF',
+    backgroundColor: C.tint,
     borderRadius: 16,
     paddingVertical: 18,
   },
-  heroStat: { flex: 1, alignItems: 'center' },
-  heroDivider: { width: 1, height: 40, backgroundColor: '#E1E7D8' },
-  heroNum: { fontSize: 30, fontWeight: '800', color: COLORS.accent, letterSpacing: -0.5 },
-  heroLabel: { fontSize: 13, color: COLORS.mutedSage, marginTop: 3 },
+  heroStat: { flex: 1, alignItems: 'center', minWidth: 0, paddingHorizontal: 8 },
+  heroDivider: { width: 1, height: 40, backgroundColor: C.border2 },
+  heroNum: { fontSize: 44, fontFamily: Fonts.displayBold, color: C.accent, letterSpacing: -1 },
+  heroLabel: { fontSize: 13, color: C.muted, marginTop: 3 },
   estLine: {
     fontSize: 13,
-    color: COLORS.mutedSage,
+    color: C.muted,
     textAlign: 'center',
     marginTop: 10,
     marginBottom: 22,
   },
   qLabel: {
     fontSize: 16,
-    fontWeight: '700',
-    color: COLORS.darkSage,
+    fontFamily: Fonts.bodyBold,
+    color: C.dark,
     marginBottom: 12,
   },
   amountGrid: {
@@ -3229,43 +3555,43 @@ const styles = StyleSheet.create({
     paddingVertical: 16,
     borderRadius: 14,
     borderWidth: 1.5,
-    borderColor: COLORS.border,
+    borderColor: C.border,
     backgroundColor: '#fff',
     alignItems: 'center',
   },
   amountChipActive: {
-    borderColor: COLORS.accent,
-    backgroundColor: COLORS.light,
+    borderColor: C.accent,
+    backgroundColor: C.tint,
   },
-  amountChipText: { fontSize: 15, fontWeight: '700', color: COLORS.darkSage },
-  amountChipTextActive: { color: '#2D5016' },
+  amountChipText: { fontSize: 15, fontFamily: Fonts.bodyBold, color: C.dark },
+  amountChipTextActive: { color: C.primary },
   optionalNote: {
     fontSize: 12.5,
-    color: COLORS.mutedSage,
+    color: C.muted,
     textAlign: 'center',
     marginTop: 10,
     marginBottom: 20,
   },
   primarySave: {
-    backgroundColor: COLORS.accent,
+    backgroundColor: C.accent,
     borderRadius: 14,
     height: 54,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  primarySaveText: { fontSize: 17, fontWeight: '800', color: '#fff' },
+  primarySaveText: { fontSize: 17, fontFamily: Fonts.bodyBold, color: '#fff' },
   discardLink: { alignItems: 'center', paddingVertical: 14, marginTop: 2 },
-  discardLinkText: { fontSize: 14, fontWeight: '600', color: COLORS.mutedSage },
+  discardLinkText: { fontSize: 14, fontFamily: Fonts.bodySemibold, color: C.muted },
   summaryBox: {
-    backgroundColor: '#f9f9f9',
+    backgroundColor: C.tint,
     borderRadius: 12,
     padding: 16,
     marginBottom: 16,
   },
   summaryLabel: {
     fontSize: 13,
-    fontWeight: '600',
-    color: COLORS.mutedSage,
+    fontFamily: Fonts.bodySemibold,
+    color: C.muted,
     marginBottom: 12,
   },
   summaryRow: {
@@ -3278,32 +3604,32 @@ const styles = StyleSheet.create({
   },
   summaryValue: {
     fontSize: 24,
-    fontWeight: '700',
-    color: '#34C759',
+    fontFamily: Fonts.displayBold,
+    color: C.accent,
     marginBottom: 4,
   },
   summaryItemLabel: {
     fontSize: 12,
-    color: COLORS.mutedSage,
+    color: C.muted,
   },
   summaryEstimate: {
     fontSize: 12,
-    color: COLORS.mutedSage,
+    color: C.muted,
     textAlign: 'center',
     fontStyle: 'italic',
   },
   weightInput: {
     borderWidth: 1,
-    borderColor: COLORS.border,
+    borderColor: C.border,
     borderRadius: 8,
     padding: 12,
     fontSize: 16,
-    color: COLORS.darkSage,
+    color: C.dark,
     marginBottom: 8,
   },
   comparisonText: {
     fontSize: 12,
-    color: COLORS.mutedSage,
+    color: C.muted,
     textAlign: 'center',
   },
   buttonRow: {
@@ -3317,24 +3643,24 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   cancelButton: {
-    backgroundColor: '#f0f0f0',
+    backgroundColor: C.tint,
   },
   cancelButtonText: {
     fontSize: 14,
-    fontWeight: '600',
-    color: COLORS.mutedSage,
+    fontFamily: Fonts.bodySemibold,
+    color: C.muted,
   },
   saveButton: {
-    backgroundColor: COLORS.accent,
+    backgroundColor: C.accent,
   },
   saveButtonText: {
     fontSize: 14,
-    fontWeight: '600',
+    fontFamily: Fonts.bodySemibold,
     color: '#fff',
   },
   resultsContainer: {
     flex: 1,
-    backgroundColor: '#f9f9f9',
+    backgroundColor: C.white,
   },
   resultsContent: {
     paddingHorizontal: 16,
@@ -3349,17 +3675,17 @@ const styles = StyleSheet.create({
   },
   resultsTitle: {
     fontSize: 28,
-    fontWeight: '700',
-    color: COLORS.darkSage,
+    fontFamily: Fonts.headlineBold,
+    color: C.dark,
   },
   resultsSavedNote: {
     fontSize: 13,
-    color: COLORS.mutedSage,
+    color: C.muted,
     marginTop: 2,
   },
   closeButton: {
     fontSize: 24,
-    color: COLORS.mutedSage,
+    color: C.muted,
     paddingHorizontal: 12,
   },
   resultsSection: {
@@ -3367,8 +3693,8 @@ const styles = StyleSheet.create({
   },
   resultsSubtitle: {
     fontSize: 16,
-    fontWeight: '600',
-    color: COLORS.darkSage,
+    fontFamily: Fonts.bodySemibold,
+    color: C.dark,
     marginBottom: 12,
   },
   statsGrid: {
@@ -3381,25 +3707,23 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     padding: 12,
     alignItems: 'center',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
-    shadowRadius: 2,
+    borderWidth: 1.5,
+    borderColor: C.border,
   },
   resultStatValue: {
     fontSize: 20,
-    fontWeight: '700',
-    color: '#34C759',
+    fontFamily: Fonts.displayBold,
+    color: C.accent,
     marginBottom: 4,
   },
   resultStatLabel: {
     fontSize: 11,
-    color: COLORS.mutedSage,
+    color: C.muted,
     textAlign: 'center',
   },
   noData: {
     fontSize: 13,
-    color: COLORS.mutedSage,
+    color: C.muted,
     textAlign: 'center',
     paddingVertical: 20,
     fontStyle: 'italic',
@@ -3411,14 +3735,14 @@ const styles = StyleSheet.create({
   },
   routeLabel: {
     fontSize: 12,
-    fontWeight: '600',
-    color: COLORS.mutedSage,
+    fontFamily: Fonts.bodySemibold,
+    color: C.muted,
     marginBottom: 4,
     marginTop: 8,
   },
   routeCoords: {
     fontSize: 13,
-    color: COLORS.darkSage,
+    color: C.dark,
     fontFamily: 'Courier',
     fontWeight: '500',
     marginBottom: 8,
@@ -3435,32 +3759,32 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   resultButtonPrimary: {
-    backgroundColor: COLORS.accent,
+    backgroundColor: C.accent,
   },
   resultButtonPrimaryText: {
     fontSize: 16,
-    fontWeight: '600',
+    fontFamily: Fonts.bodySemibold,
     color: '#fff',
   },
   resultButtonSecondary: {
     backgroundColor: '#fff',
     borderWidth: 2,
-    borderColor: COLORS.accent,
+    borderColor: C.accent,
   },
   resultButtonSecondaryText: {
     fontSize: 16,
-    fontWeight: '600',
-    color: '#34C759',
+    fontFamily: Fonts.bodySemibold,
+    color: C.accent,
   },
   resultButtonExport: {
-    backgroundColor: COLORS.cream,
+    backgroundColor: C.white,
     borderWidth: 2,
-    borderColor: COLORS.mutedSage,
+    borderColor: C.muted,
   },
   resultButtonExportText: {
     fontSize: 16,
-    fontWeight: '600',
-    color: COLORS.mutedSage,
+    fontFamily: Fonts.bodySemibold,
+    color: C.muted,
   },
   modeToggle: {
     flexDirection: 'row',
@@ -3473,21 +3797,21 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     borderRadius: 8,
     borderWidth: 2,
-    borderColor: COLORS.border,
-    backgroundColor: '#f9f9f9',
+    borderColor: C.border,
+    backgroundColor: C.white,
     alignItems: 'center',
   },
   modeButtonActive: {
-    borderColor: COLORS.accent,
-    backgroundColor: COLORS.light,
+    borderColor: C.accent,
+    backgroundColor: C.tint,
   },
   modeButtonText: {
     fontSize: 13,
-    fontWeight: '600',
-    color: COLORS.mutedSage,
+    fontFamily: Fonts.bodySemibold,
+    color: C.muted,
   },
   modeButtonTextActive: {
-    color: '#34C759',
+    color: C.accent,
   },
   bagSizeOptions: {
     flexDirection: 'row',
@@ -3499,30 +3823,30 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     borderRadius: 8,
     borderWidth: 2,
-    borderColor: COLORS.border,
-    backgroundColor: '#f9f9f9',
+    borderColor: C.border,
+    backgroundColor: C.white,
     alignItems: 'center',
   },
   bagOptionActive: {
-    borderColor: COLORS.accent,
-    backgroundColor: COLORS.light,
+    borderColor: C.accent,
+    backgroundColor: C.tint,
   },
   bagOptionText: {
     fontSize: 11,
-    fontWeight: '600',
-    color: COLORS.darkSage,
+    fontFamily: Fonts.bodySemibold,
+    color: C.dark,
     textAlign: 'center',
   },
   bagOptionTextActive: {
-    color: '#34C759',
+    color: C.accent,
   },
   fullnessContainer: {
     marginBottom: 12,
   },
   fullnessLabel: {
     fontSize: 13,
-    fontWeight: '600',
-    color: COLORS.darkSage,
+    fontFamily: Fonts.bodySemibold,
+    color: C.dark,
     marginBottom: 8,
   },
   sliderTrack: {
@@ -3534,7 +3858,7 @@ const styles = StyleSheet.create({
   },
   sliderFill: {
     height: '100%',
-    backgroundColor: COLORS.accent,
+    backgroundColor: C.accent,
   },
   sliderButtons: {
     flexDirection: 'row',
@@ -3542,12 +3866,12 @@ const styles = StyleSheet.create({
   },
   sliderButton: {
     fontSize: 20,
-    fontWeight: '700',
-    color: '#34C759',
+    fontFamily: Fonts.bodyBold,
+    color: C.accent,
     paddingHorizontal: 12,
   },
   weightEstimate: {
-    backgroundColor: COLORS.light,
+    backgroundColor: C.tint,
     padding: 12,
     borderRadius: 8,
     alignItems: 'center',
@@ -3555,13 +3879,13 @@ const styles = StyleSheet.create({
   },
   weightEstimateLabel: {
     fontSize: 12,
-    color: COLORS.mutedSage,
+    color: C.muted,
     marginBottom: 4,
   },
   weightEstimateValue: {
     fontSize: 24,
-    fontWeight: '700',
-    color: '#34C759',
+    fontFamily: Fonts.displayBold,
+    color: C.accent,
   },
   scaleInfoButton: {
     position: 'absolute',
@@ -3573,10 +3897,8 @@ const styles = StyleSheet.create({
     backgroundColor: '#fff',
     alignItems: 'center',
     justifyContent: 'center',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
+    borderWidth: 1.5,
+    borderColor: C.border,
     zIndex: 10,
   },
   scaleInfoButtonText: {
@@ -3594,10 +3916,10 @@ const styles = StyleSheet.create({
   citySwitch: { flexDirection: 'row', alignItems: 'center', alignSelf: 'flex-start' },
   citySwitchChevron: {
     fontSize: 22,
-    fontWeight: '700',
-    color: COLORS.darkSage,
+    fontFamily: Fonts.bodyBold,
+    color: C.dark,
     marginTop: -2,
-    textShadowColor: 'rgba(245,245,240,0.95)',
+    textShadowColor: 'rgba(255,255,255,0.95)',
     textShadowOffset: { width: 0, height: 1 },
     textShadowRadius: 6,
   },
@@ -3608,15 +3930,12 @@ const styles = StyleSheet.create({
     width: 44,
     height: 44,
     borderRadius: 22,
-    backgroundColor: COLORS.white,
+    backgroundColor: C.white,
     alignItems: 'center',
     justifyContent: 'center',
     zIndex: 10,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.15,
-    shadowRadius: 5,
-    elevation: 4,
+    borderWidth: 1.5,
+    borderColor: C.border,
   },
   adoptButton: {
     position: 'absolute',
@@ -3629,59 +3948,48 @@ const styles = StyleSheet.create({
     width: 44,
     height: 44,
     borderRadius: 22,
-    backgroundColor: COLORS.white,
+    backgroundColor: C.white,
     alignItems: 'center',
     justifyContent: 'center',
     zIndex: 10,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.15,
-    shadowRadius: 5,
-    elevation: 4,
+    borderWidth: 1.5,
+    borderColor: C.border,
   },
-  adoptButtonActive: { backgroundColor: COLORS.sage },
+  adoptButtonActive: { backgroundColor: C.primary },
   toolOption: { position: 'absolute', right: 12, flexDirection: 'row', alignItems: 'center', gap: 10, zIndex: 11 },
-  toolOptionLabel: { backgroundColor: '#fff', color: COLORS.darkSage, fontSize: 13, fontWeight: '700', paddingVertical: 6, paddingHorizontal: 12, borderRadius: 14, overflow: 'hidden', shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.12, shadowRadius: 5, elevation: 3 },
-  toolOptionBtn: { width: 44, height: 44, borderRadius: 22, backgroundColor: COLORS.white, alignItems: 'center', justifyContent: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.15, shadowRadius: 5, elevation: 4 },
+  toolOptionLabel: { backgroundColor: '#fff', color: C.dark, fontSize: 13, fontFamily: Fonts.bodyBold, paddingVertical: 6, paddingHorizontal: 12, borderRadius: 14, overflow: 'hidden', borderWidth: 1.5, borderColor: C.border },
+  toolOptionBtn: { width: 44, height: 44, borderRadius: 22, backgroundColor: C.white, alignItems: 'center', justifyContent: 'center', borderWidth: 1.5, borderColor: C.border },
   adoptBanner: { position: 'absolute', left: 0, right: 0, alignItems: 'center', zIndex: 20 },
   adoptBannerPill: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 14,
-    backgroundColor: COLORS.sage,
+    backgroundColor: C.primary,
     paddingVertical: 10,
     paddingHorizontal: 18,
     borderRadius: 22,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.2,
-    shadowRadius: 8,
-    elevation: 5,
   },
-  adoptBannerText: { color: '#fff', fontSize: 14, fontWeight: '700' },
-  adoptBannerCancel: { color: 'rgba(255,255,255,0.85)', fontSize: 14, fontWeight: '700' },
+  adoptBannerText: { color: '#fff', fontSize: 14, fontFamily: Fonts.bodyBold },
+  adoptBannerCancel: { color: 'rgba(255,255,255,0.85)', fontSize: 14, fontFamily: Fonts.bodyBold },
   cityBackdrop: {
     flex: 1,
-    backgroundColor: 'rgba(27,46,26,0.35)',
+    backgroundColor: 'rgba(15,47,102,0.35)',
     justifyContent: 'flex-start',
     paddingTop: 110,
     paddingHorizontal: 20,
   },
   citySheet: {
-    backgroundColor: COLORS.white,
+    backgroundColor: C.white,
     borderRadius: 16,
     paddingVertical: 8,
     paddingHorizontal: 8,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.2,
-    shadowRadius: 16,
-    elevation: 8,
+    borderWidth: 1.5,
+    borderColor: C.border,
   },
   citySheetTitle: {
     fontSize: 12,
-    fontWeight: '700',
-    color: COLORS.mutedSage,
+    fontFamily: Fonts.bodySemibold,
+    color: C.muted,
     textTransform: 'uppercase',
     letterSpacing: 0.4,
     paddingHorizontal: 10,
@@ -3689,34 +3997,32 @@ const styles = StyleSheet.create({
     paddingBottom: 8,
   },
   citySearchInput: {
-    backgroundColor: COLORS.cream,
+    backgroundColor: C.white,
     borderRadius: 12,
     borderWidth: 1,
-    borderColor: COLORS.border,
+    borderColor: C.border,
     paddingHorizontal: 14,
     paddingVertical: 12,
     fontSize: 16,
-    color: COLORS.darkSage,
+    color: C.dark,
     marginHorizontal: 4,
     marginBottom: 4,
   },
-  cityHint: { fontSize: 13, color: COLORS.mutedSage, paddingHorizontal: 14, paddingVertical: 10 },
+  cityHint: { fontSize: 13, color: C.muted, paddingHorizontal: 14, paddingVertical: 10 },
   cityRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 13, paddingHorizontal: 10, borderRadius: 10 },
-  cityRowText: { fontSize: 16, fontWeight: '600', color: COLORS.darkSage, flex: 1 },
+  cityRowText: { fontSize: 16, fontFamily: Fonts.bodySemibold, color: C.dark, flex: 1 },
   mapButton: {
     width: 40,
     height: 40,
     borderRadius: 20,
-    backgroundColor: COLORS.white,
+    backgroundColor: C.white,
     alignItems: 'center',
     justifyContent: 'center',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
+    borderWidth: 1.5,
+    borderColor: C.border,
   },
   mapButtonActive: {
-    backgroundColor: COLORS.sage,
+    backgroundColor: C.primary,
   },
   mapButtonText: {
     fontSize: 20,
@@ -3732,10 +4038,8 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     width: '85%',
     maxHeight: '80%',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
+    borderWidth: 1.5,
+    borderColor: C.border,
   },
   scaleInfoHeader: {
     flexDirection: 'row',
@@ -3748,17 +4052,27 @@ const styles = StyleSheet.create({
   },
   scaleInfoTitle: {
     fontSize: 16,
-    fontWeight: '700',
-    color: COLORS.darkSage,
+    fontFamily: Fonts.headlineBold,
+    color: C.dark,
   },
   scaleInfoClose: {
     fontSize: 20,
-    color: COLORS.mutedSage,
+    color: C.muted,
   },
   scaleInfoContent: {
     paddingHorizontal: 16,
     paddingVertical: 12,
   },
+  scaleRampRow: { flexDirection: 'row', gap: 14, marginTop: 4 },
+  scaleRamp: {
+    width: 14,
+    borderRadius: 7,
+    overflow: 'hidden',
+    alignSelf: 'stretch',
+  },
+  scaleRampLabels: { flex: 1, justifyContent: 'space-between', paddingVertical: 2, gap: 10 },
+  scaleNeverSwatch: { width: 22, flexDirection: 'column', gap: 3, alignItems: 'center', marginTop: 4 },
+  scaleNeverDash: { width: 14, height: 3, borderRadius: 2, backgroundColor: '#C4C8BD' },
   scaleItem: {
     flexDirection: 'row',
     gap: 12,
@@ -3777,17 +4091,17 @@ const styles = StyleSheet.create({
   },
   scaleItemTitle: {
     fontSize: 13,
-    fontWeight: '600',
-    color: COLORS.darkSage,
+    fontFamily: Fonts.bodySemibold,
+    color: C.dark,
     marginBottom: 2,
   },
   scaleItemDesc: {
     fontSize: 12,
-    color: COLORS.mutedSage,
+    color: C.muted,
     lineHeight: 16,
   },
   scaleInfoNote: {
-    backgroundColor: COLORS.light,
+    backgroundColor: C.tint,
     borderRadius: 8,
     paddingHorizontal: 12,
     paddingVertical: 10,
@@ -3796,12 +4110,12 @@ const styles = StyleSheet.create({
   },
   scaleInfoNoteText: {
     fontSize: 12,
-    color: '#558B2F',
+    color: C.accent,
     lineHeight: 16,
     fontStyle: 'italic',
   },
   scaleInfoButton2: {
-    backgroundColor: COLORS.accent,
+    backgroundColor: C.accent,
     paddingVertical: 12,
     alignItems: 'center',
     borderRadius: 0,
@@ -3810,7 +4124,7 @@ const styles = StyleSheet.create({
   },
   scaleInfoButtonText2: {
     fontSize: 14,
-    fontWeight: '600',
+    fontFamily: Fonts.bodySemibold,
     color: '#fff',
   },
   // Photo intake (summary)
@@ -3820,7 +4134,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#fff',
     borderWidth: 1.5,
     borderStyle: 'dashed',
-    borderColor: '#C4CDBA',
+    borderColor: C.border,
     borderRadius: 16,
     padding: 16,
     flexDirection: 'row',
@@ -3831,12 +4145,12 @@ const styles = StyleSheet.create({
     width: 42,
     height: 42,
     borderRadius: 12,
-    backgroundColor: '#EEF3E6',
+    backgroundColor: C.tint,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  addPhotoTitle: { fontSize: 14, fontWeight: '700', color: COLORS.darkSage },
-  addPhotoSub: { fontSize: 12, color: COLORS.mutedSage, marginTop: 2 },
+  addPhotoTitle: { fontSize: 14, fontFamily: Fonts.bodyBold, color: C.dark },
+  addPhotoSub: { fontSize: 12, color: C.muted, marginTop: 2 },
   photoWrap: {
     position: 'relative',
     marginTop: 4,
@@ -3844,7 +4158,7 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     overflow: 'hidden',
   },
-  photoPreview: { width: '100%', height: 160, backgroundColor: '#EEF3E6' },
+  photoPreview: { width: '100%', height: 160, backgroundColor: C.tint },
   photoRemove: {
     position: 'absolute',
     top: 10,
@@ -3852,22 +4166,22 @@ const styles = StyleSheet.create({
     width: 28,
     height: 28,
     borderRadius: 14,
-    backgroundColor: 'rgba(27,46,26,0.55)',
+    backgroundColor: 'rgba(15,47,102,0.55)',
     alignItems: 'center',
     justifyContent: 'center',
   },
   // Results photo + share CTA
-  resultsPhoto: { width: '100%', height: 180, borderRadius: 16, backgroundColor: '#EEF3E6' },
+  resultsPhoto: { width: '100%', height: 180, borderRadius: 16, backgroundColor: C.tint },
   shareCta: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     gap: 10,
-    backgroundColor: COLORS.sage,
+    backgroundColor: C.primary,
     borderRadius: 16,
     paddingVertical: 16,
   },
-  shareCtaText: { color: '#fff', fontSize: 16, fontWeight: '700' },
+  shareCtaText: { color: '#fff', fontSize: 16, fontFamily: Fonts.bodyBold },
   communityCta: {
     marginTop: 10,
     flexDirection: 'row',
@@ -3878,31 +4192,31 @@ const styles = StyleSheet.create({
     borderRadius: 14,
     backgroundColor: '#fff',
     borderWidth: 1.5,
-    borderColor: COLORS.sage,
+    borderColor: C.primary,
   },
-  communityCtaText: { color: COLORS.sage, fontSize: 16, fontWeight: '700' },
-  autoPostNote: { marginTop: 10, fontSize: 13, color: COLORS.mutedSage, textAlign: 'center' },
+  communityCtaText: { color: C.primary, fontSize: 16, fontFamily: Fonts.bodyBold },
+  autoPostNote: { marginTop: 10, fontSize: 13, color: C.muted, textAlign: 'center' },
   composeOverlay: { ...StyleSheet.absoluteFillObject, justifyContent: 'flex-end', zIndex: 50 },
-  composeBackdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(27,46,26,0.45)' },
-  composeSheet: { backgroundColor: COLORS.cream, borderTopLeftRadius: 28, borderTopRightRadius: 28, padding: 22, paddingBottom: 34 },
-  composeTitle: { fontSize: 20, fontWeight: '700', color: COLORS.darkSage, marginBottom: 14 },
-  composePhoto: { width: '100%', aspectRatio: 1.4, borderRadius: 14, backgroundColor: COLORS.light, marginBottom: 14 },
+  composeBackdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(15,47,102,0.45)' },
+  composeSheet: { backgroundColor: C.white, borderTopLeftRadius: 28, borderTopRightRadius: 28, padding: 22, paddingBottom: 34 },
+  composeTitle: { fontSize: 20, fontFamily: Fonts.headlineBold, color: C.dark, marginBottom: 14 },
+  composePhoto: { width: '100%', aspectRatio: 1.4, borderRadius: 14, backgroundColor: C.tint, marginBottom: 14 },
   composeInput: {
     backgroundColor: '#fff',
     borderRadius: 14,
     borderWidth: 1,
-    borderColor: COLORS.border,
+    borderColor: C.border,
     padding: 14,
     fontSize: 15,
-    color: COLORS.darkSage,
+    color: C.dark,
     minHeight: 70,
     textAlignVertical: 'top',
   },
-  composeHint: { fontSize: 12, color: COLORS.mutedSage, marginTop: 10, lineHeight: 17 },
+  composeHint: { fontSize: 12, color: C.muted, marginTop: 10, lineHeight: 17 },
   composeActions: { flexDirection: 'row', gap: 12, marginTop: 18 },
   composeBtn: { flex: 1, borderRadius: 14, paddingVertical: 14, alignItems: 'center', justifyContent: 'center' },
-  composeCancel: { backgroundColor: '#fff', borderWidth: 1, borderColor: COLORS.border },
-  composeCancelText: { color: COLORS.darkSage, fontSize: 15, fontWeight: '700' },
-  composePost: { backgroundColor: COLORS.sage },
-  composePostText: { color: '#fff', fontSize: 15, fontWeight: '700' },
+  composeCancel: { backgroundColor: '#fff', borderWidth: 1, borderColor: C.border },
+  composeCancelText: { color: C.dark, fontSize: 15, fontFamily: Fonts.bodyBold },
+  composePost: { backgroundColor: C.primary },
+  composePostText: { color: '#fff', fontSize: 15, fontFamily: Fonts.bodyBold },
 });

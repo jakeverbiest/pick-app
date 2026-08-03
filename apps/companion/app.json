@@ -23,13 +23,14 @@
         "UIBackgroundModes": [
           "location"
         ],
-        "ITSAppUsesNonExemptEncryption": false
+        "ITSAppUsesNonExemptEncryption": false,
+        "NSSupportsLiveActivities": true
       }
     },
     "android": {
       "package": "com.jakeverbiest.pickapp",
       "adaptiveIcon": {
-        "backgroundColor": "#2D5016",
+        "backgroundColor": "#05286E",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
         "backgroundImage": "./assets/images/android-icon-background.png",
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
@@ -58,9 +59,9 @@
           "image": "./assets/images/splash-icon.png",
           "imageWidth": 200,
           "resizeMode": "contain",
-          "backgroundColor": "#2D5016",
+          "backgroundColor": "#05286E",
           "dark": {
-            "backgroundColor": "#1B2E1A"
+            "backgroundColor": "#05286E"
           }
         }
       ],
@@ -84,9 +85,10 @@
       [
         "expo-notifications",
         {
-          "color": "#2D5016"
+          "color": "#05286E"
         }
-      ]
+      ],
+      "expo-secure-store"
     ],
     "experiments": {
       "typedRoutes": true,

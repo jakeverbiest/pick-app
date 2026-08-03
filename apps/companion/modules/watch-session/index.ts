@@ -26,10 +26,31 @@ export function addWatchCommandListener(listener: (command: WatchCommand) => voi
   return { remove: () => sub.remove() };
 }
 
+export type WatchExtras = {
+  /** Id of the current walk. A change tells the watch to reset its counters;
+   *  empty means "no walk", so a cached snapshot can't resurrect an old count. */
+  sessionId?: string;
+  /** Street segments finished this walk, as a string. The watch buzzes when it
+   *  increments (subject to `haptics`). */
+  segments?: string;
+  /** '1' | '0' — mirrors the user's segment-haptics setting to the watch. */
+  haptics?: string;
+  distance?: string; // preformatted, e.g. "1.24 mi"
+  bags?: string; // preformatted, e.g. "½ bag"
+  progress?: string; // preformatted, e.g. "64% · 5 to go"
+  eventName?: string; // active competition/event name (top-right on the watch)
+  eventPct?: string; // that event area's % cleaned, preformatted
+};
+
 /** Mirror current walk stats to the watch. No-op without the native module. */
-export function sendStatsToWatch(pickups: number, elapsedSeconds: number, state: WalkState): void {
+export function sendStatsToWatch(
+  pickups: number,
+  elapsedSeconds: number,
+  state: WalkState,
+  extras: WatchExtras = {}
+): void {
   try {
-    native?.sendStats(pickups, elapsedSeconds, state);
+    native?.sendStats(pickups, elapsedSeconds, state, extras);
   } catch {
     // Watch bridge is best-effort; never let it touch the walk itself.
   }

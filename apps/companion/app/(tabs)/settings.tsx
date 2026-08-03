@@ -1,4 +1,5 @@
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Pressable, Alert, TextInput, Modal, KeyboardAvoidingView, Platform, Keyboard, Linking, Share } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Pressable, Alert, TextInput, Modal, KeyboardAvoidingView, Platform, Keyboard, Linking, Share, Image } from 'react-native';
+import * as ImagePicker from 'expo-image-picker';
 import QRCode from 'react-native-qrcode-svg';
 import * as Clipboard from 'expo-clipboard';
 import Constants from 'expo-constants';
@@ -10,12 +11,20 @@ import { getDatabase } from '../../src/services/database';
 import { getAuthService } from '../../src/services/authService';
 import { getFitnessService, FITNESS_APPS, RECOMMENDED_CONFIGS } from '../../src/services/fitnessService';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { CARRY_MODE_KEY, CarryMode } from '../../src/services/motionDetection';
 import { HEALTH_SYNC_KEY, setHealthSyncEnabled } from '../../src/services/healthService';
+import {
+  getWeeklyGoal,
+  setWeeklyGoal,
+  hydrateWeeklyGoal,
+  syncWeeklyGoalReminder,
+  WEEKLY_GOAL_CHOICES,
+} from '../../src/services/weeklyGoal';
+import { computeStreak } from '../../src/services/streaks';
 import { PRIVACY_POLICY_TEXT, TERMS_OF_SERVICE_TEXT } from '../../src/constants/legal';
 import { FitnessApp } from '../../src/types';
-import { COLORS, SPACING, RADIUS } from '../../src/constants/colors';
-import { C, radius, shadow } from '../../src/pick/theme';
+import { SPACING, RADIUS } from '../../src/constants/colors';
+import { C, radius, Fonts } from '../../src/pick/theme';
+import { getProfile, setHandle as claimHandle, uploadAvatar, setProfileHidden } from '../../src/services/profiles';
 import { Icon, IconName } from '../../src/pick/Icon';
 import {
   getCrashReports,
@@ -26,6 +35,8 @@ import {
 import { stopBackgroundSession } from '../../src/services/backgroundSession';
 import { TeamSection } from '../../src/pick/TeamSection';
 import { listMyAdoptions, removeAdoption, Adoption } from '../../src/services/adoptions';
+import { isSegmentHapticsEnabled, setSegmentHapticsEnabled, segmentCompleteHaptic } from '../../src/services/haptics';
+import { connectBluesky, disconnectBluesky, getBlueskyAccount, type BlueskyAccount } from '../../src/services/bluesky';
 
 // Beta invite (TestFlight public link) + the public community dashboard.
 const TESTFLIGHT_URL = 'https://testflight.apple.com/join/6753UhuM';
@@ -87,10 +98,31 @@ export default function SettingsScreen() {
   const [isEditing, setIsEditing] = useState(false);
   const [loading, setLoading] = useState(true);
   const [legalDoc, setLegalDoc] = useState<'privacy' | 'terms' | null>(null);
-  const [carryMode, setCarryMode] = useState<CarryMode>('auto');
   const [healthSync, setHealthSync] = useState(true);
+  const [weeklyGoal, setWeeklyGoalState] = useState(3);
   const [crashReports, setCrashReports] = useState<CrashReport[]>([]);
   const [uid, setUid] = useState('');
+  // @handle — editable here (moved from the People screen, design audit)
+  const [handleInput, setHandleInput] = useState('');
+  const [savedHandle, setSavedHandle] = useState('');
+  const [avatarUrl, setAvatarUrl] = useState('');
+
+  // Replace the initial letter with a photo. (Longer-term: avatar builder /
+  // memoji-style options; for now, upload any image.)
+  const pickAvatar = async () => {
+    const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!perm.granted) return;
+    const res = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ['images'],
+      allowsEditing: true,
+      aspect: [1, 1],
+      quality: 0.6,
+    });
+    if (res.canceled || !res.assets?.[0]?.uri) return;
+    const up = await uploadAvatar(res.assets[0].uri);
+    if (up.ok && up.url) setAvatarUrl(up.url);
+    else Alert.alert('Upload failed', up.error || 'Please try again.');
+  };
   const [email, setEmail] = useState('');
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [inviteOpen, setInviteOpen] = useState(false);
@@ -103,13 +135,21 @@ export default function SettingsScreen() {
   const [teamOpen, setTeamOpen] = useState(false);
   const [manageOpen, setManageOpen] = useState(false);
   const [leaderboardHidden, setLeaderboardHidden] = useState(false);
+  const [profileHidden, setProfileHidden] = useState(false);
   const [communitySharing, setCommunitySharing] = useState(true);
   const [communityAutoPost, setCommunityAutoPost] = useState(false);
+  const [segmentHaptics, setSegmentHaptics] = useState(true);
+  const [blueskyAccount, setBlueskyAccount] = useState<BlueskyAccount | null>(null);
+  const [blueskyAutoPost, setBlueskyAutoPost] = useState(false);
+  const [blueskyModalOpen, setBlueskyModalOpen] = useState(false);
+  const [blueskyIdentifier, setBlueskyIdentifier] = useState('');
+  const [blueskyPassword, setBlueskyPassword] = useState('');
+  const [blueskyConnecting, setBlueskyConnecting] = useState(false);
 
   useEffect(() => {
-    AsyncStorage.getItem(CARRY_MODE_KEY).then((v) => {
-      if (v === 'pocket' || v === 'hand' || v === 'auto') setCarryMode(v);
-    });
+    getWeeklyGoal().then(setWeeklyGoalState);
+    getBlueskyAccount().then(setBlueskyAccount);
+    isSegmentHapticsEnabled().then(setSegmentHaptics);
     AsyncStorage.getItem(HEALTH_SYNC_KEY).then((v) => {
       if (v !== null) setHealthSync(v === 'true');
     });
@@ -183,15 +223,35 @@ export default function SettingsScreen() {
     );
   };
 
+  const toggleSegmentHaptics = async () => {
+    const next = !segmentHaptics;
+    setSegmentHaptics(next);
+    await setSegmentHapticsEnabled(next);
+    // Preview the buzz when turning it on, so the setting explains itself.
+    if (next) segmentCompleteHaptic();
+  };
+
   const toggleHealthSync = async () => {
     const next = !healthSync;
     setHealthSync(next);
     await setHealthSyncEnabled(next);
   };
 
-  const selectCarryMode = async (mode: CarryMode) => {
-    setCarryMode(mode);
-    await AsyncStorage.setItem(CARRY_MODE_KEY, mode);
+  // Weekly goal — the number behind "goal met" on the Impact tab. Saving it
+  // also re-arms the local weekend reminder against this week's actual count.
+  const selectWeeklyGoal = async (goal: number) => {
+    const saved = await setWeeklyGoal(goal);
+    setWeeklyGoalState(saved);
+    try {
+      const db = await getDatabase();
+      const currentUser = getAuthService().getCurrentUser();
+      if (currentUser) await db.updateUserSettings(currentUser.uid, { weekly_goal: saved } as any);
+      const cleanups = await db.getCleanups(500);
+      const ts = (cleanups || []).map((c: any) => c.timestamp).filter((n: any) => typeof n === 'number');
+      await syncWeeklyGoalReminder({ done: computeStreak(ts).thisCalendarWeek, goal: saved });
+    } catch (e) {
+      console.warn('Weekly goal sync failed (kept locally):', e);
+    }
   };
 
   useEffect(() => {
@@ -208,6 +268,11 @@ export default function SettingsScreen() {
         setDisplayName(currentUser.displayName);
         setEmail(currentUser.email || '');
         setNeighborhood(currentUser.neighborhood);
+        try {
+          const profile = await getProfile(currentUser.uid);
+          if (profile?.handle) { setHandleInput(profile.handle); setSavedHandle(profile.handle); }
+          if (profile?.avatar_url) setAvatarUrl(profile.avatar_url);
+        } catch {}
 
         const db = await getDatabase();
         const userSettings = await db.getUserSettings(currentUser.uid);
@@ -216,8 +281,13 @@ export default function SettingsScreen() {
           setDistanceUnit(userSettings.distance_unit || 'mi');
           setTeamName(userSettings.team_name || '');
           setLeaderboardHidden(!!userSettings.leaderboard_hidden);
+          setProfileHidden(!!(userSettings as any).profile_hidden);
           setCommunitySharing(userSettings.community_sharing_enabled !== false);
+          // The synced goal wins on a fresh device; locally-set values are
+          // written back to the settings doc, so the two can't drift.
+          hydrateWeeklyGoal((userSettings as any).weekly_goal).then(setWeeklyGoalState);
           setCommunityAutoPost(!!userSettings.community_auto_post);
+          setBlueskyAutoPost(!!(userSettings as any).bluesky_auto_post);
           try {
             const apps = JSON.parse(userSettings.fitness_apps || '[]');
             setEnabledFitnessApps(apps);
@@ -253,9 +323,22 @@ export default function SettingsScreen() {
         fitness_apps: JSON.stringify(enabledFitnessApps),
         team_name: teamName,
         leaderboard_hidden: leaderboardHidden,
+        profile_hidden: profileHidden,
         community_sharing_enabled: communitySharing,
         community_auto_post: communityAutoPost,
+        weekly_goal: weeklyGoal,
       } as any);
+
+      // Handle claim — only when changed; uniqueness enforced server-side.
+      const cleaned = handleInput.trim().replace(/^@/, '');
+      if (cleaned && cleaned !== savedHandle) {
+        const res = await claimHandle(cleaned);
+        if (!res.ok) {
+          Alert.alert('Handle not saved', res.error || 'Try a different handle.');
+          return; // stay in edit mode so they can fix it
+        }
+        setSavedHandle(cleaned);
+      }
 
       setIsEditing(false);
       Alert.alert('Settings Saved', 'Your preferences have been updated');
@@ -277,6 +360,25 @@ export default function SettingsScreen() {
     } catch (error) {
       console.error('Failed to update leaderboard visibility:', error);
       setLeaderboardHidden(!next); // revert on failure
+    }
+  };
+
+  // Profile visibility: whether tapping your name anywhere (leaderboard row,
+  // post author, People search) opens your public profile. Off makes those
+  // names inert and hides your profile page from everyone but you.
+  const toggleProfileVisibility = async () => {
+    const next = !profileHidden;
+    setProfileHidden(next);
+    try {
+      const db = await getDatabase();
+      const currentUser = getAuthService().getCurrentUser();
+      if (currentUser) await db.updateUserSettings(currentUser.uid, { profile_hidden: next } as any);
+      // Mirror onto the PUBLIC profile doc — that's what other people's
+      // screens can actually read to decide whether the name is tappable.
+      await setProfileHidden(next);
+    } catch (error) {
+      console.error('Failed to update profile visibility:', error);
+      setProfileHidden(!next); // revert on failure
     }
   };
 
@@ -306,6 +408,53 @@ export default function SettingsScreen() {
       console.error('Failed to update auto-post:', error);
       setCommunityAutoPost(!next);
     }
+  };
+
+  const toggleBlueskyAutoPost = async () => {
+    const next = !blueskyAutoPost;
+    setBlueskyAutoPost(next);
+    try {
+      const db = await getDatabase();
+      const currentUser = getAuthService().getCurrentUser();
+      if (currentUser) await db.updateUserSettings(currentUser.uid, { bluesky_auto_post: next } as any);
+    } catch (error) {
+      console.error('Failed to update Bluesky auto-post:', error);
+      setBlueskyAutoPost(!next);
+    }
+  };
+
+  const submitBlueskyConnect = async () => {
+    if (!blueskyIdentifier.trim() || !blueskyPassword.trim()) {
+      Alert.alert('Missing info', 'Enter your handle and an app password.');
+      return;
+    }
+    setBlueskyConnecting(true);
+    try {
+      const account = await connectBluesky(blueskyIdentifier, blueskyPassword);
+      setBlueskyAccount(account);
+      setBlueskyModalOpen(false);
+      setBlueskyIdentifier('');
+      setBlueskyPassword('');
+    } catch (error: any) {
+      Alert.alert('Could not connect', error?.message || 'Check your handle and app password and try again.');
+    } finally {
+      setBlueskyConnecting(false);
+    }
+  };
+
+  const handleDisconnectBluesky = () => {
+    Alert.alert('Disconnect Bluesky?', 'You can reconnect any time.', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Disconnect',
+        style: 'destructive',
+        onPress: async () => {
+          await disconnectBluesky();
+          setBlueskyAccount(null);
+          if (blueskyAutoPost) toggleBlueskyAutoPost();
+        },
+      },
+    ]);
   };
 
   const toggleFitnessApp = (app: FitnessApp) => {
@@ -445,12 +594,15 @@ export default function SettingsScreen() {
     );
   };
 
-  const shareInvite = async () => {
-    try {
-      await Share.share({
-        message: `Try PICK — pop your phone in your pocket and it counts the litter you pick up automatically, then maps how clean your neighborhood is getting. Install on iPhone: ${TESTFLIGHT_URL}`,
-      });
-    } catch {}
+  const shareInvite = () => {
+    const message = `Try PICK — pop your phone in your pocket and it counts the litter you pick up automatically, then maps how clean your neighborhood is getting. Install on iPhone: ${TESTFLIGHT_URL}`;
+    // This button lives inside the invite Modal, and iOS can't present the OS
+    // share sheet over an open React Native Modal — the Modal underneath stops
+    // taking touches afterwards, trapping you on it. Close first, then share.
+    setInviteOpen(false);
+    setTimeout(() => {
+      Share.share({ message }).catch(() => {});
+    }, 400);
   };
 
   const copyInvite = async () => {
@@ -506,9 +658,18 @@ export default function SettingsScreen() {
 
         {/* ---------- Identity header ---------- */}
         <View style={styles.profileCard}>
-          <View style={styles.avatar}>
-            <Text style={styles.avatarInitial}>{initial}</Text>
-          </View>
+          <Pressable onPress={pickAvatar} accessibilityLabel="Change profile picture">
+            <View style={styles.avatar}>
+              {avatarUrl ? (
+                <Image source={{ uri: avatarUrl }} style={styles.avatarImg} />
+              ) : (
+                <Text style={styles.avatarInitial}>{initial}</Text>
+              )}
+            </View>
+            <View style={styles.avatarBadge}>
+              <Icon name="camera" size={10} color="#fff" sw={2} />
+            </View>
+          </Pressable>
           <View style={{ flex: 1, minWidth: 0 }}>
             {isEditing ? (
               <TextInput
@@ -522,7 +683,7 @@ export default function SettingsScreen() {
               <Text style={styles.profileName} numberOfLines={1}>{displayName || 'Your name'}</Text>
             )}
             <Text style={styles.profileMeta} numberOfLines={1}>
-              {teamLabel}{neighborhood ? '  ·  ' + neighborhood : ''}
+              {savedHandle ? `@${savedHandle}  ·  ` : ''}{teamLabel}{neighborhood ? '  ·  ' + neighborhood : ''}
             </Text>
           </View>
           {!isEditing && (
@@ -535,6 +696,16 @@ export default function SettingsScreen() {
         {/* Editable extras + save/cancel — only in edit mode */}
         {isEditing && (
           <View style={styles.section}>
+            <Text style={styles.fieldLabel}>Handle</Text>
+            <TextInput
+              style={styles.input}
+              value={handleInput}
+              onChangeText={setHandleInput}
+              placeholder="@yourhandle"
+              placeholderTextColor={C.muted}
+              autoCapitalize="none"
+              autoCorrect={false}
+            />
             <Text style={styles.fieldLabel}>Home area (optional)</Text>
             <TextInput
               style={styles.input}
@@ -589,7 +760,7 @@ export default function SettingsScreen() {
           <GroupHead icon="user" label="Preferences & privacy" />
           <View style={[styles.prefRow, { paddingVertical: 6 }]}>
             <Text style={styles.prefLabel}>Distance units</Text>
-            <View style={styles.pillRow}>
+            <View style={[styles.pillRow, { flexWrap: 'nowrap', flexShrink: 0 }]}>
               {(['mi', 'km'] as const).map((u) => (
                 <Pressable key={u} style={[styles.pill, distanceUnit === u && styles.pillActive]} onPress={() => setDistanceUnit(u)}>
                   <Text style={[styles.pillText, distanceUnit === u && styles.pillTextActive]}>{u}</Text>
@@ -598,11 +769,47 @@ export default function SettingsScreen() {
             </View>
           </View>
           <View style={styles.divider} />
+          {/* Weekly goal — the target behind "goal met" on Impact. Also
+              editable by tapping the streak card there. */}
+          <View style={[styles.prefRow, { paddingVertical: 6 }]}>
+            <View style={{ flex: 1, paddingRight: 10 }}>
+              <Text style={styles.prefLabel}>Weekly cleanup goal</Text>
+              <Text style={styles.rowLinkSub}>
+                One weekend reminder if you're short.
+              </Text>
+            </View>
+            <View style={styles.pillRow}>
+              {WEEKLY_GOAL_CHOICES.map((g) => (
+                <Pressable
+                  key={g}
+                  style={[styles.pill, weeklyGoal === g && styles.pillActive]}
+                  onPress={() => selectWeeklyGoal(g)}
+                >
+                  <Text style={[styles.pillText, weeklyGoal === g && styles.pillTextActive]}>{g}</Text>
+                </Pressable>
+              ))}
+            </View>
+          </View>
+          <View style={styles.divider} />
+          <Toggle
+            label="Buzz when I finish a block"
+            sub="A short vibration the moment your route covers a whole street segment — so you feel progress with the phone in your pocket. Your watch buzzes too."
+            value={segmentHaptics}
+            onPress={toggleSegmentHaptics}
+          />
+          <View style={styles.divider} />
           <Toggle
             label="Show me on the leaderboard"
             sub="Your name and totals appear on the individual leaderboard. Off keeps you private."
             value={!leaderboardHidden}
             onPress={toggleLeaderboardVisibility}
+          />
+          <View style={styles.divider} />
+          <Toggle
+            label="Let people open my profile"
+            sub="Tapping your name on a leaderboard, post, or search result opens your public profile. Off makes your name inert."
+            value={!profileHidden}
+            onPress={toggleProfileVisibility}
           />
           <View style={styles.divider} />
           <Toggle
@@ -621,6 +828,39 @@ export default function SettingsScreen() {
                 onPress={toggleCommunityAutoPost}
               />
             </>
+          )}
+        </View>
+
+        {/* ---------- Bluesky ---------- */}
+        <View style={styles.section}>
+          <GroupHead icon="link" label="Bluesky" />
+          {blueskyAccount ? (
+            <>
+              <View style={styles.rowLink}>
+                <View style={{ flex: 1, paddingRight: 12 }}>
+                  <Text style={styles.rowLinkLabel}>Connected as @{blueskyAccount.handle}</Text>
+                  <Text style={styles.rowLinkSub}>Posts go out under your own Bluesky account.</Text>
+                </View>
+                <Pressable onPress={handleDisconnectBluesky}>
+                  <Text style={[styles.chev, { color: C.danger, fontSize: 14 }]}>Disconnect</Text>
+                </Pressable>
+              </View>
+              <View style={styles.divider} />
+              <Toggle
+                label="Auto-share to Bluesky"
+                sub="When you add a photo to a cleanup, post it to Bluesky on save — no extra tap."
+                value={blueskyAutoPost}
+                onPress={toggleBlueskyAutoPost}
+              />
+            </>
+          ) : (
+            <Pressable style={styles.rowLink} onPress={() => setBlueskyModalOpen(true)}>
+              <View style={{ flex: 1, paddingRight: 12 }}>
+                <Text style={styles.rowLinkLabel}>Connect Bluesky</Text>
+                <Text style={styles.rowLinkSub}>Share cleanups straight to Bluesky, with or without auto-post.</Text>
+              </View>
+              <Text style={styles.chev}>▸</Text>
+            </Pressable>
           )}
         </View>
 
@@ -745,26 +985,11 @@ export default function SettingsScreen() {
 
         {advancedOpen && (
           <>
-            {/* Carry mode */}
-            <View style={styles.section}>
-              <GroupHead icon="pin" label="Carry mode" />
-              <Text style={styles.sectionSubtext}>
-                Where the phone rides during cleanup. Auto figures it out from how the phone moves.
-              </Text>
-              <View style={styles.pillRow}>
-                {(['auto', 'pocket', 'hand'] as CarryMode[]).map((mode) => (
-                  <Pressable
-                    key={mode}
-                    style={[styles.pill, carryMode === mode && styles.pillActive]}
-                    onPress={() => selectCarryMode(mode)}
-                  >
-                    <Text style={[styles.pillText, carryMode === mode && styles.pillTextActive]}>
-                      {mode === 'auto' ? 'Auto' : mode === 'pocket' ? 'Pocket' : 'In hand'}
-                    </Text>
-                  </Pressable>
-                ))}
-              </View>
-            </View>
+            {/* Carry mode used to be a manual auto/pocket/in-hand picker here.
+                Removed in build 16: the detector's auto classification is what
+                everyone left it on, and the manual override mostly served to
+                make detection worse when someone picked wrong. The 'auto'
+                code path in motionDetection is unchanged and still runs. */}
 
             {/* Diagnostics */}
             <View style={styles.section}>
@@ -785,22 +1010,22 @@ export default function SettingsScreen() {
                       <View
                         key={r.startedAt + '-' + i}
                         style={{
-                          backgroundColor: COLORS.cream,
+                          backgroundColor: C.tint,
                           borderRadius: RADIUS.md,
                           padding: SPACING.md,
                           marginTop: SPACING.sm,
                           borderLeftWidth: 3,
-                          borderLeftColor: '#FF3B30',
+                          borderLeftColor: C.danger,
                         }}
                       >
-                        <Text style={{ fontWeight: '700', color: COLORS.darkSage }}>
+                        <Text style={{ fontFamily: Fonts.bodyBold, color: C.dark }}>
                           {new Date(r.startedAt).toLocaleString()}
                         </Text>
-                        <Text style={{ color: COLORS.mutedSage, marginTop: 2 }}>
+                        <Text style={{ fontFamily: Fonts.body, color: C.muted, marginTop: 2 }}>
                           Survived {mins}m {secs}s · {r.routePoints} route pts · {r.pickups} pickups ·{' '}
                           {r.motionEvents} motion events
                         </Text>
-                        <Text style={{ color: COLORS.mutedSage, marginTop: 2, fontSize: 12 }}>
+                        <Text style={{ fontFamily: Fonts.body, color: C.muted, marginTop: 2, fontSize: 12 }}>
                           Battery saver {r.batterySaver ? 'on' : 'off'} · detected {r.gapSec}s after last
                           heartbeat
                         </Text>
@@ -920,7 +1145,7 @@ export default function SettingsScreen() {
             <TextInput
               style={styles.fbInput}
               placeholder="What's working, what's broken, what you'd change…"
-              placeholderTextColor="#8B9B7F"
+              placeholderTextColor={C.muted}
               value={feedbackText}
               onChangeText={setFeedbackText}
               multiline
@@ -934,6 +1159,52 @@ export default function SettingsScreen() {
               </TouchableOpacity>
               <TouchableOpacity style={[styles.fbBtn, styles.fbSend]} onPress={sendFeedback} disabled={sendingFeedback}>
                 <Text style={styles.fbSendText}>{sendingFeedback ? 'Sending…' : 'Send'}</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
+
+      {/* Connect Bluesky */}
+      <Modal visible={blueskyModalOpen} transparent animationType="slide" onRequestClose={() => setBlueskyModalOpen(false)}>
+        <KeyboardAvoidingView style={styles.fbOverlay} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
+          <TouchableOpacity style={styles.fbBackdrop} activeOpacity={1} onPress={() => Keyboard.dismiss()} />
+          <View style={styles.fbSheet}>
+            <Text style={styles.fbTitle}>Connect Bluesky</Text>
+            <Text style={styles.fbSub}>
+              Use an app password, not your real password — create one at bsky.app/settings/app-passwords.
+            </Text>
+            <TextInput
+              style={[styles.fbInput, { minHeight: 0, height: 46 }]}
+              placeholder="Handle (e.g. you.bsky.social)"
+              placeholderTextColor={C.muted}
+              value={blueskyIdentifier}
+              onChangeText={setBlueskyIdentifier}
+              autoCapitalize="none"
+              autoCorrect={false}
+              editable={!blueskyConnecting}
+            />
+            <TextInput
+              style={[styles.fbInput, { minHeight: 0, height: 46, marginTop: 10 }]}
+              placeholder="App password"
+              placeholderTextColor={C.muted}
+              value={blueskyPassword}
+              onChangeText={setBlueskyPassword}
+              autoCapitalize="none"
+              autoCorrect={false}
+              secureTextEntry
+              editable={!blueskyConnecting}
+            />
+            <View style={styles.fbActions}>
+              <TouchableOpacity
+                style={[styles.fbBtn, styles.fbCancel]}
+                onPress={() => { Keyboard.dismiss(); setBlueskyModalOpen(false); }}
+                disabled={blueskyConnecting}
+              >
+                <Text style={styles.fbCancelText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={[styles.fbBtn, styles.fbSend]} onPress={submitBlueskyConnect} disabled={blueskyConnecting}>
+                <Text style={styles.fbSendText}>{blueskyConnecting ? 'Connecting…' : 'Connect'}</Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -980,7 +1251,7 @@ export default function SettingsScreen() {
             <Text style={styles.fbTitle}>Invite a friend</Text>
             <Text style={styles.inviteSub}>Have them point their iPhone camera at this code to join the PICK beta.</Text>
             <View style={styles.qrWrap}>
-              <QRCode value={TESTFLIGHT_URL} size={196} color={COLORS.darkSage} backgroundColor="#ffffff" />
+              <QRCode value={TESTFLIGHT_URL} size={196} color={C.dark} backgroundColor="#ffffff" />
             </View>
             <Text style={styles.inviteUrl} numberOfLines={1}>{TESTFLIGHT_URL}</Text>
             <View style={[styles.fbActions, { width: '100%' }]}>
@@ -1014,11 +1285,13 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   title: {
+    fontFamily: Fonts.displayBold,
     fontSize: 28,
-    fontWeight: '700',
+    letterSpacing: -0.4,
     color: C.dark,
   },
   subtitle: {
+    fontFamily: Fonts.body,
     fontSize: 16,
     color: C.muted,
   },
@@ -1030,10 +1303,11 @@ const styles = StyleSheet.create({
     gap: 14,
     backgroundColor: C.white,
     borderRadius: radius.cardLg,
+    borderWidth: 1.5,
+    borderColor: C.border,
     padding: 18,
     marginTop: 8,
     marginBottom: 14,
-    ...shadow.card,
   },
   avatar: {
     width: 56,
@@ -1043,11 +1317,25 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  avatarInitial: { fontSize: 24, fontWeight: '800', color: C.primary },
-  profileName: { fontSize: 20, fontWeight: '700', color: C.dark, letterSpacing: -0.3 },
+  avatarInitial: { fontFamily: Fonts.displayBold, fontSize: 24, color: C.primary },
+  avatarImg: { width: 56, height: 56, borderRadius: 28 },
+  avatarBadge: {
+    position: 'absolute',
+    right: -2,
+    bottom: -2,
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    backgroundColor: C.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 2,
+    borderColor: '#fff',
+  },
+  profileName: { fontFamily: Fonts.headlineBold, fontSize: 20, color: C.dark, letterSpacing: -0.3 },
   profileNameInput: {
+    fontFamily: Fonts.headlineBold,
     fontSize: 18,
-    fontWeight: '700',
     color: C.dark,
     borderWidth: 1,
     borderColor: C.border,
@@ -1055,26 +1343,28 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 6,
   },
-  profileMeta: { fontSize: 13, color: C.muted, marginTop: 3 },
-  editButton: { fontSize: 14, color: C.accent, fontWeight: '700' },
+  profileMeta: { fontFamily: Fonts.body, fontSize: 13, color: C.muted, marginTop: 3 },
+  editButton: { fontFamily: Fonts.bodyBold, fontSize: 14, color: C.rust },
 
   // ---------- cards & groups ----------
   section: {
     backgroundColor: C.white,
     borderRadius: radius.cardLg,
+    borderWidth: 1.5,
+    borderColor: C.border,
     padding: 16,
     marginBottom: 14,
-    ...shadow.card,
   },
   groupHead: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 12 },
   groupTitle: {
+    fontFamily: Fonts.bodyBold,
     fontSize: 12,
-    fontWeight: '800',
     color: C.muted,
     letterSpacing: 0.5,
     textTransform: 'uppercase',
   },
   sectionSubtext: {
+    fontFamily: Fonts.body,
     fontSize: 12,
     color: C.muted,
     marginBottom: 12,
@@ -1082,18 +1372,19 @@ const styles = StyleSheet.create({
   },
   divider: { height: 1, backgroundColor: C.border2 },
 
-  fieldLabel: { fontSize: 13, color: C.muted, fontWeight: '600', marginBottom: 6 },
+  fieldLabel: { fontFamily: Fonts.bodySemibold, fontSize: 13, color: C.muted, marginBottom: 6 },
   input: {
     borderWidth: 1,
     borderColor: C.border,
     borderRadius: 10,
     paddingHorizontal: 12,
     paddingVertical: 10,
+    fontFamily: Fonts.body,
     fontSize: 14,
     color: C.dark,
   },
-  value: { fontSize: 14, color: C.dark, fontWeight: '600' },
-  valueBeta: { fontSize: 14, color: C.warning, fontWeight: '700' },
+  value: { fontFamily: Fonts.bodySemibold, fontSize: 14, color: C.dark },
+  valueBeta: { fontFamily: Fonts.bodyBold, fontSize: 14, color: C.warning },
 
   // ---------- link rows ----------
   rowLink: {
@@ -1102,14 +1393,14 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     paddingVertical: 13,
   },
-  rowLinkLabel: { fontSize: 14, color: C.dark, fontWeight: '600' },
-  rowLinkSub: { fontSize: 12, color: C.muted, marginTop: 2 },
-  rowLinkValue: { fontSize: 13, color: C.muted, fontWeight: '600', flexShrink: 1, textAlign: 'right', paddingLeft: 12 },
+  rowLinkLabel: { fontFamily: Fonts.bodySemibold, fontSize: 14, color: C.dark },
+  rowLinkSub: { fontFamily: Fonts.body, fontSize: 12, color: C.muted, marginTop: 2 },
+  rowLinkValue: { fontFamily: Fonts.bodySemibold, fontSize: 13, color: C.muted, flexShrink: 1, textAlign: 'right', paddingLeft: 12 },
   chev: { fontSize: 15, color: C.chevron, fontWeight: '700' },
 
   // ---------- preference pills ----------
   prefRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  prefLabel: { fontSize: 14, fontWeight: '600', color: C.dark },
+  prefLabel: { fontFamily: Fonts.bodySemibold, fontSize: 14, color: C.dark },
   pillRow: { flexDirection: 'row', gap: 8, flexWrap: 'wrap' },
   pill: {
     paddingVertical: 7,
@@ -1120,8 +1411,8 @@ const styles = StyleSheet.create({
     borderColor: 'transparent',
   },
   pillActive: { backgroundColor: C.primary, borderColor: C.primary },
-  pillText: { fontSize: 13, fontWeight: '700', color: C.text2 },
-  pillTextActive: { color: '#fff' },
+  pillText: { fontFamily: Fonts.bodyBold, fontSize: 13, color: C.text2 },
+  pillTextActive: { color: C.creamText },
 
   // ---------- advanced disclosure ----------
   advancedToggle: {
@@ -1132,7 +1423,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 6,
     marginBottom: 6,
   },
-  advancedToggleText: { fontSize: 13, fontWeight: '700', color: C.muted, letterSpacing: 0.2 },
+  advancedToggleText: { fontFamily: Fonts.bodyBold, fontSize: 13, color: C.muted, letterSpacing: 0.2 },
   advancedChevron: { fontSize: 14, color: C.muted, fontWeight: '700' },
 
   // ---------- toggles ----------
@@ -1142,8 +1433,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingVertical: 12,
   },
-  toggleLabel: { fontSize: 14, fontWeight: '600', color: C.dark, marginBottom: 2 },
-  toggleSubtext: { fontSize: 11, color: C.muted, lineHeight: 15 },
+  toggleLabel: { fontFamily: Fonts.bodySemibold, fontSize: 14, color: C.dark, marginBottom: 2 },
+  toggleSubtext: { fontFamily: Fonts.body, fontSize: 11, color: C.muted, lineHeight: 15 },
   toggleButton: {
     width: 50,
     height: 28,
@@ -1154,7 +1445,7 @@ const styles = StyleSheet.create({
   },
   toggleButtonActive: { backgroundColor: C.accent, justifyContent: 'flex-end' },
   toggleThumb: { width: 24, height: 24, borderRadius: 12, backgroundColor: C.white },
-  toggleThumbActive: { backgroundColor: C.white },
+  toggleThumbActive: { backgroundColor: C.creamText },
 
   // ---------- fitness (collapsed) ----------
   fitnessGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 14, marginBottom: 14 },
@@ -1167,29 +1458,29 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: C.border,
   },
-  fitnessName: { fontSize: 13, fontWeight: '700', color: C.dark },
-  fitnessPlatform: { fontSize: 11, color: C.muted, marginTop: 3 },
-  fitnessPlatformActive: { color: 'rgba(255,255,255,0.85)' },
+  fitnessName: { fontFamily: Fonts.bodyBold, fontSize: 13, color: C.dark },
+  fitnessPlatform: { fontFamily: Fonts.body, fontSize: 11, color: C.muted, marginTop: 3 },
+  fitnessPlatformActive: { color: 'rgba(254,252,221,0.85)' },
   unitButtonActive: { backgroundColor: C.primary, borderColor: C.primary },
-  unitButtonTextActive: { color: '#fff' },
+  unitButtonTextActive: { color: C.creamText },
   recommendationBox: { backgroundColor: C.tint, borderRadius: 14, padding: 14, marginBottom: 12 },
-  recommendationLabel: { fontSize: 12, fontWeight: '700', color: C.primary, marginBottom: 6 },
-  recommendationText: { fontSize: 12, color: C.text2, lineHeight: 18 },
+  recommendationLabel: { fontFamily: Fonts.bodyBold, fontSize: 12, color: C.primary, marginBottom: 6 },
+  recommendationText: { fontFamily: Fonts.body, fontSize: 12, color: C.text2, lineHeight: 18 },
   configBox: { backgroundColor: C.tint, borderRadius: 14, padding: 14 },
-  configTitle: { fontSize: 12, fontWeight: '700', color: C.primary, marginBottom: 8 },
+  configTitle: { fontFamily: Fonts.bodyBold, fontSize: 12, color: C.primary, marginBottom: 8 },
   configItem: { paddingVertical: 8, paddingLeft: 12, borderLeftWidth: 1, borderLeftColor: C.border },
-  configName: { fontSize: 12, fontWeight: '600', color: C.dark, marginBottom: 2 },
-  configDesc: { fontSize: 11, color: C.muted },
+  configName: { fontFamily: Fonts.bodySemibold, fontSize: 12, color: C.dark, marginBottom: 2 },
+  configDesc: { fontFamily: Fonts.body, fontSize: 11, color: C.muted },
 
-  aboutText: { fontSize: 12, color: C.muted, lineHeight: 18, textAlign: 'center', paddingHorizontal: 12, marginTop: 4 },
+  aboutText: { fontFamily: Fonts.body, fontSize: 12, color: C.muted, lineHeight: 18, textAlign: 'center', paddingHorizontal: 12, marginTop: 4 },
 
   // ---------- buttons ----------
   actionButtons: { flexDirection: 'row', gap: 12, marginTop: 16 },
   button: { flex: 1, paddingVertical: 12, borderRadius: 12, alignItems: 'center', marginTop: 10 },
   buttonCancel: { backgroundColor: C.tint, marginTop: 0 },
   buttonSave: { backgroundColor: C.primary, marginTop: 0 },
-  buttonText: { fontSize: 14, fontWeight: '700', color: C.dark },
-  buttonTextWhite: { fontSize: 14, fontWeight: '700', color: '#fff' },
+  buttonText: { fontFamily: Fonts.bodyBold, fontSize: 14, color: C.dark },
+  buttonTextWhite: { fontFamily: Fonts.bodyBold, fontSize: 14, color: C.creamText },
   buttonDev: { backgroundColor: C.tint, borderWidth: 1, borderColor: C.primary },
 
   neutralBtn: {
@@ -1199,7 +1490,7 @@ const styles = StyleSheet.create({
     backgroundColor: C.tint,
     alignItems: 'center',
   },
-  neutralBtnText: { fontSize: 14, fontWeight: '700', color: C.primary },
+  neutralBtnText: { fontFamily: Fonts.bodyBold, fontSize: 14, color: C.primary },
 
   manageRow: {
     flexDirection: 'row',
@@ -1208,7 +1499,7 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     marginTop: 6,
   },
-  manageText: { fontSize: 14, fontWeight: '700', color: C.danger },
+  manageText: { fontFamily: Fonts.bodyBold, fontSize: 14, color: C.danger },
   dangerButton: {
     paddingVertical: 12,
     borderRadius: 12,
@@ -1218,7 +1509,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: 10,
   },
-  dangerButtonText: { fontSize: 14, fontWeight: '700', color: C.danger },
+  dangerButtonText: { fontFamily: Fonts.bodyBold, fontSize: 14, color: C.danger },
 
   // ---------- legal modal ----------
   legalHeader: {
@@ -1230,23 +1521,24 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: C.border2,
   },
-  legalTitle: { fontSize: 18, fontWeight: '700', color: C.dark },
+  legalTitle: { fontFamily: Fonts.headlineBold, fontSize: 18, color: C.dark },
   legalClose: { fontSize: 20, color: C.muted, paddingHorizontal: 8 },
   legalContent: { padding: 16, paddingBottom: 40 },
-  legalText: { fontSize: 13, lineHeight: 20, color: C.text2 },
+  legalText: { fontFamily: Fonts.body, fontSize: 13, lineHeight: 20, color: C.text2 },
 
   // ---------- feedback sheet ----------
   fbOverlay: { flex: 1, justifyContent: 'flex-end' },
-  fbBackdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(27,46,26,0.45)' },
-  fbSheet: { backgroundColor: C.cream, borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 22, paddingBottom: 34 },
-  fbTitle: { fontSize: 20, fontWeight: '700', color: C.dark },
-  fbSub: { fontSize: 13, color: C.muted, marginTop: 2, marginBottom: 14 },
+  fbBackdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(15,47,102,0.45)' },
+  fbSheet: { backgroundColor: C.white, borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 22, paddingBottom: 34 },
+  fbTitle: { fontFamily: Fonts.headlineBold, fontSize: 20, color: C.dark },
+  fbSub: { fontFamily: Fonts.body, fontSize: 13, color: C.muted, marginTop: 2, marginBottom: 14 },
   fbInput: {
     backgroundColor: '#fff',
     borderRadius: 12,
     borderWidth: 1,
     borderColor: C.border,
     padding: 14,
+    fontFamily: Fonts.body,
     fontSize: 15,
     color: C.dark,
     minHeight: 110,
@@ -1255,21 +1547,22 @@ const styles = StyleSheet.create({
   fbActions: { flexDirection: 'row', gap: 12, marginTop: 16 },
   fbBtn: { flex: 1, borderRadius: 12, paddingVertical: 14, alignItems: 'center' },
   fbCancel: { backgroundColor: '#fff', borderWidth: 1, borderColor: C.border },
-  fbCancelText: { color: C.dark, fontSize: 15, fontWeight: '700' },
+  fbCancelText: { fontFamily: Fonts.bodyBold, color: C.dark, fontSize: 15 },
   fbSend: { backgroundColor: C.primary },
-  fbSendText: { color: '#fff', fontSize: 15, fontWeight: '700' },
+  fbSendText: { fontFamily: Fonts.bodyBold, color: C.creamText, fontSize: 15 },
 
   inviteSheet: {
-    backgroundColor: C.cream, borderTopLeftRadius: 24, borderTopRightRadius: 24,
+    backgroundColor: C.white, borderTopLeftRadius: 24, borderTopRightRadius: 24,
     padding: 22, paddingBottom: 34, alignItems: 'center',
+    borderWidth: 1.5, borderColor: C.border, borderBottomWidth: 0,
   },
-  inviteSub: { fontSize: 13, color: C.muted, marginTop: 2, marginBottom: 4, textAlign: 'center' },
+  inviteSub: { fontFamily: Fonts.body, fontSize: 13, color: C.muted, marginTop: 2, marginBottom: 4, textAlign: 'center' },
   adoptRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 11, borderBottomWidth: 1, borderBottomColor: C.border2 },
-  adoptName: { fontSize: 15, fontWeight: '700', color: C.dark },
-  adoptMeta: { fontSize: 12, color: C.muted, marginTop: 1 },
-  adoptEmpty: { fontSize: 13, color: C.muted, marginTop: 8, marginBottom: 4 },
+  adoptName: { fontFamily: Fonts.bodyBold, fontSize: 15, color: C.dark },
+  adoptMeta: { fontFamily: Fonts.body, fontSize: 12, color: C.muted, marginTop: 1 },
+  adoptEmpty: { fontFamily: Fonts.body, fontSize: 13, color: C.muted, marginTop: 8, marginBottom: 4 },
   reminderRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 },
-  reminderLabel: { fontSize: 14, fontWeight: '600', color: C.dark },
-  qrWrap: { backgroundColor: '#fff', padding: 16, borderRadius: 18, marginTop: 16, marginBottom: 12, ...shadow.card },
-  inviteUrl: { fontSize: 12, color: C.muted, marginBottom: 16, maxWidth: '100%' },
+  reminderLabel: { fontFamily: Fonts.bodySemibold, fontSize: 14, color: C.dark },
+  qrWrap: { backgroundColor: '#fff', padding: 16, borderRadius: 18, marginTop: 16, marginBottom: 12, borderWidth: 1.5, borderColor: C.border },
+  inviteUrl: { fontFamily: Fonts.body, fontSize: 12, color: C.muted, marginBottom: 16, maxWidth: '100%' },
 });

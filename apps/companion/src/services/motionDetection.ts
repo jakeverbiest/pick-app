@@ -67,6 +67,10 @@ class MotionDetector {
   private sessionStartTime: number = 0;
   private lastPickupTime: number = 0;
   private lastRhythmicTime: number = 0; // last walking-rhythm window, for context suppression
+  // Onset gate: pickups don't count until the user has actually started walking
+  // (a walking-rhythm window, or GPS showing a walking pace). Kills the false
+  // pickups from handling the phone / moving around indoors before the walk.
+  private hasStartedWalking = false;
   private isListening: boolean = false;
   private accelSubscription: any = null;
   private gyroSubscription: any = null;
@@ -112,19 +116,18 @@ class MotionDetector {
       this.pickupEvents = [];
       this.lastPickupTime = 0;
       this.lastRhythmicTime = 0;
+      this.hasStartedWalking = false; // arm counting only once real walking begins
       this.sessionStartTime = Date.now();
 
-      // Carry mode: auto (default) classifies pocket-vs-hand from the gyro
-      // baseline as the session runs; manual override available in Settings
-      try {
-        const stored = await AsyncStorage.getItem(CARRY_MODE_KEY);
-        this.carryMode = stored === 'pocket' || stored === 'hand' ? stored : 'auto';
-      } catch {
-        this.carryMode = 'auto';
-      }
+      // Carry mode is always 'auto' as of build 16 — the classifier reads
+      // pocket-vs-hand from the gyro baseline as the session runs. The manual
+      // Settings override was removed (people picked wrong and got worse
+      // detection); the stored key is cleared so old choices can't linger.
+      this.carryMode = 'auto';
+      try { await AsyncStorage.removeItem(CARRY_MODE_KEY); } catch {}
       this.recentGyros = [];
       this.lastAutoCarry = 'unknown';
-      console.log(`👖 Carry mode: ${this.carryMode}${this.carryMode === 'auto' ? ' (classifying from gyro baseline)' : ''}`);
+      console.log('👖 Carry mode: auto (classifying from gyro baseline)');
 
       // Request location permissions
       const { status } = await Location.requestForegroundPermissionsAsync();
@@ -257,6 +260,10 @@ class MotionDetector {
             result = { confidence: 0, reason: `too fast: ${evSpeed.toFixed(1)} m/s > ${MAX_PICKUP_SPEED_MPS} (biking/driving?)` };
           }
 
+          // Arm the onset gate once GPS shows a walking pace (they're outside and
+          // moving), even if the motion rhythm was too subtle to register.
+          if (evSpeed >= 0.7 && evSpeed <= MAX_PICKUP_SPEED_MPS) this.hasStartedWalking = true;
+
           const finalConfidence = result.confidence;
           const accepted = finalConfidence > 30;
 
@@ -269,12 +276,19 @@ class MotionDetector {
           // which breaks the rhythm.
           if (!accepted && typeof result.reason === 'string' && result.reason.startsWith('rhythmic')) {
             this.lastRhythmicTime = now;
+            this.hasStartedWalking = true; // a walking-rhythm window = they're walking
           }
 
           let counted = false;
           let suppressed = false;
+          let preWalk = false;
           if (accepted) {
-            if (now - this.lastRhythmicTime < WALKING_CONTEXT_MS) {
+            if (!this.hasStartedWalking) {
+              // Not walking yet — pre-walk handling (phone out of pocket, the walk
+              // to your starting spot). Don't count until real walking has begun.
+              preWalk = true;
+              suppressed = true;
+            } else if (now - this.lastRhythmicTime < WALKING_CONTEXT_MS) {
               // Still mid-stride — almost certainly a walking bounce, not a
               // pause-and-bend pickup. Suppress (logged, not counted).
               suppressed = true;
@@ -296,7 +310,7 @@ class MotionDetector {
             confidence: finalConfidence,
             accepted,
             counted,
-            reason: !accepted ? result.reason : suppressed ? 'walking context (stride bounce?)' : counted ? 'ok' : 'cooldown',
+            reason: !accepted ? result.reason : preWalk ? 'pre-walk (not walking yet)' : suppressed ? 'walking context (stride bounce?)' : counted ? 'ok' : 'cooldown',
             peaks,
             speed: this.lastLocation?.speed ?? -1,
           });

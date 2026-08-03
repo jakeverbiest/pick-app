@@ -69,6 +69,8 @@ export interface UserSettings {
   team_name?: string;
   team_id?: string;
   leaderboard_hidden?: boolean; // opted out of the public individual leaderboard
+  profile_hidden?: boolean; // name isn't tappable; profile page is private (mirrored to profiles/{uid}.hidden)
+  weekly_goal?: number; // cleanups/week target behind "goal met" on Impact
   community_sharing_enabled?: boolean; // show the "Share to community" option (default on)
   community_auto_post?: boolean; // auto-post a cleanup's photo to community on save (default off)
   created_at: number;

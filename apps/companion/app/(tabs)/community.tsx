@@ -8,11 +8,12 @@ import { getDatabase } from '../../src/services/firebaseDatabase';
 import type { Post } from '../../src/services/firebaseDatabase';
 import { getAuthService } from '../../src/services/authService';
 import { listFollowingIds } from '../../src/services/follows';
+import { getProfiles } from '../../src/services/profiles';
 import { Icon } from '../../src/pick/Icon';
 import { ImpactMap } from '../../src/pick/ImpactMap';
 import { ImpactComposer } from '../../src/pick/ImpactComposer';
 import { LiveNow } from '../../src/pick/LiveNow';
-import { C, radius, shadow } from '../../src/pick/theme';
+import { C, Fonts, radius } from '../../src/pick/theme';
 
 type FeedMode = 'following' | 'everyone';
 
@@ -41,6 +42,9 @@ export default function CommunityScreen() {
   const router = useRouter();
   const [posts, setPosts] = useState<Post[]>([]);
   const [uid, setUid] = useState('');
+  // uid → @handle / avatar for post authors (name + handle display, design audit)
+  const [handles, setHandles] = useState<Record<string, string>>({});
+  const [avatars, setAvatars] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
   const [mode, setMode] = useState<FeedMode>('everyone');
   const [composerOpen, setComposerOpen] = useState(false);
@@ -51,12 +55,27 @@ export default function CommunityScreen() {
       const db = await getDatabase();
       const user = getAuthService().getCurrentUser();
       setUid(user?.uid || '');
+      let loaded: Post[];
       if (feedMode === 'following') {
         const ids = await listFollowingIds();
-        setPosts(await db.getPostsByUsers(ids, 50));
+        loaded = await db.getPostsByUsers(ids, 50);
       } else {
-        setPosts(await db.getPosts(50));
+        loaded = await db.getPosts(50);
       }
+      setPosts(loaded);
+      // Resolve author handles (batched, cached by the profiles service).
+      try {
+        const uids = [...new Set(loaded.map((p) => p.uid).filter(Boolean))];
+        const profiles = await getProfiles(uids);
+        const map: Record<string, string> = {};
+        const avs: Record<string, string> = {};
+        profiles.forEach((p) => {
+          if (p?.handle) map[p.uid] = p.handle;
+          if (p?.avatar_url) avs[p.uid] = p.avatar_url;
+        });
+        setHandles(map);
+        setAvatars(avs);
+      } catch {}
     } catch (error) {
       console.error('Failed to load community feed:', error);
     } finally {
@@ -195,9 +214,18 @@ export default function CommunityScreen() {
                         hitSlop={4}
                       >
                         <View style={styles.authorAvatar}>
-                          <Text style={styles.authorAvatarText}>{post.display_name.slice(0, 1).toUpperCase()}</Text>
+                          {avatars[post.uid] ? (
+                            <Image source={{ uri: avatars[post.uid] }} style={styles.authorAvatarImg} />
+                          ) : (
+                            <Text style={styles.authorAvatarText}>{post.display_name.slice(0, 1).toUpperCase()}</Text>
+                          )}
                         </View>
-                        <Text style={styles.author}>{post.display_name}</Text>
+                        <View>
+                          <Text style={styles.author}>{post.display_name}</Text>
+                          {!!handles[post.uid] && (
+                            <Text style={styles.authorHandle}>@{handles[post.uid]}</Text>
+                          )}
+                        </View>
                       </Pressable>
                     )}
                     {!!post.caption && <Text style={styles.caption}>{post.caption}</Text>}
@@ -241,54 +269,56 @@ export default function CommunityScreen() {
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: C.cream },
+  root: { flex: 1, backgroundColor: C.white },
   scroll: { paddingHorizontal: 16, paddingTop: 8, paddingBottom: 40 },
   center: { paddingVertical: 60, alignItems: 'center' },
-  loading: { fontSize: 16, color: C.muted },
+  loading: { fontFamily: Fonts.body, fontSize: 16, color: C.muted },
 
   titleRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 },
-  h1: { fontSize: 28, fontWeight: '700', letterSpacing: -0.4, color: C.dark },
+  h1: { fontFamily: Fonts.displayBold, fontSize: 32, letterSpacing: -0.4, color: C.dark, textTransform: 'uppercase' },
   headerActions: { flexDirection: 'row', gap: 8 },
-  actionBtn: { flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: '#fff', borderRadius: 999, paddingHorizontal: 12, paddingVertical: 7, borderWidth: 1, borderColor: C.border },
+  actionBtn: { flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: C.white, borderRadius: radius.pill, paddingHorizontal: 12, paddingVertical: 7, borderWidth: 1.5, borderColor: C.border },
   actionPrimary: { backgroundColor: C.primary, borderColor: C.primary },
-  actionText: { fontSize: 13, fontWeight: '700', color: C.primary },
+  actionText: { fontFamily: Fonts.bodyBold, fontSize: 12, color: C.primary },
 
-  segmentWrap: { flexDirection: 'row', backgroundColor: C.border2, borderRadius: 999, padding: 3, marginTop: 16, marginBottom: 18 },
-  segment: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingVertical: 8, borderRadius: 999 },
-  segmentActive: { backgroundColor: '#fff', ...shadow.card },
-  segmentText: { fontSize: 14, fontWeight: '700', color: C.muted },
-  segmentTextActive: { color: C.dark },
+  segmentWrap: { flexDirection: 'row', backgroundColor: C.tint, borderRadius: radius.field, padding: 3, marginTop: 16, marginBottom: 18 },
+  segment: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingVertical: 8, borderRadius: radius.chip },
+  segmentActive: { backgroundColor: C.white },
+  segmentText: { fontFamily: Fonts.bodySemibold, fontSize: 14, color: C.muted },
+  segmentTextActive: { color: C.dark, fontFamily: Fonts.bodyBold },
 
-  card: { backgroundColor: '#fff', borderRadius: radius.card, overflow: 'hidden', ...shadow.card },
+  card: { backgroundColor: C.white, borderRadius: radius.card, borderWidth: 1.5, borderColor: C.border, overflow: 'hidden' },
   photo: { width: '100%', aspectRatio: 1.25, backgroundColor: C.tint },
 
   statsRow: { flexDirection: 'row', flexWrap: 'wrap', paddingVertical: 12, paddingHorizontal: 6, borderTopWidth: 1, borderTopColor: C.border2 },
   stat: { minWidth: '25%', alignItems: 'center', paddingVertical: 6 },
-  statValue: { fontSize: 19, fontWeight: '700', color: C.primary },
-  statLabel: { fontSize: 11.5, color: C.text3, marginTop: 2, textAlign: 'center' },
+  statValue: { fontFamily: Fonts.displayBold, fontSize: 20, color: C.primary },
+  statLabel: { fontFamily: Fonts.body, fontSize: 11.5, color: C.text3, marginTop: 2, textAlign: 'center' },
 
   body: { padding: 14 },
   authorRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 8 },
-  authorAvatar: { width: 26, height: 26, borderRadius: 13, backgroundColor: C.tint, alignItems: 'center', justifyContent: 'center' },
-  authorAvatarText: { fontSize: 12, fontWeight: '700', color: C.primary },
-  author: { fontSize: 14, fontWeight: '700', color: C.dark },
-  caption: { fontSize: 15, color: C.dark, fontWeight: '500', lineHeight: 21, marginBottom: 10 },
+  authorAvatar: { width: 26, height: 26, borderRadius: 13, backgroundColor: C.primary, alignItems: 'center', justifyContent: 'center' },
+  authorAvatarText: { fontFamily: Fonts.headlineBold, fontSize: 12, color: C.creamText },
+  authorAvatarImg: { width: 26, height: 26, borderRadius: 13 },
+  author: { fontFamily: Fonts.bodyBold, fontSize: 14, color: C.dark },
+  authorHandle: { fontFamily: Fonts.bodySemibold, fontSize: 11, color: C.muted, marginTop: 1 },
+  caption: { fontFamily: Fonts.bodyMedium, fontSize: 15, color: C.dark, lineHeight: 21, marginBottom: 10 },
 
   metaRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10 },
   metaLeft: { flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1, minWidth: 0 },
   placePill: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: C.tint, paddingVertical: 4, paddingHorizontal: 9, borderRadius: radius.pill, maxWidth: '70%' },
-  placeText: { fontSize: 12, color: C.text2, fontWeight: '600' },
-  time: { fontSize: 12, color: C.muted },
+  placeText: { fontFamily: Fonts.bodySemibold, fontSize: 11.5, color: C.dark },
+  time: { fontFamily: Fonts.body, fontSize: 12, color: C.muted },
 
   actions: { flexDirection: 'row', alignItems: 'center', gap: 14 },
   iconBtn: { padding: 2 },
   likeBtn: { flexDirection: 'row', alignItems: 'center', gap: 5 },
-  likeCount: { fontSize: 13, fontWeight: '700', color: C.muted },
+  likeCount: { fontFamily: Fonts.bodyBold, fontSize: 13, color: C.muted },
 
-  emptyCard: { backgroundColor: '#fff', borderRadius: radius.card, padding: 28, alignItems: 'center', ...shadow.card },
+  emptyCard: { backgroundColor: C.white, borderRadius: radius.card, borderWidth: 1.5, borderColor: C.border, padding: 28, alignItems: 'center' },
   emptyWell: { width: 56, height: 56, borderRadius: 18, backgroundColor: C.tint, alignItems: 'center', justifyContent: 'center', marginBottom: 14 },
-  emptyTitle: { fontSize: 17, fontWeight: '700', color: C.dark, marginBottom: 6 },
-  emptyText: { fontSize: 14, color: C.muted, textAlign: 'center', lineHeight: 20 },
-  emptyCta: { marginTop: 16, backgroundColor: C.primary, borderRadius: 999, paddingHorizontal: 20, paddingVertical: 10 },
-  emptyCtaText: { color: '#fff', fontWeight: '700', fontSize: 14 },
+  emptyTitle: { fontFamily: Fonts.headlineBold, fontSize: 18, color: C.dark, marginBottom: 6 },
+  emptyText: { fontFamily: Fonts.body, fontSize: 14, color: C.muted, textAlign: 'center', lineHeight: 20 },
+  emptyCta: { marginTop: 16, backgroundColor: C.primary, borderRadius: radius.pill, paddingHorizontal: 20, paddingVertical: 10 },
+  emptyCtaText: { fontFamily: Fonts.bodyBold, color: '#fff', fontSize: 14 },
 });

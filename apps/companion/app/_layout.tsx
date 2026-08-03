@@ -4,6 +4,14 @@ import { StatusBar } from 'expo-status-bar';
 import { useEffect } from 'react';
 import 'react-native-reanimated';
 import * as SplashScreen from 'expo-splash-screen';
+import { useFonts } from 'expo-font';
+import { BarlowCondensed_700Bold, BarlowCondensed_800ExtraBold } from '@expo-google-fonts/barlow-condensed';
+import {
+  PublicSans_400Regular,
+  PublicSans_500Medium,
+  PublicSans_600SemiBold,
+  PublicSans_700Bold,
+} from '@expo-google-fonts/public-sans';
 
 import * as Location from 'expo-location';
 
@@ -12,10 +20,14 @@ import { useAppInitialization } from '@/src/hooks/useAppInitialization';
 import { prefetchHoodsNear } from '@/src/services/neighborhoods';
 import { registerForPush, setupNotificationRouting } from '@/src/services/notifications';
 import { LoadingView, ErrorView } from '@/src/pick/LoadingView';
+import { initErrorMonitoring } from '@/src/services/errorMonitoring';
 
 // Keep the native splash up until our own branded loading view is on screen,
 // so there's no white flash between the OS splash and the app.
 SplashScreen.preventAutoHideAsync().catch(() => {});
+
+// Remote crash/error reporting — no-ops until EXPO_PUBLIC_SENTRY_DSN is set.
+initErrorMonitoring();
 
 export const unstable_settings = {
   anchor: '(tabs)',
@@ -24,6 +36,19 @@ export const unstable_settings = {
 export default function RootLayout() {
   const colorScheme = useColorScheme();
   const { isInitialized, authUser, error } = useAppInitialization();
+
+  // Civic Blueprint type system: Barlow Condensed for headlines/numbers,
+  // Public Sans for body/UI (see src/pick/theme.ts `Fonts`). Gate the whole
+  // tree on these loading so nothing — including the branded loading screen
+  // itself — renders with a fallback system font first.
+  const [fontsLoaded] = useFonts({
+    BarlowCondensed_700Bold,
+    BarlowCondensed_800ExtraBold,
+    PublicSans_400Regular,
+    PublicSans_500Medium,
+    PublicSans_600SemiBold,
+    PublicSans_700Bold,
+  });
 
   // Route taps on push notifications to the right screen (once, at root).
   useEffect(() => {
@@ -36,8 +61,10 @@ export default function RootLayout() {
     if (isInitialized && authUser) void registerForPush();
   }, [isInitialized, authUser]);
 
-  // Hand off from the native splash to our branded view on first render.
+  // Hand off from the native splash to our branded view once fonts are ready
+  // — otherwise the loading screen itself would flash system font first.
   useEffect(() => {
+    if (!fontsLoaded) return;
     SplashScreen.hideAsync().catch(() => {});
     // Warm the neighborhoods layer for the city the user is actually in, from a
     // cached location fix (no permission prompt), so the map's hood outlines and
@@ -49,15 +76,15 @@ export default function RootLayout() {
         if (pos) prefetchHoodsNear(pos.coords.latitude, pos.coords.longitude);
       })
       .catch(() => {});
-  }, []);
+  }, [fontsLoaded]);
 
   // Show error screen if initialization fails
   if (error) {
     return <ErrorView message={error} />;
   }
 
-  // Show branded loading screen while initializing
-  if (!isInitialized) {
+  // Show branded loading screen while fonts/app init are in flight
+  if (!fontsLoaded || !isInitialized) {
     return <LoadingView message="Getting things ready…" />;
   }
 

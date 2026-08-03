@@ -1,14 +1,14 @@
 /**
  * Branded loading + error screens for app startup.
  *
- * Themed to match the native splash (sage background, white mark) so the
+ * Themed to match the native splash (navy background, cream mark) so the
  * OS splash → JS loading handoff is seamless — it reads as one continuous
- * splash that then transitions into the app. On-brand for the Trail design
- * (sage/cream, no emoji).
+ * splash that then transitions into the app. On-brand for the Civic
+ * Blueprint design (navy/cream, no emoji).
  */
 import { View, Text, ActivityIndicator, StyleSheet, Image } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
-import { COLORS } from '../constants/colors';
+import { C, Fonts } from './theme';
 
 function Logo() {
   // The trash-bag "G" mark — same asset as the native splash, so the OS
@@ -29,7 +29,7 @@ export function LoadingView({ message }: { message?: string }) {
       <StatusBar style="light" />
       <Logo />
       <Text style={styles.brand}>Pick</Text>
-      <ActivityIndicator color="#FFFFFF" style={styles.spinner} />
+      <ActivityIndicator color={C.creamText} style={styles.spinner} />
       {message ? <Text style={styles.message}>{message}</Text> : null}
     </View>
   );
@@ -55,7 +55,7 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: COLORS.sage,
+    backgroundColor: C.primary,
     paddingHorizontal: 32,
   },
   logo: {
@@ -63,23 +63,25 @@ const styles = StyleSheet.create({
     height: 104,
   },
   brand: {
-    fontSize: 30,
-    fontWeight: '700',
+    fontFamily: Fonts.displayBold,
+    fontSize: 32,
     letterSpacing: -0.5,
-    color: COLORS.white,
+    color: C.creamText,
     marginTop: 22,
+    textTransform: 'uppercase',
   },
   spinner: { marginTop: 20 },
   errorTitle: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: COLORS.white,
+    fontFamily: Fonts.headlineBold,
+    fontSize: 17,
+    color: C.creamText,
     marginTop: 20,
     textAlign: 'center',
   },
   message: {
+    fontFamily: Fonts.body,
     fontSize: 14,
-    color: 'rgba(255,255,255,0.78)',
+    color: C.heroSub,
     marginTop: 10,
     textAlign: 'center',
     lineHeight: 20,

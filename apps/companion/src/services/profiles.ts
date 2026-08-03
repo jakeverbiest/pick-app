@@ -16,10 +16,12 @@ import {
   getFirestore, collection, doc, getDoc, getDocs, setDoc, deleteDoc,
   query, where, orderBy, limit, runTransaction,
 } from 'firebase/firestore';
+import { getStorage, ref as storageRef, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { app } from './firebaseConfig';
 import { getAuthService } from './authService';
 
 const db = getFirestore(app);
+const storage = getStorage(app);
 
 export interface PublicProfile {
   uid: string;
@@ -28,6 +30,43 @@ export interface PublicProfile {
   display_name: string;
   neighborhood: string;
   updated_at: number;
+  /** Profile picture (Storage URL). Falls back to the initial letter. */
+  avatar_url?: string;
+  /**
+   * Opted out of having their profile opened by other people. Their name still
+   * appears on leaderboards (that's the separate `leaderboard_hidden` setting)
+   * but it isn't tappable, and the profile screen shows a private notice.
+   * Lives on the PUBLIC profile doc so any screen can check it without needing
+   * read access to the owner's settings.
+   */
+  hidden?: boolean;
+}
+
+/** Turn "anyone can open my profile" on or off. */
+export async function setProfileHidden(hidden: boolean): Promise<void> {
+  const u = me();
+  if (!u) return;
+  await setDoc(doc(db, 'profiles', u.uid), { uid: u.uid, hidden, updated_at: Date.now() }, { merge: true });
+}
+
+/**
+ * Upload a profile picture and stamp it on the public profile.
+ * (Longer-term: avatar builder / memoji — for now, any image.)
+ */
+export async function uploadAvatar(localUri: string): Promise<{ ok: boolean; url?: string; error?: string }> {
+  const u = me();
+  if (!u) return { ok: false, error: 'Sign in first.' };
+  try {
+    const blob = await (await fetch(localUri)).blob();
+    const ref = storageRef(storage, `avatars/${u.uid}/avatar.jpg`);
+    await uploadBytes(ref, blob, { contentType: 'image/jpeg' });
+    const url = await getDownloadURL(ref);
+    await setDoc(doc(db, 'profiles', u.uid), { uid: u.uid, avatar_url: url, updated_at: Date.now() }, { merge: true });
+    return { ok: true, url };
+  } catch (e: any) {
+    console.error('Avatar upload failed:', e);
+    return { ok: false, error: e?.message || 'Upload failed.' };
+  }
 }
 
 // A handle: 3–20 chars, letters/numbers/underscore, must start with a letter.
@@ -165,7 +204,7 @@ export async function searchByHandle(prefix: string, max = 15): Promise<PublicPr
     const meUid = me()?.uid;
     return snap.docs
       .map((d) => ({ uid: d.id, ...(d.data() as any) }) as PublicProfile)
-      .filter((pr) => pr.handleLower && pr.uid !== meUid);
+      .filter((pr) => pr.handleLower && pr.uid !== meUid && !pr.hidden);
   } catch (e) {
     console.error('searchByHandle failed:', e);
     return [];

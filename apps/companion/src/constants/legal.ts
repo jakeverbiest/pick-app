@@ -4,7 +4,7 @@
  * Full versions: legal/PRIVACY_POLICY.md, legal/TERMS_OF_SERVICE.md
  */
 
-export const LEGAL_LAST_UPDATED = 'June 10, 2026';
+export const LEGAL_LAST_UPDATED = 'July 31, 2026';
 
 export const PRIVACY_POLICY_TEXT = `PICK Privacy Policy (Draft)
 Last updated: ${LEGAL_LAST_UPDATED}
@@ -23,14 +23,14 @@ To run the app: maps, stats, streaks, badges, team totals, leaderboards, challen
 
 YOUR CHOICES
 • Delete data: Settings → Danger Zone → Clear All Data.
-• Account deletion: email jlverbie@gmail.com.
+• Account deletion: email hello@pickglobal.org.
 • Location: deny/revoke in phone settings (pickups still count; no route maps).
 
 CHILDREN
 Not directed at children under 13; we don't knowingly collect their data.
 
 CONTACT
-Jake Verbiest — jlverbie@gmail.com`;
+Jake Verbiest — hello@pickglobal.org`;
 
 export const TERMS_OF_SERVICE_TEXT = `PICK Terms of Service (Draft)
 Last updated: ${LEGAL_LAST_UPDATED}
@@ -57,4 +57,4 @@ DISCLAIMER
 THE APP IS PROVIDED "AS IS" WITHOUT WARRANTIES. LIABILITY LIMITED TO AMOUNTS PAID (CURRENTLY $0). Governed by New York law.
 
 CONTACT
-jlverbie@gmail.com`;
+hello@pickglobal.org`;

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Alert, Keyboard, KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -9,13 +9,20 @@ import { getAuthService } from '../../src/services/authService';
 import { getDatabase } from '../../src/services/database';
 import { getCoverageStats } from '../../src/services/streetSegments';
 import { Icon, IconName } from '../../src/pick/Icon';
-import { C, radius, shadow } from '../../src/pick/theme';
+import { C, Fonts, radius } from '../../src/pick/theme';
 import { Card, ProgressBar } from '../../src/pick/ui';
 import { StreakCard } from '../../src/pick/StreakCard';
-import { WeeklyImpactChart } from '../../src/pick/WeeklyImpactChart';
+import { RecapModal } from '../../src/pick/RecapModal';
+import { RecapHistory } from '../../src/pick/RecapHistory';
 import { cleanupBags, formatBagsShort } from '../../src/services/impactMetrics';
+import { levelTierColor, milestoneProgress, MILESTONE_TIERS } from '../../src/services/milestones';
+import { buildRecap, getUnseenRecap, listRecentRanges, markRecapSeen, type RecapData, type RecapPeriod } from '../../src/services/recap';
+import { RecapCard } from '../../src/pick/RecapCard';
 
-const MILESTONE = 50;
+function recapBannerTitle(period: RecapPeriod): string {
+  if (period === 'year') return 'Your year in Pick is ready';
+  return `Your ${period}'s recap is ready`;
+}
 
 // Map a backend badge_type to a Trail line-icon + readable name.
 const BADGE_ICON: Record<string, IconName> = {
@@ -34,13 +41,12 @@ function badgeName(type: string) {
   return type.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
+// Short by design: these labels sit on a single row next to a time and a
+// stat line, and "Yesterday" wrapped onto a second line on smaller phones.
 function formatDate(ts: number) {
   const date = new Date(ts * 1000);
   const today = new Date();
-  const yesterday = new Date(today);
-  yesterday.setDate(yesterday.getDate() - 1);
   if (date.toDateString() === today.toDateString()) return 'Today';
-  if (date.toDateString() === yesterday.toDateString()) return 'Yesterday';
   return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
 
@@ -61,9 +67,31 @@ export default function ActivityScreen() {
   const [loading, setLoading] = useState(true);
   const [coverage, setCoverage] = useState<{ freshPct: number; everCleanedPct: number; totalSegments: number } | null>(null);
 
+  // "My Path" recap: whichever closed week/month/year the user hasn't seen
+  // yet, surfaced as a banner (year takes priority over month over week —
+  // showing all three at a year boundary would be noisy).
+  const [recapPeriod, setRecapPeriod] = useState<RecapPeriod | null>(null);
+  const [recapData, setRecapData] = useState<RecapData | null>(null);
+  const [recapProfile, setRecapProfile] = useState<{ displayName?: string; subLabel?: string }>({});
+  const [recapOpen, setRecapOpen] = useState(false);
+  const [recapDismissed, setRecapDismissed] = useState(false);
+  // Full cleanup history for "My Path" browsing (the recent-cleanups list above
+  // only loads 20) — populated by checkRecap and refreshed whenever My Path opens.
+  const [allCleanups, setAllCleanups] = useState<any[]>([]);
+  const [historyOpen, setHistoryOpen] = useState(false);
+
+  // Preview art for the "My Path" entry point — the most recently closed
+  // week, rendered small. Falls back to RecapCard's own empty-path state
+  // when there's nothing to show yet, same as the full history browser.
+  const previewRecap = useMemo(
+    () => buildRecap(cleanups, listRecentRanges('week', 1)[0]),
+    [cleanups]
+  );
+
   useEffect(() => {
     loadActivity();
     loadCoverage();
+    checkRecap();
   }, []);
 
   useFocusEffect(
@@ -81,6 +109,51 @@ export default function ActivityScreen() {
     } catch (error) {
       console.log('Coverage stats unavailable:', error);
     }
+  };
+
+  const checkRecap = async () => {
+    try {
+      const currentUser = getAuthService().getCurrentUser();
+      if (!currentUser) return;
+      const db = await getDatabase();
+      const [all, settings] = await Promise.all([db.getCleanups(1000), db.getUserSettings(currentUser.uid)]);
+      setAllCleanups(all || []);
+      setRecapProfile({ displayName: settings?.display_name, subLabel: settings?.team_name || settings?.neighborhood });
+
+      // Priority: a closed year matters more than the month/week nested inside
+      // it — surface at most one banner at a time. Skip a period with zero
+      // cleanups entirely rather than nagging an inactive user every week.
+      for (const period of ['year', 'month', 'week'] as const) {
+        const range = await getUnseenRecap(period);
+        if (!range) continue;
+        const data = buildRecap(all || [], range);
+        if (data.stats.cleanups === 0) continue;
+        setRecapPeriod(period);
+        setRecapData(data);
+        return;
+      }
+    } catch (error) {
+      console.log('Recap check skipped:', error);
+    }
+  };
+
+  const openRecap = async () => {
+    if (!recapPeriod || !recapData) return;
+    await markRecapSeen(recapPeriod, recapData.range.key);
+    setRecapOpen(true);
+  };
+
+  const openHistory = () => {
+    setHistoryOpen(true);
+    // Refresh in the background — checkRecap may have run a while ago (or
+    // before login resolved), so this catches anything logged since.
+    (async () => {
+      try {
+        const db = await getDatabase();
+        const all = await db.getCleanups(1000);
+        setAllCleanups(all || []);
+      } catch {}
+    })();
   };
 
   const loadActivity = async () => {
@@ -198,7 +271,7 @@ export default function ActivityScreen() {
     .filter((c) => c.timestamp >= weekAgo)
     .reduce((sum, c) => sum + (c.items_count || 0), 0);
 
-  const milestonePct = Math.min(1, totalCleanups / MILESTONE);
+  const milestone = milestoneProgress(totalCleanups);
 
   // "since June 2026" — anchor the all-time total to the first cleanup.
   const firstTs = cleanups.length ? Math.min(...cleanups.map((c) => c.timestamp || Infinity)) : null;
@@ -212,23 +285,77 @@ export default function ActivityScreen() {
       <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
         <Text style={styles.h1}>Your impact</Text>
 
-        <StreakCard />
-        <WeeklyImpactChart />
-
-        {/* cumulative hero */}
+        {/* Hero first — the flagship personal stat (design audit: this page is
+            the #1 home for personal stats; lead with the number). */}
         <View style={styles.hero}>
-          <Text style={styles.heroLabel}>Total pickups{sinceLabel ? ` since ${sinceLabel}` : ''}</Text>
+          <Text style={styles.heroLabel} numberOfLines={2}>
+            Total pickups{sinceLabel ? ` since ${sinceLabel}` : ''}
+          </Text>
           <View style={styles.heroRow}>
-            <Text style={styles.heroNum}>{totalPickups}</Text>
+            <Text style={styles.heroNum} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.6}>
+              {totalPickups.toLocaleString()}
+            </Text>
             <Text style={styles.heroUnit}>pieces</Text>
-            {weekDelta > 0 && (
-              <View style={styles.trendPill}>
-                <Icon name="trend" size={14} color={C.accent} sw={2.2} />
-                <Text style={styles.trendText}>+{weekDelta} this week</Text>
-              </View>
-            )}
           </View>
+          {/* Trend sits on its own row: at 6-digit totals it used to be pushed
+              off the right edge of the card when it shared the number's row. */}
+          {weekDelta > 0 && (
+            <View style={styles.trendPill}>
+              <Icon name="trend" size={14} color={C.accent} sw={2.2} />
+              <Text style={styles.trendText} numberOfLines={1}>
+                +{weekDelta.toLocaleString()} this week
+              </Text>
+            </View>
+          )}
         </View>
+
+        {/* Current level — your last EARNED milestone tier, distinct from the
+            "Next: X" progress card below. Color-coded placeholder badge until
+            real illustrated tier art exists. */}
+        <View style={styles.levelRow}>
+          <View style={[styles.levelBadge, { backgroundColor: levelTierColor(milestone.earned) }]}>
+            <Icon name={milestone.earned > 0 ? 'trophy' : 'target'} size={22} color="#fff" sw={1.8} />
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.levelLabel}>YOUR LEVEL</Text>
+            <Text style={styles.levelName} numberOfLines={1}>
+              {milestone.previousName ?? 'Unranked'}
+            </Text>
+          </View>
+          {milestone.earned > 0 && (
+            <View style={styles.levelTierPill}>
+              <Text style={styles.levelTierPillText}>Tier {milestone.earned}</Text>
+            </View>
+          )}
+        </View>
+
+        {/* "My Path" recap banner — at most one of week/month/year, whichever
+            closed period hasn't been shown yet. Dismissing just hides it for
+            this session; it reappears next launch until actually opened. */}
+        {recapPeriod && recapData && !recapDismissed && (
+          <Pressable style={styles.recapBanner} onPress={openRecap}>
+            <View style={styles.recapIconWell}>
+              <Icon name={recapPeriod === 'year' ? 'trophy' : 'route'} size={20} color="#fff" sw={1.8} />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.recapTitle} numberOfLines={1}>
+                {recapBannerTitle(recapPeriod)}
+              </Text>
+              <Text style={styles.recapSub} numberOfLines={1}>
+                {recapData.range.label} · {recapData.stats.pickups.toLocaleString()} pieces picked up
+              </Text>
+            </View>
+            <Pressable
+              hitSlop={10}
+              onPress={(e) => {
+                e.stopPropagation();
+                setRecapDismissed(true);
+              }}
+            >
+              <Icon name="close" size={16} color="rgba(255,255,255,0.7)" sw={2} />
+            </Pressable>
+          </Pressable>
+        )}
 
         {/* stat tiles — bags stays small here; it headlines on the end screen and team boards */}
         <View style={styles.tiles}>
@@ -246,21 +373,46 @@ export default function ActivityScreen() {
           />
         </View>
 
+        <StreakCard />
+
         {/* milestone */}
         <Card style={{ marginTop: 12 }}>
           <View style={styles.between}>
-            <Text style={styles.milestoneTitle}>Next milestone</Text>
+            <Text style={styles.milestoneTitle} numberOfLines={1}>
+              Next: {milestone.name}
+            </Text>
             <Text style={styles.milestoneMeta}>
-              {totalCleanups} / {MILESTONE} cleanups
+              {totalCleanups.toLocaleString()} / {milestone.target.toLocaleString()}
             </Text>
           </View>
           <View style={{ marginTop: 12 }}>
-            <ProgressBar pct={milestonePct} />
+            <ProgressBar pct={Math.max(0.01, milestone.pct)} color="rust" />
           </View>
           <Text style={styles.milestoneHint}>
-            {Math.max(0, MILESTONE - totalCleanups)} more cleanups to your next milestone.
+            {milestone.remaining === 1
+              ? '1 more cleanup to go.'
+              : `${milestone.remaining.toLocaleString()} more cleanups to go.`}
+            {milestone.earned > 0
+              ? `  ·  ${milestone.earned} of ${MILESTONE_TIERS.length} milestones earned`
+              : ''}
           </Text>
         </Card>
+
+        {/* "My Path" entry point — always available, unlike the banner above
+            (which shows once and disappears). Lets you browse and re-share
+            any past week/month/year, not just the newest one. */}
+        <Pressable style={styles.pathRow} onPress={openHistory}>
+          <View style={styles.pathPreview} pointerEvents="none">
+            <View style={styles.pathPreviewInner}>
+              <RecapCard recap={previewRecap} />
+            </View>
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.pathRowTitle}>My Path</Text>
+            <Text style={styles.pathRowSub}>Your walks, recapped — weekly, monthly, year-end</Text>
+          </View>
+          <Icon name="chevron" size={16} color={C.chevron} sw={2} />
+        </Pressable>
 
         {/* street coverage — scoped to a 600m radius around the CURRENT GPS fix,
             not a selected neighborhood; the heading and hint say so honestly. */}
@@ -310,7 +462,9 @@ export default function ActivityScreen() {
                   <Icon name="leaf" size={20} color={C.primary} />
                 </View>
                 <View style={{ flex: 1 }}>
-                  <Text style={styles.recentPlace}>{formatDate(c.timestamp)}</Text>
+                  <Text style={styles.recentPlace}>
+                    {formatDate(c.timestamp)} · {new Date(c.timestamp * 1000).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}
+                  </Text>
                   <Text style={styles.recentSub}>
                     {c.items_count} pieces · {formatTime(c.duration_seconds)}
                   </Text>
@@ -333,6 +487,26 @@ export default function ActivityScreen() {
           </Card>
         )}
       </ScrollView>
+
+      <RecapModal
+        visible={recapOpen}
+        recap={recapData}
+        displayName={recapProfile.displayName}
+        subLabel={recapProfile.subLabel}
+        levelName={milestone.previousName ?? undefined}
+        levelColor={levelTierColor(milestone.earned)}
+        onClose={() => setRecapOpen(false)}
+      />
+
+      <RecapHistory
+        visible={historyOpen}
+        cleanups={allCleanups}
+        displayName={recapProfile.displayName}
+        subLabel={recapProfile.subLabel}
+        levelName={milestone.previousName ?? undefined}
+        levelColor={levelTierColor(milestone.earned)}
+        onClose={() => setHistoryOpen(false)}
+      />
 
       {/* Edit / add-weight-later for a saved cleanup */}
       <Modal visible={!!editing} transparent animationType="slide" onRequestClose={() => setEditing(null)}>
@@ -384,70 +558,121 @@ function MiniStat({ value, label }: { value: string; label: string }) {
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: C.cream },
+  root: { flex: 1, backgroundColor: C.white },
   scroll: { paddingHorizontal: 16, paddingTop: 8, paddingBottom: 40 },
   center: { flex: 1, justifyContent: 'center', alignItems: 'center' },
-  loading: { fontSize: 16, color: C.muted },
+  loading: { fontFamily: Fonts.body, fontSize: 16, color: C.muted },
 
-  h1: { fontSize: 28, fontWeight: '700', letterSpacing: -0.4, color: C.dark, marginBottom: 18 },
+  h1: { fontFamily: Fonts.displayBold, fontSize: 32, letterSpacing: -0.4, color: C.dark, marginBottom: 18, textTransform: 'uppercase' },
 
   hero: { backgroundColor: C.primary, borderRadius: radius.cardLg, padding: 22 },
-  heroLabel: { fontSize: 13, color: C.heroSub, fontWeight: '500' },
+  heroLabel: { fontFamily: Fonts.bodyMedium, fontSize: 13, color: C.heroSub },
   heroRow: { flexDirection: 'row', alignItems: 'baseline', gap: 8, marginTop: 6 },
-  heroNum: { fontSize: 52, fontWeight: '700', letterSpacing: -1.5, lineHeight: 54, color: '#fff' },
-  heroUnit: { fontSize: 18, fontWeight: '600', color: C.heroSub2 },
+  heroNum: { flexShrink: 1, fontFamily: Fonts.displayBold, fontSize: 52, letterSpacing: -1.5, lineHeight: 58, color: C.creamText },
+  heroUnit: { fontFamily: Fonts.bodySemibold, fontSize: 18, color: C.heroSub2 },
   trendPill: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
     alignSelf: 'flex-start',
-    marginTop: 14,
-    backgroundColor: 'rgba(255,255,255,0.12)',
+    maxWidth: '100%',
+    marginTop: 12,
+    backgroundColor: 'rgba(254,252,221,0.16)',
     paddingVertical: 6,
     paddingHorizontal: 11,
     borderRadius: radius.pill,
   },
-  trendText: { fontSize: 13, fontWeight: '600', color: '#fff' },
+  trendText: { fontFamily: Fonts.bodyBold, fontSize: 13, color: C.creamText },
+
+  recapBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    backgroundColor: C.dark,
+    borderRadius: radius.card,
+    padding: 14,
+    marginTop: 12,
+  },
+  recapIconWell: { width: 38, height: 38, borderRadius: 12, backgroundColor: 'rgba(254,252,221,0.16)', alignItems: 'center', justifyContent: 'center' },
+  recapTitle: { fontFamily: Fonts.headlineBold, fontSize: 15, color: C.creamText },
+  recapSub: { fontFamily: Fonts.body, fontSize: 12, color: C.heroSub2, marginTop: 2 },
+
+  pathRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    backgroundColor: C.white,
+    borderRadius: radius.card,
+    borderWidth: 1.5,
+    borderColor: C.border,
+    padding: 14,
+    marginTop: 12,
+  },
+  pathIconWell: { width: 38, height: 38, borderRadius: 11, backgroundColor: C.tint, alignItems: 'center', justifyContent: 'center' },
+  pathRowTitle: { fontFamily: Fonts.headlineBold, fontSize: 15, color: C.dark },
+  pathRowSub: { fontFamily: Fonts.body, fontSize: 12, color: C.muted, marginTop: 2 },
+  // A real (if tiny) render of RecapCard, cropped to its top slice — shows the
+  // path art itself rather than a generic icon, so the row previews what
+  // tapping in actually gets you.
+  pathPreview: { width: 52, height: 68, borderRadius: 10, borderWidth: 1.5, borderColor: C.border, backgroundColor: C.white, overflow: 'hidden' },
+  pathPreviewInner: { width: 340, transform: [{ scale: 52 / 340 }], transformOrigin: 'top left' },
+
+  levelRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    backgroundColor: C.white,
+    borderRadius: radius.card,
+    borderWidth: 1.5,
+    borderColor: C.border,
+    padding: 14,
+    marginTop: 12,
+  },
+  levelBadge: { width: 44, height: 44, borderRadius: 22, alignItems: 'center', justifyContent: 'center' },
+  levelLabel: { fontFamily: Fonts.bodyBold, fontSize: 10, color: C.muted, textTransform: 'uppercase', letterSpacing: 0.4 },
+  levelName: { fontFamily: Fonts.headlineBold, fontSize: 17, color: C.dark, marginTop: 2 },
+  levelTierPill: { backgroundColor: C.tint, borderRadius: radius.pill, paddingVertical: 5, paddingHorizontal: 11 },
+  levelTierPillText: { fontFamily: Fonts.bodyBold, fontSize: 11, color: C.primary },
 
   tiles: { flexDirection: 'row', gap: 10, marginTop: 12 },
-  tile: { flex: 1, backgroundColor: '#fff', borderRadius: radius.card, padding: 15, ...shadow.card },
-  tileNum: { fontSize: 24, fontWeight: '700', letterSpacing: -0.5, color: C.dark },
-  miniNum: { fontSize: 22, fontWeight: '700', letterSpacing: -0.5, color: C.primary },
-  tileLabel: { fontSize: 11, color: C.muted, fontWeight: '600', marginTop: 2 },
+  tile: { flex: 1, backgroundColor: C.white, borderRadius: radius.card, borderWidth: 1.5, borderColor: C.border, padding: 14 },
+  tileNum: { fontFamily: Fonts.displayBold, fontSize: 26, letterSpacing: -0.5, color: C.dark },
+  miniNum: { fontFamily: Fonts.displayBold, fontSize: 22, letterSpacing: -0.5, color: C.primary },
+  tileLabel: { fontFamily: Fonts.bodyBold, fontSize: 10, color: C.muted, marginTop: 2, textTransform: 'uppercase', letterSpacing: 0.3 },
 
   between: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'baseline' },
-  cardHeading: { fontSize: 15, fontWeight: '700', color: C.dark },
-  milestoneTitle: { fontSize: 14, fontWeight: '600', color: C.dark },
-  milestoneMeta: { fontSize: 13, color: C.muted },
-  milestoneHint: { fontSize: 12, color: C.muted, marginTop: 8 },
+  cardHeading: { fontFamily: Fonts.headlineBold, fontSize: 17, color: C.dark },
+  milestoneTitle: { fontFamily: Fonts.headlineBold, fontSize: 16, color: C.dark },
+  milestoneMeta: { fontFamily: Fonts.bodyBold, fontSize: 13, color: C.muted },
+  milestoneHint: { fontFamily: Fonts.body, fontSize: 12, color: C.muted, marginTop: 8 },
 
   sectionHead: { marginTop: 22, marginBottom: 12, marginHorizontal: 4 },
-  sectionH: { fontSize: 17, fontWeight: '700', color: C.dark },
-  sectionAction: { fontSize: 13, color: C.accent, fontWeight: '600' },
+  sectionH: { fontFamily: Fonts.headlineBold, fontSize: 20, color: C.dark },
+  sectionAction: { fontFamily: Fonts.bodyBold, fontSize: 13, color: C.accent },
 
   badgeGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
-  badge: { width: '31.6%', backgroundColor: '#fff', borderRadius: 14, paddingVertical: 14, paddingHorizontal: 8, alignItems: 'center', ...shadow.card },
+  badge: { width: '31.6%', backgroundColor: C.white, borderRadius: 14, borderWidth: 1.5, borderColor: C.border, paddingVertical: 14, paddingHorizontal: 8, alignItems: 'center' },
   badgeWell: { width: 38, height: 38, borderRadius: 19, alignItems: 'center', justifyContent: 'center', backgroundColor: C.tint },
-  badgeName: { fontSize: 11, fontWeight: '600', color: '#3A4A33', marginTop: 8, textAlign: 'center' },
+  badgeName: { fontFamily: Fonts.bodyBold, fontSize: 11, color: C.dark, marginTop: 8, textAlign: 'center' },
 
   recentRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 14, paddingHorizontal: 15 },
   rowBorder: { borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: C.border2 },
   recentWell: { width: 38, height: 38, borderRadius: 11, backgroundColor: C.tint, alignItems: 'center', justifyContent: 'center' },
-  recentPlace: { fontSize: 15, fontWeight: '600', color: C.dark },
-  recentSub: { fontSize: 12, color: C.muted, marginTop: 1 },
+  recentPlace: { fontFamily: Fonts.bodySemibold, fontSize: 15, color: C.dark },
+  recentSub: { fontFamily: Fonts.body, fontSize: 12, color: C.muted, marginTop: 1 },
   rowBtn: { width: 34, height: 34, borderRadius: 10, backgroundColor: C.field, alignItems: 'center', justifyContent: 'center' },
 
-  empty: { fontSize: 14, color: C.muted, textAlign: 'center', paddingVertical: 12 },
+  empty: { fontFamily: Fonts.body, fontSize: 14, color: C.muted, textAlign: 'center', paddingVertical: 12 },
 
-  editOverlay: { flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(27,46,26,0.45)' },
-  editSheet: { backgroundColor: C.cream, borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 22, paddingBottom: 34 },
-  editTitle: { fontSize: 20, fontWeight: '700', color: C.dark },
-  editSub: { fontSize: 13, color: C.muted, marginTop: 2, marginBottom: 14 },
-  editInput: { backgroundColor: '#fff', borderRadius: 12, borderWidth: 1, borderColor: C.border3, paddingVertical: 14, paddingHorizontal: 14, fontSize: 16, color: C.dark },
+  editOverlay: { flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(15,47,102,0.45)' },
+  editSheet: { backgroundColor: C.white, borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 22, paddingBottom: 34 },
+  editTitle: { fontFamily: Fonts.headlineBold, fontSize: 21, color: C.dark },
+  editSub: { fontFamily: Fonts.body, fontSize: 13, color: C.muted, marginTop: 2, marginBottom: 14 },
+  editInput: { backgroundColor: C.white, borderRadius: 12, borderWidth: 1, borderColor: C.border3, paddingVertical: 14, paddingHorizontal: 14, fontFamily: Fonts.body, fontSize: 16, color: C.dark },
   editActions: { flexDirection: 'row', gap: 12, marginTop: 16 },
   editBtn: { flex: 1, borderRadius: 12, paddingVertical: 14, alignItems: 'center' },
-  editCancel: { backgroundColor: '#fff', borderWidth: 1, borderColor: C.border3 },
-  editCancelText: { color: C.dark, fontSize: 15, fontWeight: '700' },
+  editCancel: { backgroundColor: C.white, borderWidth: 1, borderColor: C.border3 },
+  editCancelText: { fontFamily: Fonts.bodyBold, color: C.dark, fontSize: 15 },
   editSave: { backgroundColor: C.primary },
-  editSaveText: { color: '#fff', fontSize: 15, fontWeight: '700' },
+  editSaveText: { fontFamily: Fonts.bodyBold, color: '#fff', fontSize: 15 },
 });

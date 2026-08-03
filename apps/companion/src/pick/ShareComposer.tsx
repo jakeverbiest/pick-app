@@ -21,7 +21,7 @@ import {
 import * as Clipboard from 'expo-clipboard';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Icon } from './Icon';
-import { C, PLATFORM_ACCENT, radius, shadow } from './theme';
+import { C, Fonts, PLATFORM_ACCENT, radius } from './theme';
 import { formatBags, formatKitchenBags } from '../services/impactMetrics';
 
 type Platform = 'bluesky' | 'instagram' | 'facebook' | 'copy';
@@ -180,7 +180,7 @@ export function ShareComposer({
                   <Pressable
                     key={p}
                     onPress={() => setPlatform(p)}
-                    style={[styles.platChip, active && { borderColor: PLATFORM_ACCENT[p], backgroundColor: '#fff' }]}
+                    style={[styles.platChip, active && { borderColor: PLATFORM_ACCENT[p], backgroundColor: C.white }]}
                   >
                     <View style={[styles.platDot, { backgroundColor: PLATFORM_ACCENT[p] }]} />
                     <Text style={[styles.platChipText, active && { color: C.dark }]}>{NAMES[p]}</Text>
@@ -238,57 +238,58 @@ export function ShareComposer({
 }
 
 const styles = StyleSheet.create({
-  overlay: { flex: 1, backgroundColor: 'rgba(29,46,26,0.5)', justifyContent: 'flex-end' },
+  overlay: { flex: 1, backgroundColor: 'rgba(15,47,102,0.5)', justifyContent: 'flex-end' },
   sheet: {
-    backgroundColor: C.cream,
+    backgroundColor: C.white,
     borderTopLeftRadius: radius.sheet,
     borderTopRightRadius: radius.sheet,
     paddingTop: 14,
     paddingHorizontal: 20,
     maxHeight: '92%',
   },
-  grabber: { width: 40, height: 5, borderRadius: 999, backgroundColor: '#D2D2CC', alignSelf: 'center', marginBottom: 14 },
+  grabber: { width: 40, height: 5, borderRadius: 999, backgroundColor: C.border3, alignSelf: 'center', marginBottom: 14 },
   header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 },
-  headerTitle: { fontSize: 17, fontWeight: '700', color: C.dark },
+  headerTitle: { fontFamily: Fonts.headlineBold, fontSize: 17, color: C.dark },
 
-  preview: { backgroundColor: '#fff', borderRadius: 16, padding: 16, ...shadow.card },
+  preview: { backgroundColor: '#fff', borderRadius: 16, borderWidth: 1.5, borderColor: C.border, padding: 16 },
   previewTop: { flexDirection: 'row', alignItems: 'center', gap: 11, marginBottom: 10 },
   avatar: { width: 40, height: 40, borderRadius: 20, backgroundColor: C.primary, alignItems: 'center', justifyContent: 'center' },
-  avatarText: { color: '#fff', fontWeight: '700', fontSize: 15 },
-  previewName: { fontSize: 14, fontWeight: '700', color: C.dark },
-  previewHandle: { fontSize: 12, color: C.muted, marginTop: 1 },
-  previewCaption: { fontSize: 14, color: C.dark, lineHeight: 20 },
+  avatarText: { color: C.creamText, fontFamily: Fonts.bodyBold, fontSize: 15 },
+  previewName: { fontFamily: Fonts.bodyBold, fontSize: 14, color: C.dark },
+  previewHandle: { fontFamily: Fonts.body, fontSize: 12, color: C.muted, marginTop: 1 },
+  previewCaption: { fontFamily: Fonts.body, fontSize: 14, color: C.dark, lineHeight: 20 },
   previewPhoto: { width: '100%', height: 150, borderRadius: 12, marginTop: 10, backgroundColor: C.tint },
   previewChips: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 12 },
   previewChip: { backgroundColor: C.tint, borderRadius: 999, paddingVertical: 5, paddingHorizontal: 11 },
-  previewChipText: { fontSize: 12, fontWeight: '600', color: C.primary },
+  previewChipText: { fontFamily: Fonts.bodySemibold, fontSize: 12, color: C.primary },
 
-  fieldHeading: { fontSize: 12, fontWeight: '600', color: C.muted, letterSpacing: 0.4, marginTop: 20, marginBottom: 10 },
+  fieldHeading: { fontFamily: Fonts.bodySemibold, fontSize: 12, color: C.muted, letterSpacing: 0.4, marginTop: 20, marginBottom: 10 },
   row: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   platChip: { flexDirection: 'row', alignItems: 'center', gap: 7, borderWidth: 1.5, borderColor: C.border, borderRadius: 999, paddingVertical: 8, paddingHorizontal: 13 },
   platDot: { width: 9, height: 9, borderRadius: 5 },
-  platChipText: { fontSize: 13, fontWeight: '600', color: C.muted },
+  platChipText: { fontFamily: Fonts.bodySemibold, fontSize: 13, color: C.muted },
   statToggle: { flexDirection: 'row', alignItems: 'center', gap: 6, borderRadius: 999, paddingVertical: 8, paddingHorizontal: 12 },
   statOn: { backgroundColor: C.tint },
   statOff: { backgroundColor: '#fff', borderWidth: 1, borderColor: C.border },
-  statToggleText: { fontSize: 13, fontWeight: '600' },
+  statToggleText: { fontFamily: Fonts.bodySemibold, fontSize: 13 },
 
   captionHead: { flexDirection: 'row', alignItems: 'baseline', justifyContent: 'space-between' },
-  counter: { fontSize: 12, fontWeight: '600', marginTop: 20 },
+  counter: { fontFamily: Fonts.bodySemibold, fontSize: 12, marginTop: 20 },
   captionInput: {
     backgroundColor: '#fff',
     borderWidth: 1,
     borderColor: C.border,
     borderRadius: 14,
     padding: 14,
+    fontFamily: Fonts.body,
     fontSize: 14,
     color: C.dark,
     lineHeight: 20,
     minHeight: 120,
   },
   inviteBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: C.tint, borderRadius: 14, paddingVertical: 13, marginBottom: 4 },
-  inviteText: { fontSize: 14, fontWeight: '700', color: C.primary },
+  inviteText: { fontFamily: Fonts.bodyBold, fontSize: 14, color: C.primary },
   postBtn: { marginTop: 16, backgroundColor: C.primary, borderRadius: radius.button, paddingVertical: 16, alignItems: 'center' },
-  postDisabled: { backgroundColor: '#B4BBAB' },
-  postText: { color: '#fff', fontSize: 15, fontWeight: '700' },
+  postDisabled: { backgroundColor: 'rgba(15,47,102,0.35)' },
+  postText: { color: C.creamText, fontFamily: Fonts.bodyBold, fontSize: 15 },
 });

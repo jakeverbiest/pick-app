@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <key>CFBundleDisplayName</key>
+    <string>PICK Watch</string>
+    <!-- Lets the app keep running (and stay frontmost on wrist-raise) while an
+         HKWorkoutSession is active. Without this the session can't run. -->
+    <key>WKBackgroundModes</key>
+    <array>
+      <string>workout-processing</string>
+    </array>
+    <!-- Required whenever the HealthKit entitlement is present, even though we
+         read nothing and never save a workout. -->
+    <key>NSHealthShareUsageDescription</key>
+    <string>PICK reads nothing from Health. This permission accompanies the workout session that keeps your cleanup on screen while you walk.</string>
+    <key>NSHealthUpdateUsageDescription</key>
+    <string>PICK runs a walking workout session during a cleanup so the app stays on screen when you raise your wrist. The workout is discarded, not saved — your phone logs the cleanup instead.</string>
+  </dict>
+</plist>

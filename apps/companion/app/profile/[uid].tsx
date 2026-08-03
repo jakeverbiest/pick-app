@@ -14,7 +14,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Icon } from '../../src/pick/Icon';
 import { ImpactMap } from '../../src/pick/ImpactMap';
-import { C, radius, shadow } from '../../src/pick/theme';
+import { C, Fonts, radius } from '../../src/pick/theme';
 import { getAuthService } from '../../src/services/authService';
 import { getProfile, type PublicProfile } from '../../src/services/profiles';
 import { follow, unfollow, isFollowing, followCounts } from '../../src/services/follows';
@@ -108,6 +108,16 @@ export default function ProfileScreen() {
 
       {loading ? (
         <View style={styles.center}><ActivityIndicator color={C.primary} /></View>
+      ) : profile?.hidden && !isMe ? (
+        // They turned off "Let people open my profile" in Settings. Their name
+        // shouldn't have been tappable, but deep links and stale lists exist.
+        <View style={styles.center}>
+          <Icon name="user" size={30} color={C.muted} sw={1.7} />
+          <Text style={styles.privateTitle}>This profile is private</Text>
+          <Text style={styles.privateSub}>
+            This picker has chosen not to share their profile. Their cleanups still count toward the map.
+          </Text>
+        </View>
       ) : (
         <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
           <View style={styles.idRow}>
@@ -126,10 +136,10 @@ export default function ProfileScreen() {
                 style={[styles.followBtn, following && styles.followingBtn, busy && { opacity: 0.6 }]}
               >
                 {busy ? (
-                  <ActivityIndicator size="small" color={following ? C.primary : '#fff'} />
+                  <ActivityIndicator size="small" color={following ? C.primary : C.creamText} />
                 ) : (
                   <>
-                    <Icon name={following ? 'check' : 'plus'} size={15} color={following ? C.primary : '#fff'} sw={2.2} />
+                    <Icon name={following ? 'check' : 'plus'} size={15} color={following ? C.primary : C.creamText} sw={2.2} />
                     <Text style={[styles.followText, following && { color: C.primary }]}>{following ? 'Following' : 'Follow'}</Text>
                   </>
                 )}
@@ -183,40 +193,42 @@ export default function ProfileScreen() {
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: C.cream },
+  root: { flex: 1, backgroundColor: C.white },
   header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 12 },
   backBtn: { padding: 2 },
-  h1: { flex: 1, textAlign: 'center', fontSize: 18, fontWeight: '700', color: C.dark },
-  center: { flex: 1, alignItems: 'center', justifyContent: 'center' },
+  h1: { flex: 1, textAlign: 'center', fontFamily: Fonts.headlineBold, fontSize: 18, color: C.dark },
+  center: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 36, gap: 10 },
+  privateTitle: { fontFamily: Fonts.headlineBold, fontSize: 17, color: C.dark, marginTop: 4 },
+  privateSub: { fontFamily: Fonts.body, fontSize: 13.5, color: C.muted, textAlign: 'center', lineHeight: 19 },
   scroll: { paddingHorizontal: 16, paddingBottom: 40 },
 
   idRow: { flexDirection: 'row', alignItems: 'center', gap: 14, marginTop: 6 },
-  avatar: { width: 60, height: 60, borderRadius: 30, backgroundColor: '#fff', alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: C.border },
-  avatarText: { fontSize: 24, fontWeight: '700', color: C.primary },
-  name: { fontSize: 20, fontWeight: '700', color: C.dark },
-  sub: { fontSize: 14, color: C.text3, marginTop: 2 },
+  avatar: { width: 60, height: 60, borderRadius: 30, backgroundColor: C.primary, alignItems: 'center', justifyContent: 'center' },
+  avatarText: { fontFamily: Fonts.bodyBold, fontSize: 24, color: C.creamText },
+  name: { fontFamily: Fonts.headlineBold, fontSize: 20, color: C.dark },
+  sub: { fontFamily: Fonts.body, fontSize: 14, color: C.text3, marginTop: 2 },
 
   followBtn: { flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: C.primary, borderRadius: 999, paddingHorizontal: 16, height: 38 },
   followingBtn: { backgroundColor: '#fff', borderWidth: 1, borderColor: C.primary },
-  followText: { color: '#fff', fontWeight: '700', fontSize: 14 },
+  followText: { fontFamily: Fonts.bodyBold, color: C.creamText, fontSize: 14 },
 
   followRow: { flexDirection: 'row', gap: 20, marginTop: 16 },
-  followCount: { fontSize: 14, color: C.text3 },
-  followNum: { fontWeight: '700', color: C.dark },
+  followCount: { fontFamily: Fonts.body, fontSize: 14, color: C.text3 },
+  followNum: { fontFamily: Fonts.bodyBold, color: C.dark },
 
-  statsCard: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#fff', borderRadius: radius.card, paddingVertical: 16, marginTop: 18, ...shadow.card },
+  statsCard: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#fff', borderRadius: radius.card, borderWidth: 1.5, borderColor: C.border, paddingVertical: 16, marginTop: 18 },
   stat: { flex: 1, alignItems: 'center' },
   statDivider: { width: 1, height: 34, backgroundColor: C.border2 },
-  statValue: { fontSize: 19, fontWeight: '700', color: C.primary },
-  statLabel: { fontSize: 12, color: C.text3, marginTop: 3 },
-  privateNote: { fontSize: 13, color: C.text3, marginTop: 18, fontStyle: 'italic' },
+  statValue: { fontFamily: Fonts.displayBold, fontSize: 19, color: C.primary },
+  statLabel: { fontFamily: Fonts.body, fontSize: 12, color: C.text3, marginTop: 3 },
+  privateNote: { fontFamily: Fonts.body, fontSize: 13, color: C.text3, marginTop: 18, fontStyle: 'italic' },
 
-  section: { fontSize: 13, fontWeight: '700', color: C.text3, textTransform: 'uppercase', letterSpacing: 0.4, marginTop: 26, marginBottom: 12 },
-  emptyPosts: { fontSize: 14, color: C.muted },
+  section: { fontFamily: Fonts.bodyBold, fontSize: 13, color: C.text3, textTransform: 'uppercase', letterSpacing: 0.4, marginTop: 26, marginBottom: 12 },
+  emptyPosts: { fontFamily: Fonts.body, fontSize: 14, color: C.muted },
 
-  card: { backgroundColor: '#fff', borderRadius: radius.card, overflow: 'hidden', ...shadow.card },
+  card: { backgroundColor: '#fff', borderRadius: radius.card, borderWidth: 1.5, borderColor: C.border, overflow: 'hidden' },
   photo: { width: '100%', aspectRatio: 1.25, backgroundColor: C.tint },
   cardBody: { padding: 12 },
-  caption: { fontSize: 15, color: C.dark, fontWeight: '500', lineHeight: 21, marginBottom: 6 },
-  time: { fontSize: 12, color: C.muted },
+  caption: { fontFamily: Fonts.bodyMedium, fontSize: 15, color: C.dark, lineHeight: 21, marginBottom: 6 },
+  time: { fontFamily: Fonts.body, fontSize: 12, color: C.muted },
 });

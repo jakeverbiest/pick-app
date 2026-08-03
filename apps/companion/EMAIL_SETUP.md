@@ -12,7 +12,7 @@ this is a configuration gap, not a code gap.
 | --- | --- | --- |
 | `onAdoptionCreated` | picker adopts a spot | that picker (instant "You adopted X") |
 | `scheduledAdoptionCheck` | every 24h, if a spot went stale | that picker (nudge) |
-| `notifyNewSignup` | new user profile created | owner (`jlverbie@gmail.com`) |
+| `notifyNewSignup` | new user profile created | owner (`hello@pickglobal.org`) |
 
 Each just calls `db.collection('mail').add({ to, message })`. The **Firebase
 "Trigger Email" extension** watches that collection and actually delivers via
@@ -30,7 +30,7 @@ During install, set:
 
 - **Email documents collection:** `mail`  ← must match the code
 - **SMTP connection URI:** your sender (Gmail example below)
-- **Default FROM address:** e.g. `Pick <jlverbie@gmail.com>`
+- **Default FROM address:** e.g. `Pick <hello@pickglobal.org>`
 - **Default REPLY-TO:** optional
 
 ### Gmail as the sender (simplest to start)

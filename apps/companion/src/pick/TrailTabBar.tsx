@@ -3,7 +3,7 @@ import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { BottomTabBarProps } from '@react-navigation/bottom-tabs';
 import { Icon, IconName } from './Icon';
-import { C } from './theme';
+import { C, Fonts } from './theme';
 
 /** The Trail tabs, in order. Other registered routes are hidden.
  *  Challenges/Goals live inside the Ranks (Leaderboard) tab. */
@@ -48,10 +48,10 @@ const styles = StyleSheet.create({
     justifyContent: 'space-around',
     paddingTop: 9,
     paddingHorizontal: 6,
-    backgroundColor: 'rgba(250,250,248,0.98)',
+    backgroundColor: 'rgba(255,255,255,0.98)',
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: C.border3,
   },
   tab: { flex: 1, alignItems: 'center', gap: 4, paddingHorizontal: 8, paddingVertical: 3 },
-  label: { fontSize: 10, fontWeight: '600', letterSpacing: 0.2 },
+  label: { fontFamily: Fonts.bodySemibold, fontSize: 10, letterSpacing: 0.2 },
 });

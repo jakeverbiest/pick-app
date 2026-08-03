@@ -12,7 +12,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { Icon } from '../src/pick/Icon';
-import { C, radius, shadow } from '../src/pick/theme';
+import { C, Fonts, radius } from '../src/pick/theme';
 import {
   ensureProfile, getProfile, setHandle, searchByHandle, findByEmail,
   normalizeHandle, type PublicProfile,
@@ -49,20 +49,6 @@ export default function PeopleScreen() {
     const uid = getAuthService().getCurrentUser()?.uid;
     return uid ? getProfile(uid) : null;
   }
-
-  const saveHandle = async () => {
-    const h = normalizeHandle(handleInput);
-    if (h === myHandle) return;
-    setSavingHandle(true);
-    const res = await setHandle(h);
-    setSavingHandle(false);
-    if (res.ok) {
-      setMyHandle(h);
-      Alert.alert('Handle saved', `People can now find you as @${h}.`);
-    } else {
-      Alert.alert('Try another handle', res.error || 'That didn’t work.');
-    }
-  };
 
   const runSearch = useCallback(async (text: string) => {
     const t = text.trim();
@@ -121,33 +107,13 @@ export default function PeopleScreen() {
       </View>
 
       <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
-        {/* Your handle */}
-        <Text style={styles.section}>Your handle</Text>
-        <View style={styles.handleRow}>
-          <View style={styles.handleField}>
-            <Text style={styles.at}>@</Text>
-            <TextInput
-              style={styles.handleInput}
-              value={handleInput}
-              onChangeText={setHandleInput}
-              placeholder="pick a handle"
-              placeholderTextColor={C.muted}
-              autoCapitalize="none"
-              autoCorrect={false}
-            />
-          </View>
-          <Pressable
-            onPress={saveHandle}
-            disabled={savingHandle || normalizeHandle(handleInput) === myHandle}
-            style={[styles.saveBtn, (savingHandle || normalizeHandle(handleInput) === myHandle) && { opacity: 0.5 }]}
-          >
-            {savingHandle ? <ActivityIndicator color="#fff" size="small" /> : <Text style={styles.saveText}>Save</Text>}
-          </Pressable>
-        </View>
-        <Text style={styles.help}>3–20 letters, numbers or _, starting with a letter. This is how friends find you.</Text>
+        {/* Handle editing moved to You → Edit profile (design audit). */}
+        {!myHandle && (
+          <Text style={styles.help}>Set your @handle in You → Edit so friends can find you.</Text>
+        )}
 
         {/* Search */}
-        <Text style={[styles.section, { marginTop: 22 }]}>Search</Text>
+        <Text style={[styles.section, { marginTop: 10 }]}>Search</Text>
         <View style={styles.searchField}>
           <Icon name="user" size={18} color={C.muted} sw={1.8} />
           <TextInput
@@ -191,10 +157,10 @@ export default function PeopleScreen() {
                   style={[styles.followBtn, isF && styles.followingBtn, isBusy && { opacity: 0.6 }]}
                 >
                   {isBusy ? (
-                    <ActivityIndicator color={isF ? C.primary : '#fff'} size="small" />
+                    <ActivityIndicator color={isF ? C.primary : C.creamText} size="small" />
                   ) : (
                     <>
-                      <Icon name={isF ? 'check' : 'plus'} size={15} color={isF ? C.primary : '#fff'} sw={2.2} />
+                      <Icon name={isF ? 'check' : 'plus'} size={15} color={isF ? C.primary : C.creamText} sw={2.2} />
                       <Text style={[styles.followText, isF && { color: C.primary }]}>{isF ? 'Following' : 'Follow'}</Text>
                     </>
                   )}
@@ -215,35 +181,35 @@ export default function PeopleScreen() {
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: C.cream },
+  root: { flex: 1, backgroundColor: C.white },
   header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 12 },
   backBtn: { padding: 2 },
-  h1: { fontSize: 20, fontWeight: '700', color: C.dark },
+  h1: { fontFamily: Fonts.headlineBold, fontSize: 20, color: C.dark },
   scroll: { paddingHorizontal: 16, paddingBottom: 40 },
 
-  section: { fontSize: 13, fontWeight: '700', color: C.text3, textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 10 },
+  section: { fontFamily: Fonts.bodyBold, fontSize: 13, color: C.text3, textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 10 },
 
   handleRow: { flexDirection: 'row', gap: 10 },
   handleField: { flex: 1, flexDirection: 'row', alignItems: 'center', backgroundColor: '#fff', borderRadius: radius.card, borderWidth: 1, borderColor: C.border, paddingHorizontal: 12, height: 48 },
-  at: { fontSize: 16, color: C.muted, marginRight: 2 },
-  handleInput: { flex: 1, fontSize: 16, color: C.dark },
+  at: { fontFamily: Fonts.body, fontSize: 16, color: C.muted, marginRight: 2 },
+  handleInput: { flex: 1, fontFamily: Fonts.body, fontSize: 16, color: C.dark },
   saveBtn: { backgroundColor: C.primary, borderRadius: radius.card, paddingHorizontal: 20, height: 48, alignItems: 'center', justifyContent: 'center' },
-  saveText: { color: '#fff', fontWeight: '700', fontSize: 15 },
-  help: { fontSize: 12.5, color: C.text3, marginTop: 8, lineHeight: 17 },
+  saveText: { fontFamily: Fonts.bodyBold, color: C.creamText, fontSize: 15 },
+  help: { fontFamily: Fonts.body, fontSize: 12.5, color: C.text3, marginTop: 8, lineHeight: 17 },
 
   searchField: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: '#fff', borderRadius: radius.card, borderWidth: 1, borderColor: C.border, paddingHorizontal: 12, height: 48 },
-  searchInput: { flex: 1, fontSize: 16, color: C.dark },
+  searchInput: { flex: 1, fontFamily: Fonts.body, fontSize: 16, color: C.dark },
 
-  personCard: { flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: '#fff', borderRadius: radius.card, padding: 12, ...shadow.card },
+  personCard: { flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: '#fff', borderRadius: radius.card, borderWidth: 1.5, borderColor: C.border, padding: 12 },
   personTap: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 12 },
-  avatar: { width: 42, height: 42, borderRadius: 21, backgroundColor: C.cream, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: C.border },
-  avatarText: { fontSize: 17, fontWeight: '700', color: C.primary },
-  name: { fontSize: 15.5, fontWeight: '600', color: C.dark },
-  handle: { fontSize: 13, color: C.text3, marginTop: 1 },
+  avatar: { width: 42, height: 42, borderRadius: 21, backgroundColor: C.primary, alignItems: 'center', justifyContent: 'center' },
+  avatarText: { fontFamily: Fonts.bodyBold, fontSize: 17, color: C.creamText },
+  name: { fontFamily: Fonts.bodySemibold, fontSize: 15.5, color: C.dark },
+  handle: { fontFamily: Fonts.body, fontSize: 13, color: C.text3, marginTop: 1 },
 
   followBtn: { flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: C.primary, borderRadius: 999, paddingHorizontal: 14, height: 36 },
   followingBtn: { backgroundColor: '#fff', borderWidth: 1, borderColor: C.primary },
-  followText: { color: '#fff', fontWeight: '700', fontSize: 14 },
+  followText: { fontFamily: Fonts.bodyBold, color: C.creamText, fontSize: 14 },
 
-  empty: { fontSize: 14, color: C.text3, lineHeight: 20, paddingVertical: 10 },
+  empty: { fontFamily: Fonts.body, fontSize: 14, color: C.text3, lineHeight: 20, paddingVertical: 10 },
 });

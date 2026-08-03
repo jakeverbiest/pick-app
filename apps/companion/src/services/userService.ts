@@ -48,7 +48,7 @@ class UserService {
       id: userId,
       displayName: 'Picker', // Default name
       neighborhood: 'My Zone',
-      email: 'jlverbie@gmail.com', // From user context
+      email: '', // set when the user signs in with a real account
       createdAt: Date.now(),
     };
 
