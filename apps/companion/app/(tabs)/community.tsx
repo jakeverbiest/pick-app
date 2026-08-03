@@ -9,6 +9,7 @@ import type { Post } from '../../src/services/firebaseDatabase';
 import { getAuthService } from '../../src/services/authService';
 import { listFollowingIds } from '../../src/services/follows';
 import { getProfiles } from '../../src/services/profiles';
+import { reportPost, blockUser, getBlockedUids } from '../../src/services/moderation';
 import { Icon } from '../../src/pick/Icon';
 import { ImpactMap } from '../../src/pick/ImpactMap';
 import { ImpactComposer } from '../../src/pick/ImpactComposer';
@@ -48,6 +49,7 @@ export default function CommunityScreen() {
   const [loading, setLoading] = useState(true);
   const [mode, setMode] = useState<FeedMode>('everyone');
   const [composerOpen, setComposerOpen] = useState(false);
+  const [blockedUids, setBlockedUids] = useState<string[]>([]);
 
   const load = useCallback(async (feedMode: FeedMode) => {
     try {
@@ -55,6 +57,8 @@ export default function CommunityScreen() {
       const db = await getDatabase();
       const user = getAuthService().getCurrentUser();
       setUid(user?.uid || '');
+      const blocked = await getBlockedUids();
+      setBlockedUids(blocked);
       let loaded: Post[];
       if (feedMode === 'following') {
         const ids = await listFollowingIds();
@@ -62,6 +66,8 @@ export default function CommunityScreen() {
       } else {
         loaded = await db.getPosts(50);
       }
+      // Blocked pickers never appear in your feed, on any device.
+      loaded = loaded.filter((p) => !blocked.includes(p.uid));
       setPosts(loaded);
       // Resolve author handles (batched, cached by the profiles service).
       try {
@@ -126,6 +132,54 @@ export default function CommunityScreen() {
           else Alert.alert('Error', 'Could not delete that post.');
         },
       },
+    ]);
+  };
+
+  // Report or block from a post's "more" menu — Apple requires both for any
+  // app with a public content feed (App Store Guideline 1.2).
+  const showMoreMenu = (post: Post) => {
+    const who = post.display_name || 'this picker';
+    Alert.alert(post.display_name || 'Post options', undefined, [
+      {
+        text: 'Report post',
+        onPress: () => {
+          Alert.alert('Report this post?', "We'll review it — it stays visible to others in the meantime.", [
+            { text: 'Cancel', style: 'cancel' },
+            {
+              text: 'Report',
+              style: 'destructive',
+              onPress: async () => {
+                const ok = await reportPost(post, 'user_reported');
+                if (ok) {
+                  setPosts((prev) => prev.filter((p) => p.id !== post.id));
+                  Alert.alert('Reported', "Thanks — we'll take a look. You won't see this post again.");
+                } else {
+                  Alert.alert('Could not report', 'Something went wrong sending your report. Please try again.');
+                }
+              },
+            },
+          ]);
+        },
+      },
+      {
+        text: `Block ${who}`,
+        style: 'destructive',
+        onPress: () => {
+          Alert.alert(`Block ${who}?`, "You won't see their posts again, on any device.", [
+            { text: 'Cancel', style: 'cancel' },
+            {
+              text: 'Block',
+              style: 'destructive',
+              onPress: async () => {
+                await blockUser(post.uid);
+                setBlockedUids((prev) => [...prev, post.uid]);
+                setPosts((prev) => prev.filter((p) => p.uid !== post.uid));
+              },
+            },
+          ]);
+        },
+      },
+      { text: 'Cancel', style: 'cancel' },
     ]);
   };
 
@@ -244,9 +298,13 @@ export default function CommunityScreen() {
                       </View>
 
                       <View style={styles.actions}>
-                        {mine && (
+                        {mine ? (
                           <Pressable onPress={() => removePost(post)} hitSlop={8} style={styles.iconBtn}>
                             <Icon name="trash" size={18} color={C.muted} sw={1.8} />
+                          </Pressable>
+                        ) : (
+                          <Pressable onPress={() => showMoreMenu(post)} hitSlop={8} style={styles.iconBtn} accessibilityLabel="Report or block">
+                            <Icon name="flag" size={18} color={C.muted} sw={1.8} />
                           </Pressable>
                         )}
                         <Pressable onPress={() => toggleLike(post)} hitSlop={8} style={styles.likeBtn}>

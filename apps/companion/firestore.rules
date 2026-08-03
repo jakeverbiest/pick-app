@@ -178,6 +178,16 @@ service cloud.firestore {
       allow read, update, delete: if false;
     }
 
+    // --- Content reports (App Store Guideline 1.2 — UGC apps need a report
+    //     mechanism): write-only from clients, same shape as analytics. Only
+    //     reviewed via the Firebase console / admin tooling, never read back
+    //     by the app — a reporter shouldn't be able to see report contents,
+    //     including their own, since that could reveal moderation outcomes. ---
+    match /reports/{docId} {
+      allow create: if signedIn() && request.resource.data.reporterUid == request.auth.uid;
+      allow read, update, delete: if false;
+    }
+
     // --- Public stats: the aggregate dashboard (city + global). PUBLIC read
     //     (no auth) so a public website can show them. Written ONLY by the
     //     scheduledPublicStats / rebuildPublicStats Cloud Functions (admin SDK
