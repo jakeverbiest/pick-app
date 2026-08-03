@@ -122,6 +122,7 @@ export interface ImpactStats {
   toGo?: number;       // blocks left to reach the goal
   cleanups?: number;
   bags?: number;
+  pickups?: number;    // pieces of litter picked up — the headline share stat
 }
 
 /** Compact, re-renderable "map snapshot" — drawn as SVG from coords (no image
