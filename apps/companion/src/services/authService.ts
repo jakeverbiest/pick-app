@@ -159,24 +159,22 @@ class AuthService {
   /**
    * Permanently delete the account: all cloud data, then the auth user.
    * (App Store requires in-app account deletion for apps with sign-in.)
+   *
+   * deleteAccountData() is resilient — it tries every cleanup step even if
+   * one fails, and never throws for an individual step failing (see its own
+   * doc comment). It only throws here for a genuine precondition failure
+   * (no signed-in user), which is treated as fatal. Any other outcome — full
+   * success or partial — still proceeds to delete the Auth user: refusing to
+   * do so over one failed step is exactly what leaves an account stuck
+   * half-deleted with no way to retry cleanly. The step report is returned
+   * so the caller can tell the user if anything needs a manual follow-up.
    */
-  async deleteAccount(): Promise<void> {
+  async deleteAccount(): Promise<{ steps: Record<string, boolean> }> {
     const user = auth.currentUser;
     if (!user) throw new Error('Not signed in.');
 
-    // Delete cloud data FIRST, and abort if it fails: once the auth user is
-    // gone, owner-only security rules make the leftover data undeletable.
     const db = await getDatabase();
-    try {
-      await (db as any).deleteAccountData();
-    } catch (error: any) {
-      console.error('❌ Account data deletion failed — auth user NOT deleted:', error);
-      throw new Error(
-        error?.code === 'auth/network-request-failed' || error?.message?.includes('network')
-          ? 'Network error while deleting your data. Nothing was deleted — check your connection and try again.'
-          : 'Could not delete your data. Nothing was deleted — please try again.'
-      );
-    }
+    const { steps } = await (db as any).deleteAccountData();
 
     try {
       await deleteUser(user);
@@ -189,7 +187,8 @@ class AuthService {
 
     this.currentUser = null;
     this.notifyListeners();
-    console.log('🗑️ Account deleted');
+    console.log('🗑️ Account deleted. Cleanup steps:', steps);
+    return { steps };
   }
 
   async sendPasswordReset(email: string): Promise<void> {

@@ -563,6 +563,67 @@ async function nameFor(uid) {
   return 'Someone';
 }
 
+// ==========================================================================
+// ACCOUNT DELETION — server-side cleanup for what client rules forbid.
+//
+// `feedback` and `reports` are intentionally write-only from the client
+// (see firestore.rules) so users can't read back moderation/feedback
+// contents — which also means the client can't delete its own docs there on
+// account deletion. `follows` edges where this uid is the one being
+// FOLLOWED (not the follower) hit the same wall: the rule only lets the
+// follower side delete an edge, so a user closing their account can't clean
+// up the incoming half of their follow graph themselves either.
+//
+// Called by src/services/firebaseDatabase.ts's deleteAccountData() as the
+// last step of account deletion, while the caller's auth token is still
+// valid — request.auth.uid is checked against the uid being deleted so this
+// can't be used to wipe someone else's data.
+// ==========================================================================
+
+exports.deleteMyPrivateData = onCall(async (request) => {
+  if (!request.auth) {
+    throw new HttpsError('unauthenticated', 'Sign in to delete your account.');
+  }
+  const uid = request.data && request.data.uid;
+  if (!uid || uid !== request.auth.uid) {
+    throw new HttpsError('permission-denied', 'You can only delete your own data.');
+  }
+
+  const steps = {};
+  const deleteAllDocs = (snap) => Promise.all(snap.docs.map((d) => d.ref.delete()));
+
+  try {
+    const feedbackSnap = await db.collection('feedback').where('uid', '==', uid).get();
+    await deleteAllDocs(feedbackSnap);
+    steps.feedback = true;
+  } catch (error) {
+    console.error('deleteMyPrivateData: feedback cleanup failed', error);
+    steps.feedback = false;
+  }
+
+  try {
+    const reportsSnap = await db.collection('reports').where('reporterUid', '==', uid).get();
+    await deleteAllDocs(reportsSnap);
+    steps.reports = true;
+  } catch (error) {
+    console.error('deleteMyPrivateData: reports cleanup failed', error);
+    steps.reports = false;
+  }
+
+  try {
+    // Edges where this uid is followed BY someone else (the incoming half —
+    // the outgoing half is already deleted client-side, see firebaseDatabase.ts).
+    const followedBySnap = await db.collection('follows').where('followingId', '==', uid).get();
+    await deleteAllDocs(followedBySnap);
+    steps.follows_incoming = true;
+  } catch (error) {
+    console.error('deleteMyPrivateData: follows cleanup failed', error);
+    steps.follows_incoming = false;
+  }
+
+  return { steps };
+});
+
 /** New follower → notify the followed user. follows/{follower_following}. */
 exports.onFollowCreated = onDocumentCreated('follows/{edgeId}', async (event) => {
   const f = (event.data && event.data.data()) || {};

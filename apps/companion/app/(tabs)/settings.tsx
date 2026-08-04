@@ -583,8 +583,17 @@ export default function SettingsScreen() {
           style: 'destructive',
           onPress: async () => {
             try {
-              await getAuthService().deleteAccount();
+              const { steps } = await getAuthService().deleteAccount();
+              const failed = Object.entries(steps).filter(([, ok]) => !ok).map(([name]) => name);
               router.replace('/auth/signup');
+              // Account is already gone at this point — this is a heads-up for
+              // support follow-up, not something the user can retry from here.
+              if (failed.length > 0) {
+                Alert.alert(
+                  'Account deleted, with a few loose ends',
+                  `Your account is gone, but these didn't fully clean up: ${failed.join(', ')}. This is rare and usually a network hiccup — let us know via feedback if you're concerned.`
+                );
+              }
             } catch (error: any) {
               Alert.alert('Could not delete account', error.message);
             }
@@ -1100,12 +1109,21 @@ export default function SettingsScreen() {
           </Pressable>
           {manageOpen && (
             <>
-              <TouchableOpacity style={styles.dangerButton} onPress={confirmClearData}>
-                <Text style={styles.dangerButtonText}>Clear all data</Text>
+              {/* Deliberately styled as the milder of the two actions — your
+                  account survives this, only the data doesn't. */}
+              <TouchableOpacity style={styles.clearDataButton} onPress={confirmClearData} activeOpacity={0.85}>
+                <Text style={styles.clearDataButtonText}>Clear all data</Text>
+                <Text style={styles.clearDataButtonSub}>Wipes cleanups, stats and badges — you keep your account.</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={[styles.dangerButton, { marginBottom: 0 }]} onPress={confirmDeleteAccount}>
-                <Text style={styles.dangerButtonText}>Delete account</Text>
-              </TouchableOpacity>
+
+              {/* Visually separated and unmistakably the more severe action —
+                  this one has no undo, unlike "Clear all data" above. */}
+              <View style={styles.deleteAccountBlock}>
+                <TouchableOpacity style={styles.deleteAccountButton} onPress={confirmDeleteAccount} activeOpacity={0.85}>
+                  <Text style={styles.deleteAccountButtonText}>Delete account</Text>
+                </TouchableOpacity>
+                <Text style={styles.deleteAccountSub}>Permanently removes your account. There is no undo.</Text>
+              </View>
             </>
           )}
         </View>
@@ -1500,16 +1518,33 @@ const styles = StyleSheet.create({
     marginTop: 6,
   },
   manageText: { fontFamily: Fonts.bodyBold, fontSize: 14, color: C.danger },
-  dangerButton: {
+
+  // "Clear all data" — the milder action (account survives). Muted outline,
+  // not the solid red treatment "Delete account" gets below.
+  clearDataButton: {
     paddingVertical: 12,
+    paddingHorizontal: 14,
     borderRadius: 12,
-    backgroundColor: C.white,
+    backgroundColor: C.field,
     borderWidth: 1.5,
-    borderColor: C.danger,
+    borderColor: C.border,
     alignItems: 'center',
-    marginBottom: 10,
   },
-  dangerButtonText: { fontFamily: Fonts.bodyBold, fontSize: 14, color: C.danger },
+  clearDataButtonText: { fontFamily: Fonts.bodyBold, fontSize: 14, color: C.text2 },
+  clearDataButtonSub: { fontFamily: Fonts.body, fontSize: 12, color: C.muted, marginTop: 3, textAlign: 'center' },
+
+  // "Delete account" — deliberately separated (marginTop) and given the
+  // strongest, solid-fill treatment so it can't be mistaken for the button
+  // above it, even at a glance.
+  deleteAccountBlock: { marginTop: 22 },
+  deleteAccountButton: {
+    paddingVertical: 13,
+    borderRadius: 12,
+    backgroundColor: C.danger,
+    alignItems: 'center',
+  },
+  deleteAccountButtonText: { fontFamily: Fonts.bodyBold, fontSize: 14, color: '#fff' },
+  deleteAccountSub: { fontFamily: Fonts.body, fontSize: 12, color: C.danger, marginTop: 6, textAlign: 'center' },
 
   // ---------- legal modal ----------
   legalHeader: {

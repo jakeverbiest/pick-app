@@ -24,9 +24,17 @@ import {
   Timestamp,
 } from 'firebase/firestore';
 import { getStorage, ref as storageRef, uploadBytes, uploadBytesResumable, getDownloadURL, deleteObject } from 'firebase/storage';
+import { getFunctions, httpsCallable } from 'firebase/functions';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { app } from './firebaseConfig';
+import { app, auth } from './firebaseConfig';
 import { aggregateBags, itemsToBags } from './impactMetrics';
+
+// Same encoding as profiles.ts's emailKey — duplicated rather than imported to
+// avoid a circular dependency (profiles.ts -> authService.ts -> database.ts
+// -> firebaseDatabase.ts). Keep in sync if that encoding ever changes.
+function emailIndexKey(email: string): string {
+  return encodeURIComponent(email.trim().toLowerCase());
+}
 
 const CLEANUPS_CACHE_KEY = 'pick_app_cleanups_cache';
 const USER_SETTINGS_CACHE_KEY = 'pick_app_user_settings_cache';
@@ -847,75 +855,181 @@ class FirebaseDatabase {
 
   /**
    * Delete every trace of the account's cloud data. Used by account deletion
-   * (App Store Guideline 5.1.1). Unlike clearAllData, this THROWS on failure —
-   * the caller must NOT delete the Firebase Auth user if this fails, or the
-   * data becomes permanently orphaned (owner-only security rules mean nobody
-   * can delete it once the auth user is gone).
+   * (App Store Guideline 5.1.1).
    *
-   * Covers, beyond clearAllData: the public leaderboard aggregate
-   * (user_stats/{uid}), the user's community posts (Firestore docs + Storage
-   * images), and the uid's likes on other users' posts.
+   * Resilient by design: each step is independently try/caught, logs on
+   * failure, and the rest still run — a single failed step (a flaky network
+   * call, a query that times out) no longer aborts the whole deletion and
+   * leaves the account stuck half-cleaned with the auth user still present
+   * but undeletable data behind it. Returns which steps succeeded so the
+   * caller can tell the user if anything needs a manual follow-up.
    *
-   * NOT covered (rules forbid client deletes): `feedback` docs — purge those
-   * manually from the Firebase console on deletion requests.
+   * Covers everything client security rules permit deleting for this uid:
+   * posts (+ Storage images) and likes on others' posts, cleanups, badges,
+   * adoptions, follows edges where this uid is the follower, challenge
+   * participation + contrib docs, live_walks presence, the public profile +
+   * handle claim, the email_index entry, the avatar Storage file, and the
+   * user_stats/users docs. `blocked_uids` lives on the users/{uid} doc
+   * itself, so it goes away with that doc — no separate step needed.
+   *
+   * Two things rules forbid deleting from the client, handled by the
+   * `deleteMyPrivateData` Cloud Function instead (called last, below):
+   * `feedback` and `reports` docs, and `follows` edges where this uid is the
+   * one being FOLLOWED rather than the follower (rules only let the follower
+   * side delete an edge).
    */
-  async deleteAccountData(): Promise<void> {
+  async deleteAccountData(): Promise<{ steps: Record<string, boolean> }> {
     const uid = this.currentUserId;
     if (!uid) throw new Error('No signed-in user.');
+    const email = auth.currentUser?.email || '';
+
+    const steps: Record<string, boolean> = {};
+    const run = async (name: string, fn: () => Promise<void>) => {
+      try {
+        await fn();
+        steps[name] = true;
+      } catch (error) {
+        console.error(`❌ Account deletion step failed (${name}):`, error);
+        steps[name] = false;
+      }
+    };
 
     // Own community posts, including their Storage images.
-    const postsSnap = await getDocs(
-      query(collection(db, 'posts'), where('uid', '==', uid))
-    );
-    for (const postDoc of postsSnap.docs) {
-      const storagePath = (postDoc.data() as any).storage_path;
-      await deleteDoc(postDoc.ref);
-      if (storagePath) {
-        try {
-          await deleteObject(storageRef(storage, storagePath));
-        } catch {
-          // image already gone — ignore
+    await run('posts', async () => {
+      const postsSnap = await getDocs(query(collection(db, 'posts'), where('uid', '==', uid)));
+      for (const postDoc of postsSnap.docs) {
+        const storagePath = (postDoc.data() as any).storage_path;
+        await deleteDoc(postDoc.ref);
+        if (storagePath) {
+          try {
+            await deleteObject(storageRef(storage, storagePath));
+          } catch {
+            // image already gone — ignore
+          }
         }
       }
-    }
+    });
 
     // Remove this uid from liked_by arrays on other users' posts.
-    const likedSnap = await getDocs(
-      query(collection(db, 'posts'), where('liked_by', 'array-contains', uid))
-    );
-    for (const likedDoc of likedSnap.docs) {
-      await updateDoc(likedDoc.ref, { liked_by: arrayRemove(uid) });
-    }
+    await run('likes', async () => {
+      const likedSnap = await getDocs(query(collection(db, 'posts'), where('liked_by', 'array-contains', uid)));
+      for (const likedDoc of likedSnap.docs) {
+        await updateDoc(likedDoc.ref, { liked_by: arrayRemove(uid) });
+      }
+    });
 
     // Cleanups.
-    const cleanupsSnap = await getDocs(
-      query(collection(db, 'cleanups'), where('userId', '==', uid))
-    );
-    for (const cleanupDoc of cleanupsSnap.docs) {
-      await deleteDoc(cleanupDoc.ref);
-    }
+    await run('cleanups', async () => {
+      const cleanupsSnap = await getDocs(query(collection(db, 'cleanups'), where('userId', '==', uid)));
+      for (const cleanupDoc of cleanupsSnap.docs) {
+        await deleteDoc(cleanupDoc.ref);
+      }
+    });
 
     // Badges.
-    const badgesSnap = await getDocs(
-      query(collection(db, 'badges'), where('userId', '==', uid))
-    );
-    for (const badgeDoc of badgesSnap.docs) {
-      await deleteDoc(badgeDoc.ref);
+    await run('badges', async () => {
+      const badgesSnap = await getDocs(query(collection(db, 'badges'), where('userId', '==', uid)));
+      for (const badgeDoc of badgesSnap.docs) {
+        await deleteDoc(badgeDoc.ref);
+      }
+    });
+
+    // Adopted blocks.
+    await run('adoptions', async () => {
+      const adoptionsSnap = await getDocs(query(collection(db, 'adoptions'), where('userId', '==', uid)));
+      for (const adoptionDoc of adoptionsSnap.docs) {
+        await deleteDoc(adoptionDoc.ref);
+      }
+    });
+
+    // Follow edges where this uid is the follower. Rules only let the
+    // follower side delete an edge, so edges where this uid is the one being
+    // FOLLOWED are left for the Cloud Function below.
+    await run('follows_outgoing', async () => {
+      const followingSnap = await getDocs(query(collection(db, 'follows'), where('followerId', '==', uid)));
+      for (const edgeDoc of followingSnap.docs) {
+        await deleteDoc(edgeDoc.ref);
+      }
+    });
+
+    // Challenge participation: leave every challenge joined (drops the
+    // published contrib doc too, same as the existing "leave" flow).
+    await run('challenges', async () => {
+      const challengesSnap = await getDocs(query(collection(db, 'challenges'), where('participants', 'array-contains', uid)));
+      for (const challengeDoc of challengesSnap.docs) {
+        await updateDoc(challengeDoc.ref, { participants: arrayRemove(uid), updated_at: Date.now() });
+        try {
+          await deleteDoc(doc(db, 'challenges', challengeDoc.id, 'contrib', uid));
+        } catch {
+          // no contrib doc published — nothing to remove
+        }
+      }
+    });
+
+    // Live "who's cleaning now" presence.
+    await run('live_walks', async () => {
+      await deleteDoc(doc(db, 'live_walks', uid));
+    });
+
+    // Public profile + handle claim (read the profile FIRST to learn the
+    // current handle before it's gone, so the claim can be released too).
+    let handleLower = '';
+    await run('profiles', async () => {
+      const profSnap = await getDoc(doc(db, 'profiles', uid));
+      if (profSnap.exists()) handleLower = (profSnap.data() as any).handleLower || '';
+      await deleteDoc(doc(db, 'profiles', uid));
+    });
+    if (handleLower) {
+      await run('handle_claim', async () => {
+        await deleteDoc(doc(db, 'handles', handleLower));
+      });
     }
 
-    // Public leaderboard aggregate + profile document.
-    await deleteDoc(doc(db, 'user_stats', uid));
-    await deleteDoc(doc(db, 'users', uid));
+    // Email lookup index.
+    if (email) {
+      await run('email_index', async () => {
+        await deleteDoc(doc(db, 'email_index', emailIndexKey(email)));
+      });
+    }
+
+    // Avatar image (Storage rules let the owner delete their own file).
+    await run('avatar_file', async () => {
+      try {
+        await deleteObject(storageRef(storage, `avatars/${uid}/avatar.jpg`));
+      } catch {
+        // no avatar uploaded — ignore
+      }
+    });
+
+    // Public leaderboard aggregate + private settings document.
+    await run('user_stats', async () => {
+      await deleteDoc(doc(db, 'user_stats', uid));
+    });
+    await run('users', async () => {
+      await deleteDoc(doc(db, 'users', uid));
+    });
+
+    // Server-side cleanup for what client rules forbid: feedback, reports,
+    // and follow edges where this uid is being followed (not the follower).
+    // Called last, while the auth token is still valid — the function
+    // verifies request.auth.uid itself, so no token means no deletion.
+    await run('server_side_cleanup', async () => {
+      const fn = httpsCallable(getFunctions(app), 'deleteMyPrivateData');
+      await fn({ uid });
+    });
 
     // Local caches.
-    await AsyncStorage.multiRemove([
-      CLEANUPS_CACHE_KEY,
-      USER_SETTINGS_CACHE_KEY,
-      BADGES_CACHE_KEY,
-      CACHE_OWNER_KEY,
-    ]);
+    await run('local_caches', async () => {
+      await AsyncStorage.multiRemove([
+        CLEANUPS_CACHE_KEY,
+        USER_SETTINGS_CACHE_KEY,
+        BADGES_CACHE_KEY,
+        CACHE_OWNER_KEY,
+      ]);
+    });
 
-    console.log('🗑️ Account cloud data deleted');
+    console.log('🗑️ Account cloud data deletion finished:', steps);
+    return { steps };
   }
 
   /**
