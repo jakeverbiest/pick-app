@@ -28,7 +28,6 @@ export function LoadingView({ message }: { message?: string }) {
     <View style={styles.root}>
       <StatusBar style="light" />
       <Logo />
-      <Text style={styles.brand}>Pick</Text>
       <ActivityIndicator color={C.creamText} style={styles.spinner} />
       {message ? <Text style={styles.message}>{message}</Text> : null}
     </View>
@@ -41,8 +40,7 @@ export function ErrorView({ message }: { message?: string }) {
     <View style={styles.root}>
       <StatusBar style="light" />
       <Logo />
-      <Text style={styles.brand}>Pick</Text>
-      <Text style={styles.errorTitle}>Something went wrong starting up</Text>
+      <Text style={[styles.errorTitle, { marginTop: 22 }]}>Something went wrong starting up</Text>
       <Text style={styles.message}>
         {message || 'Please close and reopen the app. If it keeps happening, reinstall.'}
       </Text>
@@ -59,18 +57,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: 32,
   },
   logo: {
-    width: 104,
-    height: 104,
+    width: 220,
+    height: 220,
   },
-  brand: {
-    fontFamily: Fonts.displayBold,
-    fontSize: 32,
-    letterSpacing: -0.5,
-    color: C.creamText,
-    marginTop: 22,
-    textTransform: 'uppercase',
-  },
-  spinner: { marginTop: 20 },
+  spinner: { marginTop: 28 },
   errorTitle: {
     fontFamily: Fonts.headlineBold,
     fontSize: 17,

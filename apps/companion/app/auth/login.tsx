@@ -53,7 +53,6 @@ export default function LoginScreen() {
         <View style={styles.header}>
           <Image source={require('../../assets/images/logo-mark.png')} style={styles.logo} resizeMode="contain" />
 
-          <Text style={styles.brand}>Pick</Text>
           <Text style={styles.tagline}>Track your impact.{'\n'}Help keep your streets clean.</Text>
         </View>
 
@@ -126,9 +125,8 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: C.white },
   content: { flex: 1, justifyContent: 'center', paddingHorizontal: 28 },
   header: { alignItems: 'center', marginBottom: 8 },
-  logo: { width: 76, height: 76, borderRadius: 20 },
-  brand: { fontFamily: Fonts.displayBold, fontSize: 30, letterSpacing: -0.5, color: C.dark, marginTop: 22, marginBottom: 6, textTransform: 'uppercase' },
-  tagline: { fontFamily: Fonts.body, fontSize: 15, color: C.text3, textAlign: 'center', lineHeight: 21 },
+  logo: { width: 140, height: 140, borderRadius: 28 },
+  tagline: { fontFamily: Fonts.body, fontSize: 15, color: C.text3, textAlign: 'center', lineHeight: 21, marginTop: 20 },
   form: { marginTop: 36, gap: 12 },
   field: {
     backgroundColor: C.field,
