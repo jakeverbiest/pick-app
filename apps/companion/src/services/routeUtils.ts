@@ -121,16 +121,28 @@ export function simplifyRoute(rawPoints: RoutePoint[], toleranceM: number = ROUT
  * Privacy trim (Strava-style): remove the first and last ~trimM meters of a
  * route before it's stored. Walks start and end at someone's front door —
  * the trimmed route shows the cleanup without revealing the home.
- * Keeps at least 2 points so short walks still render.
+ *
+ * Scaled to the route's own length (capped at trimM per end, floor 20% each
+ * side survives) rather than a flat 100m off both ends regardless of size.
+ * A fixed 100m trim collapsed most real cleanups — short, localized
+ * litter-picking walks, not long hikes — down to 2 points each, which is
+ * why recaps aggregating many of them rendered as scattered dots instead of
+ * a walked path: there was nothing left to draw a line through.
  */
 export function privacyTrimRoute(points: RoutePoint[], trimM: number = 100): RoutePoint[] {
   if (!points || points.length <= 2) return points ?? [];
+
+  let totalM = 0;
+  for (let i = 1; i < points.length; i++) {
+    totalM += perpDistanceM(points[i], points[i - 1], points[i - 1]);
+  }
+  const effectiveTrim = Math.min(trimM, totalM * 0.2);
 
   let startIdx = 0;
   let acc = 0;
   for (let i = 1; i < points.length; i++) {
     acc += perpDistanceM(points[i], points[i - 1], points[i - 1]); // point-to-point distance
-    if (acc >= trimM) { startIdx = i; break; }
+    if (acc >= effectiveTrim) { startIdx = i; break; }
     startIdx = i;
   }
 
@@ -138,14 +150,17 @@ export function privacyTrimRoute(points: RoutePoint[], trimM: number = 100): Rou
   acc = 0;
   for (let i = points.length - 2; i >= 0; i--) {
     acc += perpDistanceM(points[i], points[i + 1], points[i + 1]);
-    if (acc >= trimM) { endIdx = i; break; }
+    if (acc >= effectiveTrim) { endIdx = i; break; }
     endIdx = i;
   }
 
   if (endIdx - startIdx < 1) {
-    // Walk shorter than 2x trim — store just the midpoint area (2 central points)
+    // Degenerate case only (near-zero-length route) — keep the middle 60%
+    // of points rather than collapsing to a single pair.
+    const span = Math.max(2, Math.round(points.length * 0.6));
     const mid = Math.floor(points.length / 2);
-    return points.slice(Math.max(0, mid - 1), mid + 1);
+    const half = Math.floor(span / 2);
+    return points.slice(Math.max(0, mid - half), Math.min(points.length, mid - half + span));
   }
   return points.slice(startIdx, endIdx + 1);
 }

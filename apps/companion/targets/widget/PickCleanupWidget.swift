@@ -18,7 +18,7 @@ struct PickCleanupWidget: Widget {
       DynamicIsland {
         DynamicIslandExpandedRegion(.leading) {
           Label("\(context.state.pickups)", systemImage: "leaf.fill")
-            .foregroundColor(.green)
+            .foregroundColor(pickGreen)
         }
         DynamicIslandExpandedRegion(.trailing) {
           Text(context.state.timeText).monospacedDigit()
@@ -29,11 +29,11 @@ struct PickCleanupWidget: Widget {
             .foregroundColor(.secondary)
         }
       } compactLeading: {
-        Image(systemName: "leaf.fill").foregroundColor(.green)
+        Image(systemName: "leaf.fill").foregroundColor(pickGreen)
       } compactTrailing: {
         Text("\(context.state.pickups)").monospacedDigit()
       } minimal: {
-        Image(systemName: "leaf.fill").foregroundColor(.green)
+        Image(systemName: "leaf.fill").foregroundColor(pickGreen)
       }
     }
   }
@@ -42,6 +42,11 @@ struct PickCleanupWidget: Widget {
 // Civic Blueprint cream — #FEFCDD, used for text/icons on navy surfaces
 // (matches C.creamText in the phone app's theme.ts).
 private let pickCream = Color(red: 0.996, green: 0.988, blue: 0.867)
+
+// Civic Blueprint brand green — #4B7A54 (matches C.accent in the phone app's
+// theme.ts and the watch app's ContentView.swift). Used on the Dynamic
+// Island, which is always black regardless of the lock-screen navy tint.
+private let pickGreen = Color(red: 0.294, green: 0.478, blue: 0.329)
 
 @available(iOS 16.1, *)
 struct LockScreenCleanupView: View {

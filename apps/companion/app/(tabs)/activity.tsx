@@ -3,11 +3,9 @@ import { Alert, Keyboard, KeyboardAvoidingView, Modal, Platform, Pressable, Scro
 import { useFocusEffect } from '@react-navigation/native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import * as Clipboard from 'expo-clipboard';
-import * as Location from 'expo-location';
 
 import { getAuthService } from '../../src/services/authService';
 import { getDatabase } from '../../src/services/database';
-import { getCoverageStats } from '../../src/services/streetSegments';
 import { Icon, IconName } from '../../src/pick/Icon';
 import { C, Fonts, radius } from '../../src/pick/theme';
 import { Card, ProgressBar } from '../../src/pick/ui';
@@ -15,7 +13,7 @@ import { StreakCard } from '../../src/pick/StreakCard';
 import { RecapModal } from '../../src/pick/RecapModal';
 import { RecapHistory } from '../../src/pick/RecapHistory';
 import { cleanupBags, formatBagsShort } from '../../src/services/impactMetrics';
-import { levelTierColor, milestoneProgress, MILESTONE_TIERS } from '../../src/services/milestones';
+import { levelTierColor, milestoneProgress } from '../../src/services/milestones';
 import { buildRecap, getUnseenRecap, listRecentRanges, markRecapSeen, type RecapData, type RecapPeriod } from '../../src/services/recap';
 import { RecapCard } from '../../src/pick/RecapCard';
 
@@ -65,7 +63,6 @@ export default function ActivityScreen() {
   const [editBags, setEditBags] = useState('');
   const [badges, setBadges] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
-  const [coverage, setCoverage] = useState<{ freshPct: number; everCleanedPct: number; totalSegments: number } | null>(null);
 
   // "My Path" recap: whichever closed week/month/year the user hasn't seen
   // yet, surfaced as a banner (year takes priority over month over week —
@@ -90,7 +87,6 @@ export default function ActivityScreen() {
 
   useEffect(() => {
     loadActivity();
-    loadCoverage();
     checkRecap();
   }, []);
 
@@ -99,17 +95,6 @@ export default function ActivityScreen() {
       loadActivity();
     }, [])
   );
-
-  const loadCoverage = async () => {
-    try {
-      const pos = await Location.getLastKnownPositionAsync();
-      if (!pos) return;
-      const s = await getCoverageStats(pos.coords.latitude, pos.coords.longitude);
-      if (s.totalSegments > 0) setCoverage(s);
-    } catch (error) {
-      console.log('Coverage stats unavailable:', error);
-    }
-  };
 
   const checkRecap = async () => {
     try {
@@ -297,6 +282,9 @@ export default function ActivityScreen() {
             </Text>
             <Text style={styles.heroUnit}>pieces</Text>
           </View>
+          <Text style={styles.heroSubStat} numberOfLines={1}>
+            across {totalCleanups.toLocaleString()} {totalCleanups === 1 ? 'cleanup' : 'cleanups'}
+          </Text>
           {/* Trend sits on its own row: at 6-digit totals it used to be pushed
               off the right edge of the card when it shared the number's row. */}
           {weekDelta > 0 && (
@@ -309,25 +297,45 @@ export default function ActivityScreen() {
           )}
         </View>
 
-        {/* Current level — your last EARNED milestone tier, distinct from the
-            "Next: X" progress card below. Color-coded placeholder badge until
-            real illustrated tier art exists. */}
-        <View style={styles.levelRow}>
-          <View style={[styles.levelBadge, { backgroundColor: levelTierColor(milestone.earned) }]}>
-            <Icon name={milestone.earned > 0 ? 'trophy' : 'target'} size={22} color="#fff" sw={1.8} />
+        {/* Level + next-tier progress, merged into one card — these used to be
+            two separate cards describing the same milestone system (current
+            tier vs. next tier), which was pure duplication. */}
+        <Card style={{ marginTop: 12 }}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+            <View style={[styles.levelBadge, { backgroundColor: levelTierColor(milestone.earned) }]}>
+              <Icon name={milestone.earned > 0 ? 'trophy' : 'target'} size={22} color="#fff" sw={1.8} />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.levelLabel}>YOUR LEVEL</Text>
+              <Text style={styles.levelName} numberOfLines={1}>
+                {milestone.previousName ?? 'Unranked'}
+              </Text>
+            </View>
+            {milestone.earned > 0 && (
+              <View style={styles.levelTierPill}>
+                <Text style={styles.levelTierPillText}>Tier {milestone.earned}</Text>
+              </View>
+            )}
           </View>
-          <View style={{ flex: 1 }}>
-            <Text style={styles.levelLabel}>YOUR LEVEL</Text>
-            <Text style={styles.levelName} numberOfLines={1}>
-              {milestone.previousName ?? 'Unranked'}
+          <View style={{ marginTop: 16 }}>
+            <View style={styles.between}>
+              <Text style={styles.milestoneTitle} numberOfLines={1}>
+                Next: {milestone.name}
+              </Text>
+              <Text style={styles.milestoneMeta}>
+                {totalCleanups.toLocaleString()} / {milestone.target.toLocaleString()}
+              </Text>
+            </View>
+            <View style={{ marginTop: 12 }}>
+              <ProgressBar pct={Math.max(0.01, milestone.pct)} color="rust" />
+            </View>
+            <Text style={styles.milestoneHint}>
+              {milestone.remaining === 1
+                ? '1 more cleanup to go.'
+                : `${milestone.remaining.toLocaleString()} more cleanups to go.`}
             </Text>
           </View>
-          {milestone.earned > 0 && (
-            <View style={styles.levelTierPill}>
-              <Text style={styles.levelTierPillText}>Tier {milestone.earned}</Text>
-            </View>
-          )}
-        </View>
+        </Card>
 
         {/* "My Path" recap banner — at most one of week/month/year, whichever
             closed period hasn't been shown yet. Dismissing just hides it for
@@ -357,9 +365,10 @@ export default function ActivityScreen() {
           </Pressable>
         )}
 
-        {/* stat tiles — bags stays small here; it headlines on the end screen and team boards */}
+        {/* stat tiles — cleanups already leads the hero card above, so this
+            row is just the two supporting stats. Bags stays small here; it
+            headlines on the end screen and team boards. */}
         <View style={styles.tiles}>
-          <Tile value={String(totalCleanups)} label="CLEANUPS" />
           <Tile value={String(cleanupDays)} label="ACTIVE DAYS" />
           <Tile
             value={formatBagsShort(totalBags)}
@@ -374,29 +383,6 @@ export default function ActivityScreen() {
         </View>
 
         <StreakCard />
-
-        {/* milestone */}
-        <Card style={{ marginTop: 12 }}>
-          <View style={styles.between}>
-            <Text style={styles.milestoneTitle} numberOfLines={1}>
-              Next: {milestone.name}
-            </Text>
-            <Text style={styles.milestoneMeta}>
-              {totalCleanups.toLocaleString()} / {milestone.target.toLocaleString()}
-            </Text>
-          </View>
-          <View style={{ marginTop: 12 }}>
-            <ProgressBar pct={Math.max(0.01, milestone.pct)} color="rust" />
-          </View>
-          <Text style={styles.milestoneHint}>
-            {milestone.remaining === 1
-              ? '1 more cleanup to go.'
-              : `${milestone.remaining.toLocaleString()} more cleanups to go.`}
-            {milestone.earned > 0
-              ? `  ·  ${milestone.earned} of ${MILESTONE_TIERS.length} milestones earned`
-              : ''}
-          </Text>
-        </Card>
 
         {/* "My Path" entry point — always available, unlike the banner above
             (which shows once and disappears). Lets you browse and re-share
@@ -413,22 +399,6 @@ export default function ActivityScreen() {
           </View>
           <Icon name="chevron" size={16} color={C.chevron} sw={2} />
         </Pressable>
-
-        {/* street coverage — scoped to a 600m radius around the CURRENT GPS fix,
-            not a selected neighborhood; the heading and hint say so honestly. */}
-        {coverage && (
-          <Card style={{ marginTop: 12 }}>
-            <Text style={styles.cardHeading}>Streets around you</Text>
-            <View style={[styles.tiles, { marginTop: 14 }]}>
-              <MiniStat value={`${coverage.freshPct}%`} label="FRESH" />
-              <MiniStat value={`${coverage.everCleanedPct}%`} label="EVER CLEANED" />
-              <MiniStat value={String(coverage.totalSegments)} label="BLOCKS" />
-            </View>
-            <View style={{ marginTop: 14 }}>
-              <ProgressBar pct={Math.max(0.01, coverage.everCleanedPct / 100)} height={8} />
-            </View>
-          </Card>
-        )}
 
         {/* badges (real) */}
         {badges.length > 0 && (
@@ -548,15 +518,6 @@ function Tile({ value, label, onPress }: { value: string; label: string; onPress
   );
 }
 
-function MiniStat({ value, label }: { value: string; label: string }) {
-  return (
-    <View style={styles.tile}>
-      <Text style={styles.miniNum}>{value}</Text>
-      <Text style={styles.tileLabel}>{label}</Text>
-    </View>
-  );
-}
-
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: C.white },
   scroll: { paddingHorizontal: 16, paddingTop: 8, paddingBottom: 40 },
@@ -570,6 +531,7 @@ const styles = StyleSheet.create({
   heroRow: { flexDirection: 'row', alignItems: 'baseline', gap: 8, marginTop: 6 },
   heroNum: { flexShrink: 1, fontFamily: Fonts.displayBold, fontSize: 52, letterSpacing: -1.5, lineHeight: 58, color: C.creamText },
   heroUnit: { fontFamily: Fonts.bodySemibold, fontSize: 18, color: C.heroSub2 },
+  heroSubStat: { fontFamily: Fonts.bodyMedium, fontSize: 13, color: C.heroSub2, marginTop: 4 },
   trendPill: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -637,11 +599,9 @@ const styles = StyleSheet.create({
   tiles: { flexDirection: 'row', gap: 10, marginTop: 12 },
   tile: { flex: 1, backgroundColor: C.white, borderRadius: radius.card, borderWidth: 1.5, borderColor: C.border, padding: 14 },
   tileNum: { fontFamily: Fonts.displayBold, fontSize: 26, letterSpacing: -0.5, color: C.dark },
-  miniNum: { fontFamily: Fonts.displayBold, fontSize: 22, letterSpacing: -0.5, color: C.primary },
   tileLabel: { fontFamily: Fonts.bodyBold, fontSize: 10, color: C.muted, marginTop: 2, textTransform: 'uppercase', letterSpacing: 0.3 },
 
   between: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'baseline' },
-  cardHeading: { fontFamily: Fonts.headlineBold, fontSize: 17, color: C.dark },
   milestoneTitle: { fontFamily: Fonts.headlineBold, fontSize: 16, color: C.dark },
   milestoneMeta: { fontFamily: Fonts.bodyBold, fontSize: 13, color: C.muted },
   milestoneHint: { fontFamily: Fonts.body, fontSize: 12, color: C.muted, marginTop: 8 },

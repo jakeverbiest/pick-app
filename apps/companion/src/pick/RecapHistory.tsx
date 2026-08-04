@@ -56,7 +56,12 @@ export function RecapHistory({
 
   return (
     <>
-      <Modal visible={visible} animationType="slide" onRequestClose={onClose}>
+      {/* Hidden while a recap is selected — a second <Modal> can't stack over
+          an already-open one on iOS (same issue as ShareComposer/community's
+          post composer), so tapping a row would otherwise silently do
+          nothing. Toggling visible off here, rather than unmounting, means
+          it's already there and just reappears when RecapModal closes. */}
+      <Modal visible={visible && !selected} animationType="slide" onRequestClose={onClose}>
         <View style={[styles.root, { paddingTop: insets.top + 8 }]}>
           <View style={styles.header}>
             <Text style={styles.title}>My Path</Text>

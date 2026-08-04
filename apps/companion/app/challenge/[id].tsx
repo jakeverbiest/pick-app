@@ -183,7 +183,8 @@ export default function ChallengeScreen() {
             <ProgressBar pct={Math.max(0.01, pct)} height={10} />
           </View>
           <View style={styles.heroMeta}>
-            <View style={styles.statusPill}>
+            <View style={[styles.statusPill, challenge.status === 'completed' && styles.statusPillDone]}>
+              {challenge.status !== 'completed' && <Icon name="clock" size={12} color="#fff" sw={1.8} />}
               <Text style={styles.statusText}>
                 {challenge.status === 'upcoming'
                   ? 'Starts soon'
@@ -356,8 +357,12 @@ const styles = StyleSheet.create({
   heroNum: { flexShrink: 1, fontFamily: Fonts.displayBold, fontSize: 44, letterSpacing: -1.2, lineHeight: 50, color: C.creamText },
   heroUnit: { fontFamily: Fonts.bodySemibold, fontSize: 15, color: C.heroSub2, flexShrink: 1 },
   heroMeta: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 12, gap: 10 },
-  statusPill: { backgroundColor: 'rgba(254,252,221,0.16)', borderRadius: radius.pill, paddingVertical: 5, paddingHorizontal: 11 },
-  statusText: { fontFamily: Fonts.bodyBold, fontSize: 12, color: C.creamText },
+  statusPill: {
+    flexDirection: 'row', alignItems: 'center', gap: 5,
+    backgroundColor: 'rgba(193,80,46,0.32)', borderRadius: radius.pill, paddingVertical: 5, paddingHorizontal: 11,
+  },
+  statusPillDone: { backgroundColor: 'rgba(254,252,221,0.16)' },
+  statusText: { fontFamily: Fonts.bodyBold, fontSize: 12, color: '#fff' },
   heroSub: { fontFamily: Fonts.body, fontSize: 12.5, color: C.heroSub, flexShrink: 1, textAlign: 'right' },
 
   inviteBtn: {

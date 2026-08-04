@@ -170,10 +170,14 @@ const lastMoved = trimmed[trimmed.length - 1].lon !== longWalk[longWalk.length -
 check('route start (home) removed', firstMoved, true);
 check('route end (home) removed', lastMoved, true);
 check(`middle preserved (${trimmed.length} of 60 points)`, trimmed.length >= 30, true);
-// A tiny walk (shorter than 2x trim) collapses to its midpoint, not nothing
+// A short walk (well under the 100m flat trim) scales the trim to the
+// route's own length instead of collapsing to 2-3 points — most real
+// cleanups are short, localized litter-picking walks, and a flat 100m trim
+// on both ends was destroying nearly all of them (this is what made recaps
+// aggregating many cleanups render as scattered dots instead of a path).
 const tinyWalk = Array.from({ length: 10 }, (_, i) => ({ lat: 40.6784, lon: -73.9951 + i * 0.0001 }));
 const tinyTrimmed = privacyTrimRoute(tinyWalk, 100);
-check('short walk yields midpoint, not empty', tinyTrimmed.length >= 1 && tinyTrimmed.length <= 3, true);
+check(`short walk keeps most of its points (${tinyTrimmed.length} of 10, expect >= 5)`, tinyTrimmed.length >= 5, true);
 
 console.log('\n=== Carry-mode auto-classification ===');
 // June 11 evening: in-hand test — gyros from the actual session log
