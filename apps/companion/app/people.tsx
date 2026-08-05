@@ -18,6 +18,7 @@ import {
   normalizeHandle, type PublicProfile,
 } from '../src/services/profiles';
 import { follow, unfollow, listFollowingIds } from '../src/services/follows';
+import { blockUser, getBlockedUids } from '../src/services/moderation';
 
 export default function PeopleScreen() {
   const router = useRouter();
@@ -30,15 +31,17 @@ export default function PeopleScreen() {
   const [searching, setSearching] = useState(false);
   const [followingSet, setFollowingSet] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState<Set<string>>(new Set());
+  const [blockedUids, setBlockedUids] = useState<string[]>([]);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Load my profile + who I already follow.
+  // Load my profile + who I already follow + who's blocked (either direction).
   useEffect(() => {
     (async () => {
       await ensureProfile();
-      const [p, ids] = await Promise.all([myProfile(), listFollowingIds()]);
+      const [p, ids, blocked] = await Promise.all([myProfile(), listFollowingIds(), getBlockedUids()]);
       if (p?.handle) { setMyHandle(p.handle); setHandleInput(p.handle); }
       setFollowingSet(new Set(ids));
+      setBlockedUids(blocked);
     })();
   }, []);
 
@@ -55,16 +58,20 @@ export default function PeopleScreen() {
     if (t.length < 2) { setResults([]); return; }
     setSearching(true);
     try {
+      let found: PublicProfile[];
       if (t.includes('@') && t.includes('.')) {
         const p = await findByEmail(t);
-        setResults(p ? [p] : []);
+        found = p ? [p] : [];
       } else {
-        setResults(await searchByHandle(t));
+        found = await searchByHandle(t);
       }
+      // Blocked either direction: neither party should be able to find the
+      // other in search, same as the community feed.
+      setResults(found.filter((p) => !blockedUids.includes(p.uid)));
     } finally {
       setSearching(false);
     }
-  }, []);
+  }, [blockedUids]);
 
   const onChangeQuery = (text: string) => {
     setQueryText(text);
@@ -94,6 +101,34 @@ export default function PeopleScreen() {
     } finally {
       setBusy((s) => { const n = new Set(s); n.delete(p.uid); return n; });
     }
+  };
+
+  // Same App Store Guideline 1.2 block pattern as community.tsx and the
+  // profile screen, offered per search result.
+  const showMoreMenu = (p: PublicProfile) => {
+    const who = p.display_name || 'this picker';
+    Alert.alert(who, undefined, [
+      {
+        text: `Block ${who}`,
+        style: 'destructive',
+        onPress: () => {
+          Alert.alert(`Block ${who}?`, "You won't see their posts again, and they won't be able to follow you.", [
+            { text: 'Cancel', style: 'cancel' },
+            {
+              text: 'Block',
+              style: 'destructive',
+              onPress: async () => {
+                await blockUser(p.uid);
+                setBlockedUids((prev) => [...prev, p.uid]);
+                setResults((prev) => prev.filter((r) => r.uid !== p.uid));
+                setFollowingSet((s) => { const n = new Set(s); n.delete(p.uid); return n; });
+              },
+            },
+          ]);
+        },
+      },
+      { text: 'Cancel', style: 'cancel' },
+    ]);
   };
 
   return (
@@ -165,6 +200,9 @@ export default function PeopleScreen() {
                     </>
                   )}
                 </Pressable>
+                <Pressable onPress={() => showMoreMenu(p)} hitSlop={8} style={styles.moreBtn} accessibilityLabel="Block">
+                  <Icon name="flag" size={16} color={C.muted} sw={1.8} />
+                </Pressable>
               </View>
             );
           })}
@@ -210,6 +248,7 @@ const styles = StyleSheet.create({
   followBtn: { flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: C.primary, borderRadius: 999, paddingHorizontal: 14, height: 36 },
   followingBtn: { backgroundColor: '#fff', borderWidth: 1, borderColor: C.primary },
   followText: { fontFamily: Fonts.bodyBold, color: C.creamText, fontSize: 14 },
+  moreBtn: { padding: 6 },
 
   empty: { fontFamily: Fonts.body, fontSize: 14, color: C.text3, lineHeight: 20, paddingVertical: 10 },
 });

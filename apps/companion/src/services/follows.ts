@@ -14,6 +14,7 @@ import {
 } from 'firebase/firestore';
 import { app } from './firebaseConfig';
 import { getAuthService } from './authService';
+import { getBlockedUids } from './moderation';
 
 const db = getFirestore(app);
 
@@ -51,20 +52,34 @@ export async function isFollowing(followingId: string): Promise<boolean> {
   return snap.exists();
 }
 
-/** UIDs the caller follows. */
+/**
+ * UIDs the caller follows. Filtered against getBlockedUids() (either
+ * direction) — a stale edge shouldn't surface a blocked/blocking account in
+ * a following list even before the block finishes severing it server-side.
+ */
 export async function listFollowingIds(): Promise<string[]> {
   const u = me();
   if (!u) return [];
-  const snap = await getDocs(query(collection(db, 'follows'), where('followerId', '==', u.uid)));
-  return snap.docs.map((d) => (d.data() as any).followingId as string).filter(Boolean);
+  const [snap, blocked] = await Promise.all([
+    getDocs(query(collection(db, 'follows'), where('followerId', '==', u.uid))),
+    getBlockedUids(),
+  ]);
+  return snap.docs
+    .map((d) => (d.data() as any).followingId as string)
+    .filter((id) => !!id && !blocked.includes(id));
 }
 
-/** UIDs who follow the caller. */
+/** UIDs who follow the caller. Filtered the same way as listFollowingIds. */
 export async function listFollowerIds(): Promise<string[]> {
   const u = me();
   if (!u) return [];
-  const snap = await getDocs(query(collection(db, 'follows'), where('followingId', '==', u.uid)));
-  return snap.docs.map((d) => (d.data() as any).followerId as string).filter(Boolean);
+  const [snap, blocked] = await Promise.all([
+    getDocs(query(collection(db, 'follows'), where('followingId', '==', u.uid))),
+    getBlockedUids(),
+  ]);
+  return snap.docs
+    .map((d) => (d.data() as any).followerId as string)
+    .filter((id) => !!id && !blocked.includes(id));
 }
 
 /** Follower / following counts for any user (for profile chips). */

@@ -21,6 +21,7 @@ import {
 import { formatBagsShort, itemsToBags, aggregateBags } from '../../src/services/impactMetrics';
 import { Icon, IconName } from '../../src/pick/Icon';
 import { getProfiles } from '../../src/services/profiles';
+import { getBlockedUids } from '../../src/services/moderation';
 import { C, Fonts, radius } from '../../src/pick/theme';
 import { ProgressBar } from '../../src/pick/ui';
 import { levelTierColor, milestoneProgress } from '../../src/services/milestones';
@@ -124,12 +125,15 @@ export default function LeaderboardScreen() {
         days: new Set(mine.map((c) => new Date((c.timestamp || 0) * 1000).toDateString())).size,
         cleanups: mine.length,
       });
-      const [indiv, teamData, allChallenges] = await Promise.all([
+      const [indiv, teamData, allChallenges, blocked] = await Promise.all([
         db.getIndividualLeaderboard('pickups'),
         db.getTeamLeaderboard(),
         listChallenges({ team: myTeam }),
+        getBlockedUids(),
       ]);
-      setIndividuals(indiv || []);
+      // Blocked either direction: neither side should see the other on the
+      // individual board, same as the community feed and people search.
+      setIndividuals((indiv || []).filter((u) => !blocked.includes(u.uid)));
       setTeams(teamData || []);
       // Finished challenges stay out of the board; the detail screen keeps them
       // reachable for anyone who bookmarked one.

@@ -1,5 +1,7 @@
 # PICK — Project Context
 
+> **⚠️ SUPERSEDED (as of 2026-08-03).** This file stopped being updated after 2026-06-11 and is now badly stale — e.g. it predates Challenges, the social/follow layer, the Apple Watch companion, the "My Path" recap, and the Aug 1 "Pick Global" rebrand. **Read `docs/PROJECT_TIMELINE.md` in the other connected repo (`~/pick-app/docs/PROJECT_TIMELINE.md`) instead — that's the actively-maintained running log, with a "Status snapshot" at the top.** Left in place below for historical/archival reference only; don't treat anything under "Current state" or "Next steps" as current.
+
 **Status:** 🚀 Production-shaped dev build on Jake's iPhone — all desk work done, in field-validation phase
 **Last consolidated:** 2026-06-11 (end of the two-day build-out marathon)
 **Read this first in any new chat.** Repo: `/Users/jakeverbiest/Desktop/pick-app` (git, remote: github.com/jakeverbiest/pick-app)

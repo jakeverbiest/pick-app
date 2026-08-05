@@ -8,7 +8,7 @@
  */
 import { useCallback, useEffect, useState } from 'react';
 import {
-  ActivityIndicator, Image, Pressable, ScrollView, StyleSheet, Text, View,
+  ActivityIndicator, Alert, Image, Pressable, ScrollView, StyleSheet, Text, View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter } from 'expo-router';
@@ -18,6 +18,7 @@ import { C, Fonts, radius } from '../../src/pick/theme';
 import { getAuthService } from '../../src/services/authService';
 import { getProfile, type PublicProfile } from '../../src/services/profiles';
 import { follow, unfollow, isFollowing, followCounts } from '../../src/services/follows';
+import { blockUser } from '../../src/services/moderation';
 import { getDatabase, type Post, type UserStats } from '../../src/services/firebaseDatabase';
 import { formatBags } from '../../src/services/impactMetrics';
 
@@ -96,6 +97,34 @@ export default function ProfileScreen() {
   const name = profile?.display_name || stats?.display_name || 'Picker';
   const initial = (name || '?').slice(0, 1).toUpperCase();
 
+  // Block from a profile — same App Store Guideline 1.2 pattern as the
+  // community feed's "more" menu, just without the report-a-post option
+  // (there's no single post to report here).
+  const showMoreMenu = () => {
+    if (isMe || !uid) return;
+    const who = profile?.display_name || name || 'this picker';
+    Alert.alert(who, undefined, [
+      {
+        text: `Block ${who}`,
+        style: 'destructive',
+        onPress: () => {
+          Alert.alert(`Block ${who}?`, "You won't see their posts again, and they won't be able to follow you.", [
+            { text: 'Cancel', style: 'cancel' },
+            {
+              text: 'Block',
+              style: 'destructive',
+              onPress: async () => {
+                await blockUser(uid);
+                router.back();
+              },
+            },
+          ]);
+        },
+      },
+      { text: 'Cancel', style: 'cancel' },
+    ]);
+  };
+
   return (
     <SafeAreaView style={styles.root} edges={['top']}>
       <View style={styles.header}>
@@ -103,7 +132,13 @@ export default function ProfileScreen() {
           <Icon name="back" size={22} color={C.dark} sw={2} />
         </Pressable>
         <Text style={styles.h1} numberOfLines={1}>{profile?.handle ? `@${profile.handle}` : name}</Text>
-        <View style={{ width: 22 }} />
+        {isMe ? (
+          <View style={{ width: 22 }} />
+        ) : (
+          <Pressable onPress={showMoreMenu} hitSlop={10} style={styles.backBtn} accessibilityLabel="Block">
+            <Icon name="flag" size={20} color={C.dark} sw={2} />
+          </Pressable>
+        )}
       </View>
 
       {loading ? (

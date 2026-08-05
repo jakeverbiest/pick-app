@@ -157,6 +157,25 @@ class AuthService {
   }
 
   /**
+   * A stale/invalid session, in whatever form Firebase reports it as, needs
+   * the same fix: log out and back in. Returns a user-facing message for
+   * that family of error codes, or null if this isn't one of them (so the
+   * caller can fall back to the original error).
+   */
+  private recentLoginMessage(error: any): string | null {
+    const staleSessionCodes = [
+      'auth/requires-recent-login',
+      'auth/user-token-expired',
+      'auth/invalid-user-token',
+      'auth/user-mismatch',
+    ];
+    if (staleSessionCodes.includes(error?.code)) {
+      return 'Your session has expired. Log out, log back in, then try again.';
+    }
+    return null;
+  }
+
+  /**
    * Permanently delete the account: all cloud data, then the auth user.
    * (App Store requires in-app account deletion for apps with sign-in.)
    *
@@ -173,16 +192,43 @@ class AuthService {
     const user = auth.currentUser;
     if (!user) throw new Error('Not signed in.');
 
+    // Fail fast on a stale session BEFORE running the whole (resilient, but
+    // not free) cleanup pass — deleting the Auth user requires a fresh ID
+    // token, and a session that's sat open a while can have a stale one.
+    // Deleting cloud data first only to then discover the Auth deletion is
+    // going to fail the same way is wasted work and a confusing error.
+    try {
+      await user.getIdToken(true);
+    } catch (error: any) {
+      throw new Error(this.recentLoginMessage(error) ?? 'Could not verify your session. Please try again.');
+    }
+
     const db = await getDatabase();
     const { steps } = await (db as any).deleteAccountData();
 
     try {
       await deleteUser(user);
     } catch (error: any) {
-      if (error?.code === 'auth/requires-recent-login') {
-        throw new Error('For security, log out, log back in, then delete your account.');
+      // Observed in the wild: deleteUser() can throw auth/user-token-expired
+      // even though the account WAS actually deleted server-side a moment
+      // earlier — some internal post-delete step (e.g. a token refresh)
+      // fails because the account is already gone, and that failure
+      // surfaces as if the whole call failed. Telling the user to "log
+      // back in and retry" for an account that no longer exists is a dead
+      // end, so check reality before deciding this is a real failure:
+      // reload() throws auth/user-not-found (or similar) if the account is
+      // actually gone, in which case this is a false negative — proceed as
+      // a success instead of surfacing an error.
+      const stillExists = await user.reload().then(
+        () => true,
+        () => false
+      );
+      if (stillExists) {
+        const message = this.recentLoginMessage(error);
+        if (message) throw new Error(message);
+        throw error;
       }
-      throw error;
+      console.log('🗑️ Account was actually deleted despite a client-side error on deleteUser():', error?.code);
     }
 
     this.currentUser = null;

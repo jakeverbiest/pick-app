@@ -1,5 +1,7 @@
 # Sprint Log
 
+> **⚠️ SUPERSEDED (as of 2026-08-03).** Abandoned after Week 3 (mid-June 2026) — `docs/PROJECT_TIMELINE.md` in the other connected repo (`~/pick-app/docs/PROJECT_TIMELINE.md`) took over as the running log shortly after and has been kept current since. Left below for historical reference only.
+
 Weekly progress, learnings, and metrics. Updated every Friday.
 
 ---

@@ -20,11 +20,11 @@
  * Deploy:  firebase deploy --only functions      (from apps/companion)
  */
 
-const { onDocumentWritten, onDocumentCreated } = require('firebase-functions/v2/firestore');
+const { onDocumentWritten, onDocumentCreated, onDocumentDeleted } = require('firebase-functions/v2/firestore');
 const { onCall, HttpsError, onRequest } = require('firebase-functions/v2/https');
 const { onSchedule } = require('firebase-functions/v2/scheduler');
 const { initializeApp } = require('firebase-admin/app');
-const { getFirestore } = require('firebase-admin/firestore');
+const { getFirestore, FieldValue } = require('firebase-admin/firestore');
 const { getAuth } = require('firebase-admin/auth');
 
 initializeApp();
@@ -622,6 +622,33 @@ exports.deleteMyPrivateData = onCall(async (request) => {
   }
 
   return { steps };
+});
+
+// ==========================================================================
+// BLOCKING — mirror blocks/{blockerUid_blockedUid} onto the BLOCKED user's
+// own users/{uid} doc as `blocked_by`, using the admin SDK (bypasses the
+// `allow read: if false` client rule on the blocks collection itself). The
+// blocked user's client already reads its own doc, so it can filter the
+// blocker's posts out of its feed without ever querying (or being able to
+// query) who blocked them or why.
+// ==========================================================================
+
+exports.onBlockCreated = onDocumentCreated('blocks/{blockId}', async (event) => {
+  const b = (event.data && event.data.data()) || {};
+  if (!b.blockerUid || !b.blockedUid) return;
+  await db.collection('users').doc(b.blockedUid).set(
+    { blocked_by: FieldValue.arrayUnion(b.blockerUid) },
+    { merge: true }
+  );
+});
+
+exports.onBlockDeleted = onDocumentDeleted('blocks/{blockId}', async (event) => {
+  const b = (event.data && event.data.data()) || {};
+  if (!b.blockerUid || !b.blockedUid) return;
+  await db.collection('users').doc(b.blockedUid).set(
+    { blocked_by: FieldValue.arrayRemove(b.blockerUid) },
+    { merge: true }
+  );
 });
 
 /** New follower → notify the followed user. follows/{follower_following}. */

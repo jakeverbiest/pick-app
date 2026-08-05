@@ -821,6 +821,14 @@ export default function SettingsScreen() {
             onPress={toggleProfileVisibility}
           />
           <View style={styles.divider} />
+          <Pressable style={styles.rowLink} onPress={() => router.push('/blocked' as any)}>
+            <View style={{ flex: 1, paddingRight: 12 }}>
+              <Text style={styles.rowLinkLabel}>Blocked accounts</Text>
+              <Text style={styles.rowLinkSub}>See and unblock people you've blocked.</Text>
+            </View>
+            <Text style={styles.chev}>▸</Text>
+          </Pressable>
+          <View style={styles.divider} />
           <Toggle
             label="Share cleanups to community"
             sub="Shows the “Share to community” option after a cleanup. Nothing is ever posted automatically."

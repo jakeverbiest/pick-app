@@ -3,7 +3,7 @@
  * Live preview, per-platform presets + char limits, toggleable stat chips,
  * optional photo, then hands off to the OS share sheet (React Native Share).
  */
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   Alert,
   Image,
@@ -23,6 +23,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Icon } from './Icon';
 import { C, Fonts, PLATFORM_ACCENT, radius } from './theme';
 import { formatBags, formatKitchenBags } from '../services/impactMetrics';
+import { getBlueskyAccount, postToBluesky } from '../services/bluesky';
 
 type Platform = 'bluesky' | 'instagram' | 'facebook' | 'copy';
 
@@ -90,6 +91,16 @@ export function ShareComposer({
   const [platform, setPlatform] = useState<Platform>('bluesky');
   const [captions, setCaptions] = useState<Partial<Record<Platform, string>>>({});
   const [includeStats, setIncludeStats] = useState({ pieces: true, bags: true, distance: true });
+  const [blueskyHandle, setBlueskyHandle] = useState<string | null>(null);
+  const [posting, setPosting] = useState(false);
+
+  // Re-check each time the sheet opens, not just on mount — this component
+  // stays rendered (just hidden) between opens, so a mount-only check would
+  // miss a Bluesky connection made in Settings after the first open.
+  useEffect(() => {
+    if (!visible) return;
+    getBlueskyAccount().then((acct) => setBlueskyHandle(acct?.handle ?? null));
+  }, [visible]);
 
   const caption = captions[platform] ?? base[platform];
   const limit = LIMITS[platform];
@@ -112,6 +123,24 @@ export function ShareComposer({
       await Clipboard.setStringAsync(message);
       onClose();
       Alert.alert('Copied', 'Your caption is on the clipboard — paste it anywhere.');
+      return;
+    }
+
+    // Bluesky is the one platform Pick can actually post to directly (see
+    // services/bluesky.ts) — post for real instead of the generic OS-share
+    // handoff below, which for Bluesky specifically just opened a share
+    // sheet that couldn't complete a post on its own without the Bluesky
+    // app installed and the user pasting it in manually.
+    if (platform === 'bluesky' && blueskyHandle) {
+      setPosting(true);
+      const ok = await postToBluesky({ text: message, photoUri });
+      setPosting(false);
+      if (ok) {
+        onClose();
+        Alert.alert('Posted', `Shared to Bluesky as @${blueskyHandle}.`);
+      } else {
+        Alert.alert('Could not post', "Something went wrong posting to Bluesky — check your connection and that your app password in Settings is still valid.");
+      }
       return;
     }
 
@@ -224,12 +253,27 @@ export function ShareComposer({
             />
 
             <Pressable
-              disabled={over}
-              style={({ pressed }) => [styles.postBtn, over && styles.postDisabled, pressed && !over && { opacity: 0.92 }]}
+              disabled={over || posting}
+              style={({ pressed }) => [styles.postBtn, (over || posting) && styles.postDisabled, pressed && !over && { opacity: 0.92 }]}
               onPress={post}
             >
-              <Text style={styles.postText}>{over ? 'Caption too long' : platform === 'copy' ? 'Copy to clipboard' : `Share to ${NAMES[platform]}`}</Text>
+              <Text style={styles.postText}>
+                {over
+                  ? 'Caption too long'
+                  : posting
+                  ? 'Posting…'
+                  : platform === 'copy'
+                  ? 'Copy to clipboard'
+                  : platform === 'bluesky' && blueskyHandle
+                  ? `Post to Bluesky as @${blueskyHandle}`
+                  : `Share to ${NAMES[platform]}`}
+              </Text>
             </Pressable>
+            {platform === 'bluesky' && !blueskyHandle && (
+              <Text style={styles.blueskyHint}>
+                Connect Bluesky in Settings to post directly — otherwise this opens the share sheet instead.
+              </Text>
+            )}
           </ScrollView>
         </KeyboardAvoidingView>
       </View>
@@ -292,4 +336,5 @@ const styles = StyleSheet.create({
   postBtn: { marginTop: 16, backgroundColor: C.primary, borderRadius: radius.button, paddingVertical: 16, alignItems: 'center' },
   postDisabled: { backgroundColor: 'rgba(15,47,102,0.35)' },
   postText: { color: C.creamText, fontFamily: Fonts.bodyBold, fontSize: 15 },
+  blueskyHint: { fontFamily: Fonts.body, fontSize: 12, color: C.muted, textAlign: 'center', marginTop: 8 },
 });

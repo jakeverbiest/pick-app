@@ -13,11 +13,26 @@
 import * as SecureStore from 'expo-secure-store';
 import * as FileSystem from 'expo-file-system';
 import { Buffer } from 'buffer';
+import { getAuthService } from './authService';
 
 const SERVICE = 'https://bsky.social';
-const IDENTIFIER_KEY = 'pick_bluesky_identifier';
-const PASSWORD_KEY = 'pick_bluesky_app_password';
-const HANDLE_KEY = 'pick_bluesky_handle'; // display-only, not secret
+
+// Keyed per signed-in Pick account (Firebase uid) — these used to be fixed,
+// device-wide keys, so connecting Bluesky under one Pick account leaked into
+// every other Pick account signed into on the same device/install. Anyone
+// who connected before this fix will need to reconnect once; there's no way
+// to know which Pick account the old un-scoped credentials "belonged" to.
+function keys(uid: string) {
+  return {
+    identifier: `pick_bluesky_identifier_${uid}`,
+    password: `pick_bluesky_app_password_${uid}`,
+    handle: `pick_bluesky_handle_${uid}`,
+  };
+}
+
+function currentUid(): string | null {
+  return getAuthService().getCurrentUser()?.uid ?? null;
+}
 
 export interface BlueskyAccount {
   handle: string;
@@ -25,6 +40,8 @@ export interface BlueskyAccount {
 
 /** Verify credentials work, then store them. Throws with a readable message on failure. */
 export async function connectBluesky(identifier: string, appPassword: string): Promise<BlueskyAccount> {
+  const uid = currentUid();
+  if (!uid) throw new Error('Sign in first.');
   const trimmedId = identifier.trim().replace(/^@/, '');
   const trimmedPw = appPassword.trim();
   const res = await fetch(`${SERVICE}/xrpc/com.atproto.server.createSession`, {
@@ -37,29 +54,38 @@ export async function connectBluesky(identifier: string, appPassword: string): P
     throw new Error(body?.message || 'Could not sign in — check your handle and app password.');
   }
   const data = await res.json();
-  await SecureStore.setItemAsync(IDENTIFIER_KEY, trimmedId);
-  await SecureStore.setItemAsync(PASSWORD_KEY, trimmedPw);
-  await SecureStore.setItemAsync(HANDLE_KEY, data.handle || trimmedId);
+  const k = keys(uid);
+  await SecureStore.setItemAsync(k.identifier, trimmedId);
+  await SecureStore.setItemAsync(k.password, trimmedPw);
+  await SecureStore.setItemAsync(k.handle, data.handle || trimmedId);
   return { handle: data.handle || trimmedId };
 }
 
 export async function disconnectBluesky(): Promise<void> {
+  const uid = currentUid();
+  if (!uid) return;
+  const k = keys(uid);
   await Promise.all([
-    SecureStore.deleteItemAsync(IDENTIFIER_KEY),
-    SecureStore.deleteItemAsync(PASSWORD_KEY),
-    SecureStore.deleteItemAsync(HANDLE_KEY),
+    SecureStore.deleteItemAsync(k.identifier),
+    SecureStore.deleteItemAsync(k.password),
+    SecureStore.deleteItemAsync(k.handle),
   ]);
 }
 
 /** Display-only — the connected handle, or null if nothing's connected. */
 export async function getBlueskyAccount(): Promise<BlueskyAccount | null> {
-  const handle = await SecureStore.getItemAsync(HANDLE_KEY);
+  const uid = currentUid();
+  if (!uid) return null;
+  const handle = await SecureStore.getItemAsync(keys(uid).handle);
   return handle ? { handle } : null;
 }
 
 async function session(): Promise<{ accessJwt: string; did: string } | null> {
-  const identifier = await SecureStore.getItemAsync(IDENTIFIER_KEY);
-  const password = await SecureStore.getItemAsync(PASSWORD_KEY);
+  const uid = currentUid();
+  if (!uid) return null;
+  const k = keys(uid);
+  const identifier = await SecureStore.getItemAsync(k.identifier);
+  const password = await SecureStore.getItemAsync(k.password);
   if (!identifier || !password) return null;
   const res = await fetch(`${SERVICE}/xrpc/com.atproto.server.createSession`, {
     method: 'POST',
