@@ -44,9 +44,10 @@ const SEGMENT_LENGTH_M = 50;
 // Sidewalk-level snapping: tight enough not to credit the OPPOSITE side of the
 // street (~18m away in NYC), loose enough for Balanced GPS (~10m error). Field
 // test showed 15m was crediting both sides on narrower streets — tightened to
-// 11m. (Note: in areas with no mapped sidewalks we fall back to road CENTER
-// lines, where per-side isn't possible — the whole street reads as cleaned.)
-const SNAP_DISTANCE_M = 11;
+// 11m. (In areas with no mapped sidewalks we fall back to road CENTER lines,
+// split into two virtual per-side sidewalks — see ROAD_SIDE_OFFSET_M below,
+// which must stay ≥ this value or the same both-sides problem reappears.)
+export const SNAP_DISTANCE_M = 11;
 // A segment counts as cleaned only if the route ran alongside this fraction of
 // its length (sampled). Stops one stray GPS ping from crediting a whole block,
 // and (with the tight snap) avoids crediting the opposite sidewalk you didn't walk.
@@ -59,9 +60,17 @@ const SEGMENT_SAMPLE_STEP_M = 5; // sample the segment every ~5m to measure cove
 const FETCH_RADIUS_M = 600;
 // When we can't get real per-side sidewalks and fall back to a road CENTERLINE,
 // we split that centerline into two virtual sidewalks offset this far to each
-// side (so the two sit ~2x apart). With an 11m snap + the 80% coverage rule,
-// walking the north side credits only the north virtual sidewalk, not both.
-const ROAD_SIDE_OFFSET_M = 8;
+// side. This MUST be ≥ SNAP_DISTANCE_M: at offset 8 (the original value) a
+// point at perpendicular distance d from the centerline satisfied BOTH
+// |d-8|≤11 and |d+8|≤11 for any d in [-3, 3] — meaning anyone walking within
+// 3m of the centerline (very easy on a narrow street, or with a few meters of
+// GPS drift on a wider one) was geometrically guaranteed to credit both
+// sides, no noise required. That was reported as a real walk marking both
+// sides cleaned. Raising the offset to 15 makes the two double-credit
+// half-ranges [offset-11, offset+11] and [-offset-11, -offset+11] disjoint
+// for any point, so no route position can ever satisfy the 11m snap against
+// both virtual sidewalks at once.
+export const ROAD_SIDE_OFFSET_M = 15;
 const GEOMETRY_CACHE_PREFIX = '@pick_sidewalks_v3_'; // v3: split centerline fallbacks per-side
 const MIN_SIDEWALK_SEGMENTS = 30; // below this, area has unmapped sidewalks → fall back to roads
 const GEOMETRY_CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
@@ -142,8 +151,9 @@ function pointToEdgeM(
 
 /** Shift a whole segment sideways by `meters` (perpendicular to its overall
  *  heading). Positive = left of the a→b direction, negative = right. Used to
- *  turn a road centerline into two virtual per-side sidewalks. */
-function offsetCoords(coords: [number, number][], meters: number): [number, number][] {
+ *  turn a road centerline into two virtual per-side sidewalks. Exported for
+ *  unit tests (see the both-sides-credited regression test). */
+export function offsetCoords(coords: [number, number][], meters: number): [number, number][] {
   if (coords.length < 2) return coords;
   const a = coords[0];
   const b = coords[coords.length - 1];

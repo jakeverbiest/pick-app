@@ -26,7 +26,7 @@ export function ImpactMap({
   const H = height;
   const PAD = 10;
 
-  const { polylines, dots } = useMemo(() => {
+  const { polylines, dots, shortMarks } = useMemo(() => {
     const [minLat, minLon, maxLat, maxLon] = coverage.bbox || [0, 0, 0, 0];
     // Guard degenerate bboxes (single point / empty) so we never divide by 0.
     const latSpan = Math.max(maxLat - minLat, 1e-5);
@@ -47,13 +47,33 @@ export function ImpactMap({
       return [x, y];
     };
 
-    const polylines = (coverage.blocks || [])
-      .filter((b) => Array.isArray(b) && b.length >= 2)
-      .map((b) => b.map(([lat, lon]) => project(lat, lon).map((n) => n.toFixed(1)).join(',')).join(' '));
+    // A short, localized cleanup (pause at one spot, pick up litter, move on)
+    // can project to just a few pixels once it shares a bbox with a whole
+    // week's spread-out walks — a real Polyline still draws, but it's
+    // effectively invisible at that scale, so the block silently vanishes
+    // instead of reading as "something happened here." Below MIN_VISIBLE_PX,
+    // mark it with a small circle at its midpoint instead of a sub-pixel line.
+    const MIN_VISIBLE_PX = 6;
+    const polylines: string[] = [];
+    const shortMarks: [number, number][] = [];
+    for (const b of coverage.blocks || []) {
+      if (!Array.isArray(b) || b.length < 2) continue;
+      const projected = b.map(([lat, lon]) => project(lat, lon));
+      let maxSpan = 0;
+      for (let i = 1; i < projected.length; i++) {
+        maxSpan = Math.max(maxSpan, Math.hypot(projected[i][0] - projected[0][0], projected[i][1] - projected[0][1]));
+      }
+      if (maxSpan < MIN_VISIBLE_PX) {
+        const mid = projected[Math.floor(projected.length / 2)];
+        shortMarks.push(mid);
+      } else {
+        polylines.push(projected.map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(' '));
+      }
+    }
 
     const dots = (coverage.tiles || []).map(([lat, lon]) => project(lat, lon));
 
-    return { polylines, dots };
+    return { polylines, dots, shortMarks };
   }, [coverage, W, H]);
 
   return (
@@ -74,6 +94,9 @@ export function ImpactMap({
               strokeLinecap="round"
               strokeLinejoin="round"
             />
+          ))}
+          {shortMarks.map(([x, y], i) => (
+            <Circle key={`s${i}`} cx={x} cy={y} r={4.5} fill={C.accent} />
           ))}
         </G>
       </Svg>

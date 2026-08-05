@@ -4,7 +4,9 @@
  *  - park point-in-polygon detection
  * Run: npx -y tsx src/services/__tests__/geometryCoverage.test.ts
  */
-import { routeCoverageFraction, pointInPolygon } from '../streetSegments';
+import {
+  routeCoverageFraction, pointInPolygon, offsetCoords, SNAP_DISTANCE_M, ROAD_SIDE_OFFSET_M,
+} from '../streetSegments';
 
 let pass = 0;
 let fail = 0;
@@ -64,6 +66,38 @@ check('point in the middle of the park → inside', pointInPolygon(40.6795, -73.
 check('point blocks away → outside', pointInPolygon(40.685, -73.99, park) === false);
 check('point just north of the park edge → outside', pointInPolygon(40.6805, -73.9965, park) === false);
 check('point just west of the park edge → outside', pointInPolygon(40.6795, -73.9975, park) === false);
+
+console.log('\n=== road-centerline fallback: both-sides regression ===');
+// A real walk was reported as crediting both sides of the street when it
+// should have only credited one — root cause was ROAD_SIDE_OFFSET_M (8m)
+// being narrower than SNAP_DISTANCE_M (11m), which geometrically guaranteed
+// double-crediting for anyone within a few meters of the road centerline.
+// Reconstruct the fallback path exactly: a 50m centerline split into two
+// virtual per-side sidewalks via offsetCoords, at the real production offset.
+const centerline: [number, number][] = [
+  [40.68, -73.995],
+  [40.68, -73.995 + 50 * M_LON],
+];
+const leftSidewalk = offsetCoords(centerline, ROAD_SIDE_OFFSET_M);
+const rightSidewalk = offsetCoords(centerline, -ROAD_SIDE_OFFSET_M);
+
+// Someone walking right along the left virtual sidewalk...
+const walkedLeft = routeAlong(ROAD_SIDE_OFFSET_M, 1);
+const leftCoverageOfLeft = routeCoverageFraction(leftSidewalk, walkedLeft, SNAP_DISTANCE_M);
+const leftCoverageOfRight = routeCoverageFraction(rightSidewalk, walkedLeft, SNAP_DISTANCE_M);
+check('walking the left sidewalk covers the left virtual segment', leftCoverageOfLeft >= 0.6, `(got ${leftCoverageOfLeft.toFixed(2)})`);
+check('walking the left sidewalk does NOT cover the right virtual segment', leftCoverageOfRight < 0.6, `(got ${leftCoverageOfRight.toFixed(2)})`);
+
+// The worst case from the old bug: walking right down the CENTERLINE itself
+// (offset 0) — with the old 8m offset this credited both sides at once.
+const walkedCenter = routeAlong(0, 1);
+const centerCoverageOfLeft = routeCoverageFraction(leftSidewalk, walkedCenter, SNAP_DISTANCE_M);
+const centerCoverageOfRight = routeCoverageFraction(rightSidewalk, walkedCenter, SNAP_DISTANCE_M);
+check(
+  'walking the centerline does NOT cover both virtual sidewalks at once',
+  !(centerCoverageOfLeft >= 0.6 && centerCoverageOfRight >= 0.6),
+  `(left ${centerCoverageOfLeft.toFixed(2)}, right ${centerCoverageOfRight.toFixed(2)})`
+);
 
 console.log(`\n${fail === 0 ? '✅ ALL PASSED' : `❌ ${fail} FAILED`} (${pass}/${pass + fail})`);
 process.exit(fail === 0 ? 0 : 1);

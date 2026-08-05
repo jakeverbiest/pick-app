@@ -20,6 +20,15 @@ struct ContentView: View {
 // Civic Blueprint brand green — #4B7A54 (matches C.accent in the phone app's theme.ts).
 private let pickGreen = Color(red: 0.294, green: 0.478, blue: 0.329) // #4B7A54
 
+// Small on-screen build stamp so "which build is my watch actually running"
+// is answerable by looking at the wrist instead of plugging into Xcode.
+private var buildStamp: String {
+  let info = Bundle.main.infoDictionary
+  let version = info?["CFBundleShortVersionString"] as? String ?? "?"
+  let build = info?["CFBundleVersion"] as? String ?? "?"
+  return "v\(version) (\(build))"
+}
+
 struct IdleView: View {
   @EnvironmentObject var link: PhoneLink
 
@@ -48,6 +57,10 @@ struct IdleView: View {
           .foregroundStyle(.secondary)
           .multilineTextAlignment(.center)
       }
+
+      Text(buildStamp)
+        .font(.system(size: 9))
+        .foregroundStyle(.tertiary)
     }
     .padding(.horizontal)
   }

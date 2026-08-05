@@ -18,7 +18,7 @@ import React from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import { Icon } from './Icon';
 import { AreaPreview } from './AreaPreview';
-import { C, Fonts, radius, shadow } from './theme';
+import { C, Fonts, radius } from './theme';
 import { formatBagsShort } from '../services/impactMetrics';
 import type { ChallengeRecapData } from '../services/challengeRecap';
 import { GOAL_LABEL, challengeSubtitle, unflattenRing, type Challenge } from '../services/challenges';
@@ -88,7 +88,10 @@ export function GroupRecapCard({ recap, challenge }: { recap: ChallengeRecapData
 }
 
 const styles = StyleSheet.create({
-  card: { width: 340, borderRadius: radius.cardLg, padding: 22, backgroundColor: '#fff', ...shadow.card },
+  // Crisp navy border, not a shadow — "cards are defined by a drafted line,
+  // not a soft shadow" is the Civic Blueprint aesthetic (see src/pick/ui.tsx's
+  // Card), and every other card in the app already uses it.
+  card: { width: 340, borderRadius: radius.cardLg, padding: 22, backgroundColor: '#fff', borderWidth: 1.5, borderColor: C.border },
 
   head: { marginBottom: 14, gap: 8 },
   kicker: { fontFamily: Fonts.bodyBold, fontSize: 11, letterSpacing: 0.6, color: C.muted, textTransform: 'uppercase' },
