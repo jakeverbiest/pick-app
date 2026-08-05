@@ -151,10 +151,33 @@ export interface Post {
   storage_path: string;
   liked_by: string[];
   created_at: number;
-  /** 'photo' (default, legacy) or 'impact' (map snapshot + stat summary). */
-  kind?: 'photo' | 'impact';
+  /**
+   * 'photo' (default, legacy), 'impact' (map snapshot + stat summary), or
+   * 'challenge_recap' (a finished challenge's group total — see
+   * challengeRecap.ts). `display_name` is deliberately left blank on a
+   * challenge_recap post: `uid` still has to be the poster's own (firestore
+   * rules require isOwner(uid) to create a post at all), but the card is
+   * meant to read as posted BY THE CHALLENGE, not by whoever tapped share —
+   * community.tsx's author row only renders when display_name is set, so
+   * leaving it blank hides personal attribution for free.
+   */
+  kind?: 'photo' | 'impact' | 'challenge_recap';
   stats?: ImpactStats;
   coverage?: ImpactCoverage;
+  challenge_id?: string;
+  challenge_name?: string;
+  recap?: {
+    totalPickups: number;
+    totalBags: number;
+    totalCleanups: number;
+    participantCount: number;
+    goalReached: boolean;
+    goalType: 'pickups' | 'bags' | 'cleanups';
+    goalValue: number;
+    topContributorName: string | null;
+  };
+  /** Flat [lat, lon, …] — only for challenge_recap posts with a drawn area. */
+  area_ring?: number[];
 }
 
 /** Per-user public leaderboard aggregate (no routes — totals + name only). */
@@ -1290,6 +1313,48 @@ class FirebaseDatabase {
       return { id: docRef.id, ...post };
     } catch (error) {
       console.error('Failed to create impact post:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Post a finished challenge's group recap to the community feed. `uid` is
+   * still the tapper's own (firestore rules require isOwner(uid) to create
+   * any post — no rules change needed), but `display_name` is left blank so
+   * the card renders with no personal author row, reading as posted by the
+   * challenge rather than by whoever happened to tap Share.
+   */
+  async createChallengeRecapPost(input: {
+    challengeId: string;
+    challengeName: string;
+    neighborhood?: string;
+    caption?: string;
+    recap: Post['recap'];
+    areaRing?: number[];
+  }): Promise<Post | null> {
+    const uid = this.currentUserId;
+    if (!uid) return null;
+    try {
+      const post = {
+        uid,
+        display_name: '',
+        neighborhood: input.neighborhood || '',
+        caption: (input.caption || '').slice(0, 280),
+        image_url: '',
+        storage_path: '',
+        liked_by: [] as string[],
+        kind: 'challenge_recap' as const,
+        challenge_id: input.challengeId,
+        challenge_name: input.challengeName,
+        recap: input.recap,
+        ...(input.areaRing?.length ? { area_ring: input.areaRing } : {}),
+        created_at: Date.now(),
+      };
+      const docRef = await addDoc(collection(db, 'posts'), post);
+      console.log(`✅ Challenge recap post created: ${docRef.id}`);
+      return { id: docRef.id, ...post };
+    } catch (error) {
+      console.error('Failed to create challenge recap post:', error);
       return null;
     }
   }

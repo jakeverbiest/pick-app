@@ -10,8 +10,10 @@ import { getAuthService } from '../../src/services/authService';
 import { listFollowingIds } from '../../src/services/follows';
 import { getProfiles } from '../../src/services/profiles';
 import { reportPost, blockUser, getBlockedUids } from '../../src/services/moderation';
+import { unflattenRing } from '../../src/services/challenges';
 import { Icon } from '../../src/pick/Icon';
 import { ImpactMap } from '../../src/pick/ImpactMap';
+import { AreaPreview } from '../../src/pick/AreaPreview';
 import { ImpactComposer } from '../../src/pick/ImpactComposer';
 import { LiveNow } from '../../src/pick/LiveNow';
 import { C, Fonts, radius } from '../../src/pick/theme';
@@ -37,6 +39,17 @@ function impactChips(post: Post): { value: string; label: string }[] {
   if (s.toGo != null) out.push({ value: String(s.toGo), label: 'to go' });
   if (s.cleanups != null) out.push({ value: String(s.cleanups), label: 'cleanups' });
   return out;
+}
+
+/** The stat chips shown on a challenge_recap post. */
+function recapChips(post: Post): { value: string; label: string }[] {
+  const r = post.recap;
+  if (!r) return [];
+  return [
+    { value: r.totalPickups.toLocaleString(), label: 'pickups' },
+    { value: String(r.totalCleanups), label: 'cleanups' },
+    { value: String(r.participantCount), label: r.participantCount === 1 ? 'picker' : 'pickers' },
+  ];
 }
 
 export default function CommunityScreen() {
@@ -242,9 +255,29 @@ export default function CommunityScreen() {
               const likes = post.liked_by?.length || 0;
               const mine = post.uid === uid;
               const isImpact = post.kind === 'impact';
+              const isChallengeRecap = post.kind === 'challenge_recap';
+              const recapRing = isChallengeRecap ? unflattenRing(post.area_ring) : [];
               return (
                 <View key={post.id} style={styles.card}>
-                  {isImpact && post.coverage ? (
+                  {isChallengeRecap ? (
+                    <View>
+                      {recapRing.length >= 3 ? (
+                        <AreaPreview ring={recapRing} height={170} />
+                      ) : (
+                        <View style={styles.recapEmpty}>
+                          <Icon name="trophy" size={22} color={C.muted} sw={1.6} />
+                        </View>
+                      )}
+                      <View style={styles.statsRow}>
+                        {recapChips(post).map((c, i) => (
+                          <View key={i} style={styles.stat}>
+                            <Text style={styles.statValue}>{c.value}</Text>
+                            <Text style={styles.statLabel}>{c.label}</Text>
+                          </View>
+                        ))}
+                      </View>
+                    </View>
+                  ) : isImpact && post.coverage ? (
                     <View>
                       <ImpactMap coverage={post.coverage} height={170} />
                       <View style={styles.statsRow}>
@@ -261,26 +294,42 @@ export default function CommunityScreen() {
                   ) : null}
 
                   <View style={styles.body}>
-                    {!!post.display_name && (
-                      <Pressable
-                        onPress={() => router.push(`/profile/${post.uid}` as any)}
-                        style={styles.authorRow}
-                        hitSlop={4}
-                      >
-                        <View style={styles.authorAvatar}>
-                          {avatars[post.uid] ? (
-                            <Image source={{ uri: avatars[post.uid] }} style={styles.authorAvatarImg} />
-                          ) : (
-                            <Text style={styles.authorAvatarText}>{post.display_name.slice(0, 1).toUpperCase()}</Text>
-                          )}
+                    {isChallengeRecap ? (
+                      // Reads as posted BY THE CHALLENGE, not by whoever tapped
+                      // Share — no avatar/name, no tap-through to a profile.
+                      <View style={styles.authorRow}>
+                        <View style={[styles.authorAvatar, { backgroundColor: C.dark }]}>
+                          <Icon name="trophy" size={13} color={C.creamText} sw={2} />
                         </View>
                         <View>
-                          <Text style={styles.author}>{post.display_name}</Text>
-                          {!!handles[post.uid] && (
-                            <Text style={styles.authorHandle}>@{handles[post.uid]}</Text>
+                          <Text style={styles.author}>{post.challenge_name || 'Challenge recap'}</Text>
+                          {!!post.recap?.topContributorName && (
+                            <Text style={styles.authorHandle}>Led by {post.recap.topContributorName}</Text>
                           )}
                         </View>
-                      </Pressable>
+                      </View>
+                    ) : (
+                      !!post.display_name && (
+                        <Pressable
+                          onPress={() => router.push(`/profile/${post.uid}` as any)}
+                          style={styles.authorRow}
+                          hitSlop={4}
+                        >
+                          <View style={styles.authorAvatar}>
+                            {avatars[post.uid] ? (
+                              <Image source={{ uri: avatars[post.uid] }} style={styles.authorAvatarImg} />
+                            ) : (
+                              <Text style={styles.authorAvatarText}>{post.display_name.slice(0, 1).toUpperCase()}</Text>
+                            )}
+                          </View>
+                          <View>
+                            <Text style={styles.author}>{post.display_name}</Text>
+                            {!!handles[post.uid] && (
+                              <Text style={styles.authorHandle}>@{handles[post.uid]}</Text>
+                            )}
+                          </View>
+                        </Pressable>
+                      )
                     )}
                     {!!post.caption && <Text style={styles.caption}>{post.caption}</Text>}
 
@@ -302,7 +351,7 @@ export default function CommunityScreen() {
                           <Pressable onPress={() => removePost(post)} hitSlop={8} style={styles.iconBtn}>
                             <Icon name="trash" size={18} color={C.muted} sw={1.8} />
                           </Pressable>
-                        ) : (
+                        ) : isChallengeRecap ? null : (
                           <Pressable onPress={() => showMoreMenu(post)} hitSlop={8} style={styles.iconBtn} accessibilityLabel="Report or block">
                             <Icon name="flag" size={18} color={C.muted} sw={1.8} />
                           </Pressable>
@@ -347,6 +396,7 @@ const styles = StyleSheet.create({
 
   card: { backgroundColor: C.white, borderRadius: radius.card, borderWidth: 1.5, borderColor: C.border, overflow: 'hidden' },
   photo: { width: '100%', aspectRatio: 1.25, backgroundColor: C.tint },
+  recapEmpty: { height: 170, backgroundColor: C.tint, alignItems: 'center', justifyContent: 'center' },
 
   statsRow: { flexDirection: 'row', flexWrap: 'wrap', paddingVertical: 12, paddingHorizontal: 6, borderTopWidth: 1, borderTopColor: C.border2 },
   stat: { minWidth: '25%', alignItems: 'center', paddingVertical: 6 },

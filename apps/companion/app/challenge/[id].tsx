@@ -36,8 +36,10 @@ import {
   type Challenge,
   type Contribution,
 } from '../../src/services/challenges';
+import { buildChallengeRecap, getUnseenChallengeRecap, markChallengeRecapSeen } from '../../src/services/challengeRecap';
 import { AreaPreview } from '../../src/pick/AreaPreview';
 import { InviteSheet } from '../../src/pick/InviteSheet';
+import { GroupRecapModal } from '../../src/pick/GroupRecapModal';
 
 function fmt(goal: string, n: number): string {
   return goal === 'bags' ? formatBagsShort(n) : Math.round(n).toLocaleString();
@@ -53,6 +55,7 @@ export default function ChallengeScreen() {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [inviting, setInviting] = useState(false);
+  const [recapOpen, setRecapOpen] = useState(false);
 
   const load = useCallback(async () => {
     if (!id) return;
@@ -72,7 +75,16 @@ export default function ChallengeScreen() {
           console.warn('Could not refresh my contribution:', e);
         }
       }
-      setContribs(await getContributions(id));
+      const fresh = await getContributions(id);
+      setContribs(fresh);
+
+      // First participant to open a just-completed challenge gets the recap
+      // auto-presented once, instead of relying on someone remembering to tap
+      // "Share recap" (mirrors getUnseenRecap's seen-map pattern for "My Path").
+      if (c.status === 'completed' && (await getUnseenChallengeRecap(c.id))) {
+        setRecapOpen(true);
+        await markChallengeRecapSeen(c.id);
+      }
     } catch (e) {
       console.error('Failed to load challenge:', e);
     } finally {
@@ -295,22 +307,21 @@ export default function ChallengeScreen() {
         </Text>
       </ScrollView>
 
-      {/* Opt in / out — the "limitation" only applies to people who chose it. */}
+      {/* Opt in / out — the "limitation" only applies to people who chose it.
+          Once the challenge is over, the whole point of this button changes:
+          there's nothing left to join or leave, so it becomes the entry
+          point to the group's shareable recap instead of going dead. */}
       <View style={styles.footer}>
         <Pressable
-          style={[styles.primaryBtn, joined && styles.secondaryBtn, busy && { opacity: 0.6 }]}
-          onPress={toggleJoin}
-          disabled={busy || challenge.status === 'completed'}
+          style={[styles.primaryBtn, joined && challenge.status !== 'completed' && styles.secondaryBtn, busy && { opacity: 0.6 }]}
+          onPress={challenge.status === 'completed' ? () => setRecapOpen(true) : toggleJoin}
+          disabled={busy}
         >
           {busy ? (
             <ActivityIndicator size="small" color={joined ? C.primary : C.creamText} />
           ) : (
-            <Text style={[styles.primaryBtnText, joined && { color: C.primary }]}>
-              {challenge.status === 'completed'
-                ? 'Challenge finished'
-                : joined
-                ? 'Leave challenge'
-                : 'Join challenge'}
+            <Text style={[styles.primaryBtnText, joined && challenge.status !== 'completed' && { color: C.primary }]}>
+              {challenge.status === 'completed' ? 'Share recap' : joined ? 'Leave challenge' : 'Join challenge'}
             </Text>
           )}
         </Pressable>
@@ -321,6 +332,14 @@ export default function ChallengeScreen() {
         challenge={challenge}
         onClose={() => setInviting(false)}
         onInvited={load}
+      />
+
+      <GroupRecapModal
+        visible={recapOpen}
+        recap={challenge.status === 'completed' ? buildChallengeRecap(challenge, contribs) : null}
+        challenge={challenge}
+        onClose={() => setRecapOpen(false)}
+        onPosted={() => Alert.alert('Posted', 'Your group recap is live in the Community feed.')}
       />
     </SafeAreaView>
   );
