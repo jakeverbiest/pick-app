@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// Fitness-tracker layout, modeled on the Apple Workout app:
-/// - Idle: one big green Start button.
+/// - Idle: one big navy Start button.
 /// - Active: Pickups as the hero number, Time below; swipe left for End.
 struct ContentView: View {
   @EnvironmentObject var link: PhoneLink
@@ -17,8 +17,18 @@ struct ContentView: View {
   }
 }
 
-// Civic Blueprint brand green — #4B7A54 (matches C.accent in the phone app's theme.ts).
-private let pickGreen = Color(red: 0.294, green: 0.478, blue: 0.329) // #4B7A54
+// Civic Blueprint brand navy — #0F2F66 (matches C.primary/C.dark in the phone
+// app's theme.ts). The accent green (#4B7A54) that used to live here is still
+// correct on the phone for "positive/success" states — the watch just reads
+// as more on-brand carrying the same navy the rest of the rebrand uses.
+//
+// Only used as a FILL (button .tint) — never as text color directly on the
+// watch's black background. On the phone, navy text sits on a white/cream
+// surface; here the surface is black, and dark navy on black is close to
+// unreadable. Text that sits straight on black uses creamText instead,
+// matching the phone's own "text on a navy surface" convention.
+private let pickNavy = Color(red: 0.059, green: 0.184, blue: 0.400) // #0F2F66
+private let creamText = Color(red: 0.996, green: 0.988, blue: 0.867) // #FEFCDD, matches C.creamText
 
 // Small on-screen build stamp so "which build is my watch actually running"
 // is answerable by looking at the wrist instead of plugging into Xcode.
@@ -36,7 +46,7 @@ struct IdleView: View {
     VStack(spacing: 12) {
       Text("PICK")
         .font(.system(.headline, design: .rounded).weight(.heavy))
-        .foregroundStyle(pickGreen)
+        .foregroundStyle(creamText)
 
       Button(action: { link.startWalk() }) {
         VStack(spacing: 4) {
@@ -49,7 +59,7 @@ struct IdleView: View {
         .padding(.vertical, 18)
       }
       .buttonStyle(.borderedProminent)
-      .tint(pickGreen)
+      .tint(pickNavy)
 
       if let err = link.lastError {
         Text(err)
@@ -92,7 +102,7 @@ struct StatsPage: View {
         // Hero — pickups, centered and big
         Text("\(link.pickups)")
           .font(.system(size: 84, weight: .semibold, design: .rounded))
-          .foregroundStyle(pickGreen)
+          .foregroundStyle(creamText)
           .contentTransition(.numericText())
           .minimumScaleFactor(0.4)
           .lineLimit(1)
@@ -139,7 +149,7 @@ struct StatsPage: View {
         VStack(alignment: .trailing, spacing: 0) {
           Text(link.eventPct)
             .font(.system(size: 22, weight: .bold, design: .rounded))
-            .foregroundStyle(pickGreen)
+            .foregroundStyle(creamText)
           Text("CLEANED")
             .font(.system(size: 8, weight: .bold, design: .rounded))
             .foregroundStyle(.secondary)
@@ -177,7 +187,7 @@ struct ControlsPage: View {
           Text("Keep Going")
             .frame(maxWidth: .infinity)
         }
-        .tint(pickGreen)
+        .tint(pickNavy)
       } else {
         Button(action: { confirmingEnd = true }) {
           VStack(spacing: 4) {
