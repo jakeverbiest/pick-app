@@ -61,7 +61,15 @@ export function ImpactMap({
 
     const tiles = coverage.tiles || [];
 
-    if (!hasBbox && lines.length === 0 && shortMarks.length === 0 && tiles.length === 0) return '';
+    // Callers (recap.ts, impactShare.ts) stamp a tiny non-zero fallback bbox
+    // — e.g. [0,0,1e-4,1e-4], Null Island — when there's no real geometry yet,
+    // purely so their OWN projection math doesn't divide by zero. That bbox
+    // is "valid" by the hasBbox check above, but there's nothing to actually
+    // draw there — rendering it would show a real map, just centered on a
+    // patch of empty ocean. Gate on actual content instead of bbox validity;
+    // callers already render their own empty-state overlay (a route icon)
+    // when they have no coverage, same as before this was a real WebView.
+    if (lines.length === 0 && shortMarks.length === 0 && tiles.length === 0) return '';
 
     return `<!DOCTYPE html><html><head>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
