@@ -1,14 +1,30 @@
 /**
  * Assembles the current user's "impact" into the shape an impact post needs:
- * a stat summary + a compact, re-renderable map snapshot (their adopted blocks).
+ * a stat summary + a compact, re-renderable map snapshot of where they've
+ * actually picked (their walked cleanup routes), plus any adopted streets.
  *
- * Kept independent of the heavy map screen: it reads adoptions + lifetime
- * cleanup stats, which are available anywhere. pctGreen / toGo (which need the
+ * The map used to be built ONLY from adopted blocks — so anyone who hadn't
+ * formally adopted a street saw a blank map even with thousands of real
+ * pickups. It now draws from the same route_points cleanups already store
+ * (same encoding "My Path" recap uses via recap.ts's parseRoutePoints — see
+ * that module for the "no exact pickup pins" privacy convention this
+ * inherits), so this reads as the same kind of map as a recap, not a
+ * separate build with its own rules. Adopted blocks are folded in alongside
+ * the walked routes rather than replaced.
+ *
+ * Kept independent of the heavy map screen: it reads adoptions + cleanups +
+ * lifetime stats, all available anywhere. pctGreen / toGo (which need the
  * live street-coverage set) are optional and simply omitted here — the map
  * screen can pass them in when it has them.
  */
 import { listMyAdoptions } from './adoptions';
+import { parseRoutePoints } from './recap';
 import { getDatabase, type ImpactStats, type ImpactCoverage } from './firebaseDatabase';
+
+/** Enough recent cleanups to draw a real picture without the doc/post
+ *  getting unreasonably large — same cap philosophy as createImpactPost's
+ *  own block-count trim at save time. */
+const MAX_ROUTE_CLEANUPS = 300;
 
 export interface MyImpact {
   stats: ImpactStats;
@@ -60,9 +76,17 @@ function largestCluster(items: Item[]): Item[] {
 
 export async function buildMyImpact(extra?: { pctGreen?: number; toGo?: number }): Promise<MyImpact> {
   const [adoptions, db] = await Promise.all([listMyAdoptions(), getDatabase()]);
-  const cl = await db.getCleanupStats();
+  const [cl, cleanups] = await Promise.all([db.getCleanupStats(), db.getCleanups(MAX_ROUTE_CLEANUPS)]);
 
   const items: Item[] = [];
+  // Where you've actually picked — the walked route for every recent
+  // cleanup that has one, same route_points encoding as recap.ts.
+  for (const c of cleanups) {
+    const pts = parseRoutePoints((c as any).route_points);
+    if (pts.length >= 2) items.push({ block: pts, at: pts[0] });
+  }
+  // Streets you've formally adopted, drawn alongside your walked routes
+  // rather than replacing them.
   for (const a of adoptions) {
     if (Array.isArray(a.coords) && a.coords.length >= 2) {
       items.push({ block: a.coords, at: a.coords[0] });

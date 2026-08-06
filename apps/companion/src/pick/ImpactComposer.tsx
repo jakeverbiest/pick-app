@@ -180,7 +180,7 @@ export function ImpactComposer({
 
                 {!impact.hasBlocks && (
                   <Text style={styles.hint}>
-                    Adopt a block on the map to fill in your snapshot — you can still share your stats now.
+                    Log a cleanup or adopt a block on the map to fill in your snapshot — you can still share your stats now.
                   </Text>
                 )}
 

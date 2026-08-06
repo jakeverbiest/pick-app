@@ -127,7 +127,9 @@ export interface RecapData {
   hasPath: boolean;
 }
 
-function parseRoutePoints(raw?: string): [number, number][] {
+/** Exported so impactShare.ts can build a map from the same route_points
+ *  encoding without duplicating the parse/validate logic. */
+export function parseRoutePoints(raw?: string): [number, number][] {
   if (!raw) return [];
   try {
     const arr = JSON.parse(raw);
