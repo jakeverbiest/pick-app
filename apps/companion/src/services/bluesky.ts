@@ -11,7 +11,11 @@
  * tokens — one extra request per post, far simpler and just as correct.
  */
 import * as SecureStore from 'expo-secure-store';
-import * as FileSystem from 'expo-file-system';
+// expo-file-system 19 split the API: readAsStringAsync/EncodingType now live
+// only under /legacy. Importing the modern entry left EncodingType undefined,
+// so `FileSystem.EncodingType.Base64` threw and Bluesky photo upload crashed
+// for every user. This was the long-standing typecheck error in this file.
+import * as FileSystem from 'expo-file-system/legacy';
 import { Buffer } from 'buffer';
 import { getAuthService } from './authService';
 
