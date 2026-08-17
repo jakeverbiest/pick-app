@@ -137,6 +137,35 @@ export async function hasActiveSentinel(): Promise<boolean> {
   }
 }
 
+/** Freshness threshold for isSessionActiveFresh() — generous enough to cover
+ *  a heartbeat gap while genuinely stationary (heartbeat only fires on a GPS
+ *  update, ~5s/5m interval — see backgroundSession.ts — so it can pause
+ *  during a stopped moment), tight enough not to mistake an old crash for a
+ *  live walk. */
+export const LIVE_SESSION_MS = 60 * 1000;
+
+/**
+ * True only if a sentinel exists AND its last heartbeat is recent enough to
+ * trust as "a walk is genuinely running right now" — unlike
+ * hasActiveSentinel(), which doesn't check freshness and can stay true for a
+ * long time after a real crash (nothing clears it until the next clean
+ * Stop). Built for recovering `walkIntent`-style local UI state after a
+ * mid-walk remount of the Map screen: the background location task and
+ * motion detector keep running independently of the component, but the
+ * component's own React state resets — this lets it re-derive "am I
+ * actually mid-walk" from a source that survives the remount.
+ */
+export async function isSessionActiveFresh(maxAgeMs: number = LIVE_SESSION_MS): Promise<boolean> {
+  try {
+    const raw = await AsyncStorage.getItem(ACTIVE_KEY);
+    if (!raw) return false;
+    const trace: SessionTrace = JSON.parse(raw);
+    return Date.now() - trace.lastBeatAt < maxAgeMs;
+  } catch {
+    return false;
+  }
+}
+
 export async function getCrashReports(): Promise<CrashReport[]> {
   try {
     const raw = await AsyncStorage.getItem(REPORTS_KEY);

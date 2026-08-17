@@ -20,8 +20,25 @@ import * as TaskManager from 'expo-task-manager';
 
 const LOCATION_TASK = 'pick-cleanup-location-task';
 
-// Most recent background location (readable by anyone who cares)
-let lastBackgroundLocation: { lat: number; lon: number; timestamp: number } | null = null;
+export interface BackgroundLocationPoint {
+  lat: number;
+  lon: number;
+  accuracy: number | undefined;
+  timestamp: number;
+}
+
+// Every background fix since the last drain — NOT just the latest one. This
+// task's callback is triggered directly by iOS, independent of the app's own
+// JS timers, which is exactly why it exists: a foreground setInterval-driven
+// poll can be throttled or paused while backgrounded, but this callback
+// keeps firing. Queuing (instead of overwriting a single "last location"
+// variable, as this used to do) means a delayed/rare poll can still recover
+// every point the OS actually delivered in the meantime, rather than losing
+// all but the most recent one — this was the root cause of walks recording
+// only 2-7 GPS points for a whole session. Capped defensively; a real walk
+// should never come close to this.
+const MAX_QUEUED_POINTS = 2000;
+let backgroundLocationQueue: BackgroundLocationPoint[] = [];
 
 // Must be defined in module scope so it survives app relaunches
 TaskManager.defineTask(LOCATION_TASK, async ({ data, error }) => {
@@ -30,18 +47,25 @@ TaskManager.defineTask(LOCATION_TASK, async ({ data, error }) => {
     return;
   }
   const locations = (data as any)?.locations;
-  if (locations?.length) {
-    const loc = locations[locations.length - 1];
-    lastBackgroundLocation = {
+  if (!locations?.length) return;
+  for (const loc of locations) {
+    backgroundLocationQueue.push({
       lat: loc.coords.latitude,
       lon: loc.coords.longitude,
+      accuracy: loc.coords.accuracy ?? undefined,
       timestamp: loc.timestamp,
-    };
+    });
+  }
+  if (backgroundLocationQueue.length > MAX_QUEUED_POINTS) {
+    backgroundLocationQueue = backgroundLocationQueue.slice(-MAX_QUEUED_POINTS);
   }
 });
 
-export function getLastBackgroundLocation() {
-  return lastBackgroundLocation;
+/** Returns every queued background fix (oldest first) and clears the queue. */
+export function drainBackgroundLocations(): BackgroundLocationPoint[] {
+  const drained = backgroundLocationQueue;
+  backgroundLocationQueue = [];
+  return drained;
 }
 
 /**

@@ -1,6 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as FileSystem from 'expo-file-system/legacy';
-import { tileId, pointInPolygon } from './streetSegments';
+import { tileId, pointInPolygon, runOverpass } from './streetSegments';
 
 /**
  * Neighborhood NAME resolver (scalable, no per-city data).
@@ -298,6 +298,287 @@ export async function neighborhoodBoundary(
     await AsyncStorage.setItem(key, JSON.stringify({ poly, source, name: outName, ts: Date.now() }));
   } catch {}
   return { poly, source, name: outName };
+}
+
+// ---------- OSM administrative-boundary fallback (any city, no registry) ----------
+//
+// CITY_SOURCES above only covers NYC and Atlanta — every other city (London,
+// etc.) falls through to a generic "Your area" circle with no real name or
+// shape. OSM has administrative boundary relations for most cities
+// worldwide, queryable through the same Overpass mirrors already used for
+// street geometry. This is purely additive — NYC and Atlanta keep using
+// their higher-quality curated sources untouched; this only fires where
+// `hasNeighborhoods()` is false.
+//
+// Field-tested 2026-08-12 against real cities, not just a validation query:
+// admin_level is NOT a consistent "neighborhood" tier worldwide — in most
+// countries level 8 literally means "the city itself" (Miami's admin_level-8
+// relation IS the whole city; nothing finer exists as a boundary=administrative
+// relation there at all). In others (the UK, some of Europe) level 8 is a
+// sub-city district — London's boroughs. Same query, structurally different
+// meaning depending on the city. Querying multiple levels (8/9/10) didn't
+// fix this — it just made the query 3x heavier for no reliability gain, and
+// still couldn't tell "this is a real subdivision" from "this is just the
+// city" after the fact.
+//
+// Fix: whatever comes back from the query is shown as-is — a real city
+// border (even a single shape) is strictly better than the generic unnamed
+// circle, so there's no rejection gate anymore. `hasFineSubdivision` below
+// just distinguishes "these are real neighborhoods" from "this is one
+// shape, the city itself" for logging — both cases render, neither falls
+// back to a circle (the circle concept was removed from map.tsx entirely).
+// Verified live 2026-08-13 against real cities on four continents — the
+// "city district" tier lives at a DIFFERENT admin_level per country, no
+// single fixed level covers it: Australia = 6 (Sydney's council areas),
+// Japan = 7 (Tokyo's 23 wards), France/most of Europe = 8 (Paris + its
+// communes), Germany = 9 (Berlin's boroughs — Mitte, Kreuzberg, etc.).
+// Widening to include level 9 also required MAX_SHAPE_DIAGONAL_KM below:
+// without a size filter, widening past level 8 pulled in county/region-
+// scale relations (France's départements, ~28-32km, vs. Paris itself at
+// 20.4km) as if they were peers of real city districts. This is inherently
+// a long tail across ~200 countries' differing conventions and will never
+// be perfectly complete via a fixed level range — that's expected, not a
+// bug to keep chasing. Safe to widen further later since nothing gets
+// rejected based on level itself anymore (see MIN_SUBDIVISION_SHAPES
+// below) — the size cap is what keeps further widening safe.
+const OSM_ADMIN_LEVELS = '^(6|7|8|9)$';
+const OSM_BCACHE_PREFIX = FileSystem.documentDirectory + 'osmhoods-';
+const OSM_CELL_DEG = 0.2; // ~20km — one Overpass call + cache file covers a whole metro area
+// Informational only, not a rejection gate — see OsmCellResult.hasFineSubdivision.
+// Earlier versions of this file used these to REJECT single-shape ("this is
+// just the city") results and fall back to a generic circle. That was wrong:
+// a real city border is strictly better than an unnamed circle, so it's
+// always shown now. Kept only to distinguish "these are real neighborhoods"
+// (several distinct named shapes) from "this is one shape — the city
+// itself" for logging/future UI use, not to hide the latter.
+const MIN_SUBDIVISION_SHAPES = 3;
+const MAX_DOMINANT_AREA_FRACTION = 0.7;
+
+interface OsmBoundaryFeature {
+  id: number;
+  name: string;
+  ring: [number, number][];
+}
+
+function samePoint(a: [number, number], b: [number, number]): boolean {
+  return Math.abs(a[0] - b[0]) < 1e-6 && Math.abs(a[1] - b[1]) < 1e-6;
+}
+
+/** Stitch a relation's "outer" member ways (each an ordered lat/lon polyline)
+ *  into closed ring(s) by matching shared endpoints — administrative
+ *  boundaries are usually assembled from several ways, not one. Returns the
+ *  largest closed ring, same "biggest piece wins" rule as geojsonToRing. */
+function stitchOuterWays(ways: [number, number][][]): [number, number][] | null {
+  const remaining = ways.map((w) => w.slice());
+  const rings: [number, number][][] = [];
+  while (remaining.length) {
+    let chain = remaining.shift()!;
+    let grew = true;
+    while (grew && (chain.length < 2 || !samePoint(chain[0], chain[chain.length - 1]))) {
+      grew = false;
+      for (let i = 0; i < remaining.length; i++) {
+        const w = remaining[i];
+        const end = chain[chain.length - 1];
+        const start = chain[0];
+        if (samePoint(w[0], end)) { chain = chain.concat(w.slice(1)); remaining.splice(i, 1); grew = true; break; }
+        if (samePoint(w[w.length - 1], end)) { chain = chain.concat(w.slice(0, -1).reverse()); remaining.splice(i, 1); grew = true; break; }
+        if (samePoint(w[w.length - 1], start)) { chain = w.slice(0, -1).concat(chain); remaining.splice(i, 1); grew = true; break; }
+        if (samePoint(w[0], start)) { chain = w.slice(1).reverse().concat(chain); remaining.splice(i, 1); grew = true; break; }
+      }
+    }
+    rings.push(chain);
+  }
+  let best: [number, number][] | null = null;
+  for (const r of rings) if (!best || r.length > best.length) best = r;
+  return best && best.length >= 4 ? best : null;
+}
+
+/** Straight-line bbox diagonal in km — cheap (equirectangular, not true
+ *  geodesic) but plenty accurate at city scale. Used to filter out
+ *  county/region-scale relations that get swept in when widening the
+ *  admin_level range (see MAX_SHAPE_DIAGONAL_KM). */
+function ringDiagonalKm(ring: [number, number][]): number {
+  const [minLat, minLon, maxLat, maxLon] = ringBBox(ring);
+  const latKm = (maxLat - minLat) * 111.32;
+  const midLat = (minLat + maxLat) / 2;
+  const lonKm = (maxLon - minLon) * 111.32 * Math.cos((midLat * Math.PI) / 180);
+  return Math.sqrt(latKm * latKm + lonKm * lonKm);
+}
+
+// Calibrated live 2026-08-13 against real Paris-area data spanning levels
+// 6-9: the three surrounding French départements (county-scale parents, not
+// city districts) measured 28-32km bbox diagonal; Paris itself (a large but
+// legitimate single city) measured 20.4km, with every real commune/borough
+// below that. 25km sits cleanly in the gap — excludes the county-scale
+// outliers admin_level widening pulls in, keeps genuinely large single
+// cities. Not a universal law (some real metros ARE bigger than this
+// worldwide), just evidence-based, not a guess.
+const MAX_SHAPE_DIAGONAL_KM = 25;
+
+/** Named administrative boundaries inside a bbox, straight from OSM — reuses
+ *  runOverpass's mirror-failover/timeout rather than a new HTTP client.
+ *  `out geom` on a relation query embeds each member way's geometry inline
+ *  (no separate recursion query needed), so one round trip is enough. */
+async function fetchOsmBoundariesInBox(
+  minLat: number, minLon: number, maxLat: number, maxLon: number
+): Promise<OsmBoundaryFeature[]> {
+  const query = `
+    [out:json][timeout:25];
+    relation["boundary"="administrative"]["admin_level"~"${OSM_ADMIN_LEVELS}"](${minLat},${minLon},${maxLat},${maxLon});
+    out geom;
+  `;
+  const json = await runOverpass(query);
+  const elements = json?.elements ?? [];
+  const out: OsmBoundaryFeature[] = [];
+  const seenNames = new Set<string>();
+  let skippedNoName = 0;
+  let skippedNoRing = 0;
+  let skippedTooBig = 0;
+  let skippedDuplicate = 0;
+  for (const rel of elements) {
+    if (rel.type !== 'relation') continue;
+    const name = rel.tags?.name;
+    if (!name) { skippedNoName++; continue; }
+    const outerWays: [number, number][][] = (rel.members || [])
+      .filter((m: any) => m.type === 'way' && Array.isArray(m.geometry) && (m.role === 'outer' || !m.role))
+      .map((m: any) => m.geometry.map((g: any) => [g.lat, g.lon] as [number, number]));
+    if (!outerWays.length) { skippedNoRing++; continue; }
+    const ring = stitchOuterWays(outerWays);
+    if (!ring) { skippedNoRing++; continue; }
+    if (ringDiagonalKm(ring) > MAX_SHAPE_DIAGONAL_KM) { skippedTooBig++; continue; }
+    // The same place is sometimes tagged as multiple relations at different
+    // admin_levels (confirmed live: "Paris" appeared at levels 6, 7, AND 8,
+    // all ~20km, near-identical shapes) — widening the level range surfaces
+    // these as apparent duplicates. Keep only the first one seen per name.
+    const key = String(name);
+    if (seenNames.has(key)) { skippedDuplicate++; continue; }
+    seenNames.add(key);
+    out.push({ id: rel.id, name: key, ring });
+  }
+  console.log(
+    `🗺️ OSM boundary query: ${elements.length} elements → ${out.length} usable boundaries` +
+    (skippedNoName || skippedNoRing || skippedTooBig || skippedDuplicate
+      ? ` (skipped ${skippedNoName} unnamed, ${skippedNoRing} unstitchable, ${skippedTooBig} too-big, ${skippedDuplicate} duplicate)`
+      : '')
+  );
+  return out;
+}
+
+const osmHoodsCache: Record<string, OsmCellResult> = {};
+const osmHoodsInflight: Record<string, Promise<OsmCellResult> | null> = {};
+
+function osmCellKey(lat: number, lon: number): string {
+  return `${Math.floor(lat / OSM_CELL_DEG)}_${Math.floor(lon / OSM_CELL_DEG)}`;
+}
+
+interface OsmCellResult {
+  features: OsmBoundaryFeature[];
+  // Informational, not a rejection gate (see the note above OSM_ADMIN_LEVEL).
+  // Computed once per cell against the cell's own fixed ~20km bounds, not
+  // the current map viewport — a borough-scale city like London won't
+  // always have 3+ shapes in a normal zoomed-in view, so this has to be a
+  // fact about the city, not about how the user happens to be looking at it.
+  hasFineSubdivision: boolean;
+}
+
+/** Rough (lat/lon-degree, not geodesic) overlap of a ring's bbox against a
+ *  reference bbox — cheap enough to run per-shape, good enough to tell "this
+ *  shape roughly IS the reference area" from "this is one piece within it." */
+function bboxOverlapFraction(
+  ring: [number, number][], minLat: number, minLon: number, maxLat: number, maxLon: number
+): number {
+  const [a, b, c, d] = ringBBox(ring);
+  const ixLat = Math.max(0, Math.min(c, maxLat) - Math.max(a, minLat));
+  const ixLon = Math.max(0, Math.min(d, maxLon) - Math.max(b, minLon));
+  const refArea = Math.max(1e-9, (maxLat - minLat) * (maxLon - minLon));
+  return (ixLat * ixLon) / refArea;
+}
+
+/** Boundaries for the metro-scale cell containing a point — fetched once per
+ *  cell, cached to disk indefinitely (boundaries don't change), same pattern
+ *  as loadHoods()'s per-city GeoJSON cache but keyed by area since there's no
+ *  fixed city list here. */
+async function loadOsmHoodsForCell(lat: number, lon: number): Promise<OsmCellResult> {
+  const cell = osmCellKey(lat, lon);
+  // Explicit key check, not truthy — an empty array `[]` (a cell with
+  // genuinely zero boundaries) is truthy in JS, so a plain `if
+  // (osmHoodsCache[cell])` check couldn't tell "confirmed empty" apart from
+  // "never successfully fetched." That silently turned any transient
+  // Overpass failure (timeout, rate limit, a flaky mirror) into a permanent
+  // per-session blackout for that cell, with zero retry and no visible
+  // error — confirmed live 2026-08-12 (hit both a 429 and a 504 testing the
+  // real production query against two different Overpass mirrors).
+  if (cell in osmHoodsCache) return osmHoodsCache[cell];
+  if (osmHoodsInflight[cell]) return osmHoodsInflight[cell]!;
+  const file = `${OSM_BCACHE_PREFIX}${cell}.json`;
+  const cellLat0 = Math.floor(lat / OSM_CELL_DEG) * OSM_CELL_DEG;
+  const cellLon0 = Math.floor(lon / OSM_CELL_DEG) * OSM_CELL_DEG;
+  const cellMaxLat = cellLat0 + OSM_CELL_DEG;
+  const cellMaxLon = cellLon0 + OSM_CELL_DEG;
+
+  const classify = (features: OsmBoundaryFeature[]): OsmCellResult => {
+    const hasDominantShape = features.some(
+      (f) => bboxOverlapFraction(f.ring, cellLat0, cellLon0, cellMaxLat, cellMaxLon) >= MAX_DOMINANT_AREA_FRACTION
+    );
+    return { features, hasFineSubdivision: features.length >= MIN_SUBDIVISION_SHAPES && !hasDominantShape };
+  };
+
+  osmHoodsInflight[cell] = (async () => {
+    try {
+      const raw = await FileSystem.readAsStringAsync(file);
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        const result = classify(parsed);
+        osmHoodsCache[cell] = result;
+        return result;
+      }
+    } catch {} // no file yet — first visit to this cell
+    try {
+      const features = await fetchOsmBoundariesInBox(cellLat0, cellLon0, cellMaxLat, cellMaxLon);
+      // Only cache on a SUCCESSFUL query, even if it legitimately found
+      // nothing — a thrown error (network, timeout, bad mirror) falls
+      // through without caching, so the next visit to this cell retries
+      // instead of staying blacked out for the rest of the session.
+      const result = classify(features);
+      osmHoodsCache[cell] = result;
+      if (features.length) FileSystem.writeAsStringAsync(file, JSON.stringify(features)).catch(() => {});
+      console.log(
+        `🗺️ OSM cell ${cell}: ${features.length} boundaries, hasFineSubdivision=${result.hasFineSubdivision}`
+      );
+      return result;
+    } catch (e) {
+      console.warn(`🗺️ OSM boundary fetch failed for cell ${cell} — will retry next visit: ${(e as Error)?.message ?? e}`);
+      return { features: [], hasFineSubdivision: false };
+    }
+  })();
+  try {
+    return await osmHoodsInflight[cell]!;
+  } finally {
+    osmHoodsInflight[cell] = null;
+  }
+}
+
+/** Same shape/contract as getHoodsInBounds, but for the OSM fallback path —
+ *  only meaningful to call where hasNeighborhoods() is false (outside
+ *  NYC/Atlanta), since those cities' curated sources are always preferred.
+ *  Returns whatever real OSM boundaries exist in view, whether that's
+ *  several real neighborhoods/boroughs or just one shape (the city's own
+ *  border) — a real named border always beats the generic "Your area"
+ *  circle, so nothing here gets rejected/hidden. The caller falls back to
+ *  the circle only when this returns genuinely empty (OSM has nothing at
+ *  all for the area), not as a "this doesn't look fine-grained enough"
+ *  judgment call. */
+export async function getOsmHoodsInBounds(
+  minLat: number, minLon: number, maxLat: number, maxLon: number
+): Promise<HoodShape[]> {
+  const { features } = await loadOsmHoodsForCell((minLat + maxLat) / 2, (minLon + maxLon) / 2);
+  const out: HoodShape[] = [];
+  for (const f of features) {
+    const [a, b, c, d] = ringBBox(f.ring);
+    if (c < minLat || a > maxLat || d < minLon || b > maxLon) continue; // no bbox overlap with current view
+    out.push({ name: f.name, ring: decimate(f.ring) });
+  }
+  return out;
 }
 
 // ---------- neighborhood OUTLINES layer (tap to focus) ----------

@@ -310,7 +310,10 @@ const OVERPASS_TIMEOUT_MS = 15000;
 // mirror answered last and lead with it for the rest of the session.
 let preferredOverpass: string | null = null;
 
-async function runOverpass(query: string): Promise<any> {
+/** Exported so other services (e.g. neighborhoods.ts's OSM boundary
+ *  fallback) can reuse the same mirror-failover/timeout machinery instead
+ *  of standing up a second Overpass client. */
+export async function runOverpass(query: string): Promise<any> {
   let lastErr: unknown;
   const endpoints = preferredOverpass
     ? [preferredOverpass, ...OVERPASS_ENDPOINTS.filter((u) => u !== preferredOverpass)]
@@ -321,7 +324,14 @@ async function runOverpass(query: string): Promise<any> {
     try {
       const res = await fetch(url, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        // Overpass mirrors explicitly rate-limit harder without a real
+        // User-Agent (confirmed live 2026-08-13 — a 429 response's own body
+        // said so directly). Same convention already used for the Nominatim
+        // reverse-geocode calls in neighborhoods.ts's osmNeighborhood().
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'User-Agent': 'PICK-cleanup-app/1.0 (street + boundary geometry)',
+        },
         body: `data=${encodeURIComponent(query)}`,
         signal: ctrl.signal,
       });
@@ -350,21 +360,30 @@ async function fetchStreetGeometry(lat: number, lon: number): Promise<StreetSegm
     );
     out geom;
   `;
-  let json = await runOverpass(sidewalkQuery);
-  let segments = chopWaysIntoSegments(json);
+  const roadQuery = `
+    [out:json][timeout:25];
+    way["highway"~"^(residential|primary|secondary|tertiary|unclassified|living_street|pedestrian|footway|path)$"]
+      (around:${FETCH_RADIUS_M},${lat},${lon});
+    out geom;
+  `;
+  // Fired together, not sequentially — the road query is only USED as a
+  // fallback when sidewalks are sparse, but it doesn't depend on the
+  // sidewalk result, so waiting for one before starting the other just
+  // doubles latency in areas without mapped sidewalks (common outside big
+  // cities). Costs one extra Overpass call on the common case where
+  // sidewalks alone are enough, but that trade is worth halving worst-case
+  // load time.
+  const [sidewalkJson, roadJson] = await Promise.all([
+    runOverpass(sidewalkQuery),
+    runOverpass(roadQuery),
+  ]);
+  let segments = chopWaysIntoSegments(sidewalkJson);
 
   if (segments.length < MIN_SIDEWALK_SEGMENTS) {
     // Area without mapped sidewalks (common outside big cities) — fall back
     // to road centerlines so coverage still works
     console.log(`🛣️ Only ${segments.length} sidewalk segments mapped here — falling back to road centerlines`);
-    const roadQuery = `
-      [out:json][timeout:25];
-      way["highway"~"^(residential|primary|secondary|tertiary|unclassified|living_street|pedestrian|footway|path)$"]
-        (around:${FETCH_RADIUS_M},${lat},${lon});
-      out geom;
-    `;
-    json = await runOverpass(roadQuery);
-    segments = chopWaysIntoSegments(json, true); // centerlines → split into per-side sidewalks
+    segments = chopWaysIntoSegments(roadJson, true); // centerlines → split into per-side sidewalks
   }
   return segments;
 }
@@ -582,16 +601,22 @@ async function fetchStreetGeometryForRing(ring: [number, number][]): Promise<Str
     );
     out geom;
   `;
-  let json = await runOverpass(sidewalkQuery);
-  let segments = chopWaysIntoSegments(json);
+  const roadQuery = `
+    [out:json][timeout:25];
+    way["highway"~"^(residential|primary|secondary|tertiary|unclassified|living_street|pedestrian|footway|path)$"](poly:"${poly}");
+    out geom;
+  `;
+  // Same reasoning as fetchStreetGeometry: fire both queries together since
+  // the road query doesn't depend on the sidewalk result — this is the path
+  // actually used by activateHood's first-visit "activating a neighborhood"
+  // flow, so it's the biggest lever on perceived load time.
+  const [sidewalkJson, roadJson] = await Promise.all([
+    runOverpass(sidewalkQuery),
+    runOverpass(roadQuery),
+  ]);
+  let segments = chopWaysIntoSegments(sidewalkJson);
   if (segments.length < MIN_SIDEWALK_SEGMENTS) {
-    const roadQuery = `
-      [out:json][timeout:25];
-      way["highway"~"^(residential|primary|secondary|tertiary|unclassified|living_street|pedestrian|footway|path)$"](poly:"${poly}");
-      out geom;
-    `;
-    json = await runOverpass(roadQuery);
-    segments = chopWaysIntoSegments(json, true); // centerlines → split into per-side sidewalks
+    segments = chopWaysIntoSegments(roadJson, true); // centerlines → split into per-side sidewalks
   }
   return segments;
 }

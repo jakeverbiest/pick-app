@@ -9,14 +9,14 @@ import { WebView } from 'react-native-webview';
 import MotionDetector from '../../src/services/motionDetection';
 import PickupAggregator from '../../src/services/pickupAggregator';
 import { itemsToBags, reportedBags, formatBags, formatKitchenBags } from '../../src/services/impactMetrics';
-import { getCoverage, markRouteCleaned, getParkCoverage, markParksCleaned, getTileStats, tileId, getCoverageForRing, routeCoverageFraction, nearestStreetSegment } from '../../src/services/streetSegments';
-import { saveAdoptedBlock } from '../../src/services/adoptions';
-import { osmNeighborhood, getHoodsInBounds, hoodLabelsNeeded, hasNeighborhoods, polygonStats, HoodShape } from '../../src/services/neighborhoods';
+import { getCoverage, markRouteCleaned, getParkCoverage, markParksCleaned, getTileStats, tileId, getCoverageForRing, routeCoverageFraction, nearestStreetSegment, type RenderSegment } from '../../src/services/streetSegments';
+import { saveAdoptedBlock, listMyAdoptions } from '../../src/services/adoptions';
+import { osmNeighborhood, getHoodsInBounds, getOsmHoodsInBounds, hoodLabelsNeeded, hasNeighborhoods, polygonStats, HoodShape } from '../../src/services/neighborhoods';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import Constants from 'expo-constants';
-import { startBackgroundSession, stopBackgroundSession } from '../../src/services/backgroundSession';
-import { beginSessionTrace, heartbeat, endSessionTrace } from '../../src/services/crashRecorder';
+import { startBackgroundSession, stopBackgroundSession, drainBackgroundLocations } from '../../src/services/backgroundSession';
+import { beginSessionTrace, heartbeat, endSessionTrace, isSessionActiveFresh } from '../../src/services/crashRecorder';
 import { saveWalkDraft, loadWalkDraft, clearWalkDraft } from '../../src/services/sessionRecovery';
 import { startPresence, pingPresence, endPresence, getLiveWalks } from '../../src/services/presence';
 import { computeNeed, parseRoute, needColor, needTileKey, type NeedTile } from '../../src/services/needMap';
@@ -27,7 +27,7 @@ import { getDatabase } from '../../src/services/database';
 import { getAuthService } from '../../src/services/authService';
 import { getBadgeService } from '../../src/services/badgeService';
 import { SPACING } from '../../src/constants/colors';
-import { C, Fonts } from '../../src/pick/theme';
+import { C, Fonts, radius } from '../../src/pick/theme';
 import { Icon } from '../../src/pick/Icon';
 import { addWatchCommandListener, sendStatsToWatch } from '../../modules/watch-session';
 import { startCleanupActivity, updateCleanupActivity, endCleanupActivity } from '../../modules/live-activity';
@@ -174,6 +174,10 @@ export default function MapScreen() {
   // "shared" counterpart to the personal toGo/freshPct stats above.
   const [liveNowCount, setLiveNowCount] = useState<number | null>(null);
   const [activating, setActivating] = useState<string | null>(null); // hood name during reveal
+  // Set when activateHood's outer timeout fires — street detail is still
+  // loading in the background, but we've stopped blocking on it. Dismissible;
+  // cleared automatically once the deferred fetch actually resolves.
+  const [slowLoadBanner, setSlowLoadBanner] = useState<string | null>(null);
   const activeLevelRef = useRef<boolean>(false);
   const activationTokenRef = useRef<number>(0); // invalidates stale in-flight activations
   // Live recolor: the active level's segments + a throttle clock.
@@ -189,11 +193,34 @@ export default function MapScreen() {
   // The watch is "active" from the moment Start is tapped, not from when
   // `isListening` flips — see startCleanup.
   const [walkIntent, setWalkIntent] = useState(false);
+  // Guards the watch-broadcast effect below from firing a false "idle" the
+  // instant this component mounts. A remount mid-walk (backgrounding, tab
+  // switch, memory pressure — anything React Navigation does) resets
+  // `walkIntent` to its useState(false) default even though the background
+  // location task and motion detector singleton are still genuinely running.
+  // Stays false until the one-time mount check below has resolved.
+  const [walkIntentChecked, setWalkIntentChecked] = useState(false);
   const watchSessionRef = useRef('');
   const [currentArea, setCurrentArea] = useState<{ city: string; neighborhood: string }>({ city: '', neighborhood: '' });
   const coverageLoadedRef = useRef(false);
   const panLoadRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const appActiveRef = useRef(true);
+
+  // Recover walkIntent after a remount mid-walk: check the crash-recorder's
+  // sentinel (same start/stop window as walkIntent — see startCleanup /
+  // stopCleanup) for a heartbeat recent enough to trust as "still walking
+  // right now," not just "crashed at some point and never cleaned up."
+  useEffect(() => {
+    let cancelled = false;
+    isSessionActiveFresh().then((active) => {
+      if (cancelled) return;
+      if (active) setWalkIntent(true);
+      setWalkIntentChecked(true);
+    });
+    return () => { cancelled = true; };
+    // Run once on mount.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     const sub = AppState.addEventListener('change', (state) => {
@@ -255,6 +282,24 @@ export default function MapScreen() {
       loadHoodsInView([currentLocation.lat - 0.012, currentLocation.lon - 0.016, currentLocation.lat + 0.012, currentLocation.lon + 0.016]);
     }
   }, [mapReady, currentLocation]);
+
+  // Persistent "these are mine" markers — loaded once the map can accept
+  // injected JS, and re-pulled after adopting a new block (see
+  // handleAdoptBlockTap) so a fresh adoption shows up without a reload.
+  const refreshAdoptedMarkers = async () => {
+    try {
+      const mine = await listMyAdoptions();
+      webviewRef.current?.injectJavaScript(`
+        if (window.renderMyAdoptions) { window.renderMyAdoptions(${JSON.stringify(mine.map((a) => ({ lat: a.lat, lon: a.lon, label: a.label })))}); }
+        true;
+      `);
+    } catch {}
+  };
+
+  useEffect(() => {
+    if (mapReady) void refreshAdoptedMarkers();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mapReady]);
 
   // The WebView unmounts when the app backgrounds mid-walk (see the mapReady
   // reset above), which wipes the coverage layers. Repaint them from the
@@ -433,42 +478,37 @@ export default function MapScreen() {
 
   // Draw all neighborhood outlines intersecting the current view as a tappable
   // layer. Rings are stashed so a tap can score that hood from coverage.
-  // A walkable "your area" ring (~radius meters) as a closed polygon, for places
-  // with no neighborhood data — the same level mechanic, centered on you.
-  const AREA_RADIUS_M = 800;
-  const circleRing = (lat: number, lon: number, radiusM = AREA_RADIUS_M, n = 40): [number, number][] => {
-    const dLat = radiusM / 111320;
-    const dLon = radiusM / (111320 * Math.cos((lat * Math.PI) / 180));
-    const ring: [number, number][] = [];
-    for (let i = 0; i <= n; i++) {
-      const a = (i / n) * 2 * Math.PI;
-      ring.push([lat + dLat * Math.cos(a), lon + dLon * Math.sin(a)]);
-    }
-    return ring;
-  };
-
   const loadHoodsInView = (b: [number, number, number, number]) => {
     const cLat = (b[0] + b[2]) / 2;
     const cLon = (b[1] + b[3]) / 2;
 
     // Where we have real neighborhood polygons, use them (richer + more valuable).
-    // Everywhere else, offer one broad "Your area" circle around you to fill in.
+    // Everywhere else, try OSM administrative boundaries (works in any city, no
+    // per-city registry — see getOsmHoodsInBounds). No fake fallback boundary
+    // anymore: a made-up circle with no real enclosing area produced a
+    // meaningless "% complete" (a fixed 800m radius isn't a real place), and
+    // was confusing/unwanted. Where no real border exists at all, the app
+    // just stays in normal (non-level) overview mode — street-by-street
+    // freshness coloring and pickup tracking already work with no boundary
+    // needed at all (see loadStreetCoverage's tile-based stats, scoped to a
+    // fixed universal tile rather than any city-specific shape) — you can
+    // still walk, pick, and track your own work, just without a bounded
+    // "neighborhood" percentage that a real area never actually backed.
     if (!hasNeighborhoods(cLat, cLon)) {
       if (neighborhoodMode) setNeighborhoodMode(false);
-      // Center on you when you're actually in view; otherwise on what you're
-      // looking at (so searching to a small city still shows an area to tap).
-      const inView =
-        currentLocation &&
-        currentLocation.lat >= b[0] && currentLocation.lat <= b[2] &&
-        currentLocation.lon >= b[1] && currentLocation.lon <= b[3];
-      const loc = inView ? currentLocation! : { lat: cLat, lon: cLon };
-      const ring = circleRing(loc.lat, loc.lon);
-      hoodRingsRef.current['Your area'] = ring;
-      webviewRef.current?.injectJavaScript(`
-        if (window.renderNeighborhoods) { window.renderNeighborhoods(${JSON.stringify([{ name: 'Your area', ring }])}, true); }
-        ${selectedHood ? `if (window.highlightNeighborhood) { window.highlightNeighborhood(${JSON.stringify(selectedHood.name)}); }` : ''}
-        true;
-      `);
+      getOsmHoodsInBounds(b[0], b[1], b[2], b[3])
+        .then((hoods: HoodShape[]) => {
+          if (!hoods.length) return;
+          if (!neighborhoodMode) setNeighborhoodMode(true);
+          hoods.forEach((h) => { hoodRingsRef.current[h.name] = h.ring; });
+          const payload = hoods.map((h) => ({ name: h.name, ring: h.ring }));
+          webviewRef.current?.injectJavaScript(`
+            if (window.renderNeighborhoods) { window.renderNeighborhoods(${JSON.stringify(payload)}, true); }
+            ${selectedHood ? `if (window.highlightNeighborhood) { window.highlightNeighborhood(${JSON.stringify(selectedHood.name)}); }` : ''}
+            true;
+          `);
+        })
+        .catch(() => {});
       return;
     }
 
@@ -492,6 +532,13 @@ export default function MapScreen() {
   // streets (untouched in soft gray, cleaned on the freshness scale), show
   // completion stats. reveal=true plays the 2s "entering" beat (tap to browse);
   // reveal=false enters quietly (used when you start a cleanup inside a hood).
+  // Street detail can take a long time on a cold cache (sparse OSM sidewalk
+  // data + Overpass mirror retries) — this ceiling stops the "activating"
+  // spinner from blocking indefinitely. On timeout we still show the
+  // neighborhood (outline already drawn via enterLevel below, stats start at
+  // zero) and keep waiting for the real segments in the background.
+  const ACTIVATE_TIMEOUT_MS = 22000;
+
   const activateHood = async (name: string, ring: [number, number][], reveal: boolean) => {
     if (activating) return;
     const token = ++activationTokenRef.current; // invalidated by exitLevel / a newer activation
@@ -503,36 +550,62 @@ export default function MapScreen() {
       true;
     `);
     const started = Date.now();
-    const segments = await getCoverageForRing(ring);
-    // Bail if we've since exited the level (or started a different one) — stops a
-    // stale fetch from re-drawing the spotlight/level after the user left.
-    if (activationTokenRef.current !== token || !activeLevelRef.current) return;
-    const total = segments.length;
-    const fresh = segments.filter((s) => s.daysOld !== null && s.daysOld <= 5).length;
-    const untouched = segments.filter((s) => s.daysOld === null).length;
-    const freshPct = total > 0 ? Math.round((fresh / total) * 100) : 0;
-    const toGo = Math.max(0, total - fresh);
-    // Keep the segments for live recoloring as you walk.
-    levelSegmentsRef.current = segments.map((s) => ({ id: s.id, coords: s.coords, daysOld: s.daysOld, cleaned: false }));
-    const payload = segments.map((s) => ({ id: s.id, coords: s.coords, daysOld: s.daysOld }));
-    webviewRef.current?.injectJavaScript(`
-      if (window.renderLevel) { window.renderLevel(${JSON.stringify(payload)}); }
-      true;
-    `);
-    hoodScoresRef.current[name] = { fresh, total };
-    const agg = Object.values(hoodScoresRef.current).reduce(
-      (a, s) => ({ fresh: a.fresh + s.fresh, total: a.total + s.total }), { fresh: 0, total: 0 });
-    setCityRollup({ city: currentArea.city || 'City', freshPct: agg.total > 0 ? Math.round((agg.fresh / agg.total) * 100) : 0 });
-    const apply = () => {
+
+    // Applies fetched segments to the level UI — shared by the normal path
+    // and the deferred (post-timeout) path so they stay in sync.
+    const finish = (segments: RenderSegment[]) => {
+      if (activationTokenRef.current !== token || !activeLevelRef.current) return;
+      const total = segments.length;
+      const fresh = segments.filter((s) => s.daysOld !== null && s.daysOld <= 5).length;
+      const untouched = segments.filter((s) => s.daysOld === null).length;
+      const freshPct = total > 0 ? Math.round((fresh / total) * 100) : 0;
+      const toGo = Math.max(0, total - fresh);
+      // Keep the segments for live recoloring as you walk.
+      levelSegmentsRef.current = segments.map((s) => ({ id: s.id, coords: s.coords, daysOld: s.daysOld, cleaned: false }));
+      const payload = segments.map((s) => ({ id: s.id, coords: s.coords, daysOld: s.daysOld }));
+      webviewRef.current?.injectJavaScript(`
+        if (window.renderLevel) { window.renderLevel(${JSON.stringify(payload)}); }
+        true;
+      `);
+      hoodScoresRef.current[name] = { fresh, total };
+      const agg = Object.values(hoodScoresRef.current).reduce(
+        (a, s) => ({ fresh: a.fresh + s.fresh, total: a.total + s.total }), { fresh: 0, total: 0 });
+      setCityRollup({ city: currentArea.city || 'City', freshPct: agg.total > 0 ? Math.round((agg.fresh / agg.total) * 100) : 0 });
       setActiveLevel({ name, total, fresh, freshPct, toGo, untouched });
       setActivating(null);
+      setSlowLoadBanner(null);
       setLiveNowCount(null);
       getLiveWalks()
         .then((walks) => { if (activeLevelRef.current) setLiveNowCount(walks.filter((w) => w.neighborhood === name).length); })
         .catch(() => {});
     };
-    if (reveal) setTimeout(apply, Math.max(400, 2000 - (Date.now() - started)));
-    else apply();
+
+    const coveragePromise = getCoverageForRing(ring);
+    const timedOut: unique symbol = Symbol('activate-timeout') as any;
+    const raced = await Promise.race([
+      coveragePromise,
+      new Promise<typeof timedOut>((resolve) => setTimeout(() => resolve(timedOut), ACTIVATE_TIMEOUT_MS)),
+    ]);
+    // Bail if we've since exited the level (or started a different one) — stops a
+    // stale fetch from re-drawing the spotlight/level after the user left.
+    if (activationTokenRef.current !== token || !activeLevelRef.current) return;
+
+    if (raced === timedOut) {
+      // Don't leave the user stuck on a blocking spinner — drop into the
+      // level now (boundary already drawn) and fill in real coverage
+      // whenever the still-in-flight fetch actually resolves.
+      setActivating(null);
+      setLiveNowCount(null);
+      setSlowLoadBanner(name);
+      coveragePromise
+        .then(finish)
+        .catch(() => { if (activationTokenRef.current === token) setSlowLoadBanner(null); });
+      return;
+    }
+
+    const segments = raced as RenderSegment[];
+    if (reveal) setTimeout(() => finish(segments), Math.max(400, 2000 - (Date.now() - started)));
+    else finish(segments);
   };
 
   // Tap a neighborhood outline → browse it with the full 2s reveal.
@@ -942,21 +1015,35 @@ export default function MapScreen() {
 
       // Noisy fixes (>25m) still move the on-map dot, but never enter the
       // route — one bad ping can spill the route across the street and poison
-      // sidewalk-level segment snapping (11m snap radius).
-      if (fixAccuracy !== undefined && fixAccuracy > 25) {
-        console.log(`📍 Skipped low-accuracy fix (${Math.round(fixAccuracy)}m)`);
-        return;
+      // sidewalk-level segment snapping (11m snap radius). Same threshold
+      // applied to queued background points below.
+      const ACCURACY_LIMIT_M = 25;
+      const newPoints: { lat: number; lon: number; timestamp: number }[] = [];
+
+      // While backgrounded, this function is driven by a setInterval that iOS
+      // can throttle or pause outright — but backgroundSession.ts's OS-level
+      // location task keeps receiving real fixes regardless, queuing them
+      // since nothing used to read them. Draining it here means a rare/late
+      // tick still recovers every point the OS actually delivered in the
+      // meantime, not just whatever's cached right now — this was the root
+      // cause of walks recording only 2-7 GPS points for a whole session.
+      if (sessionMode === 'background') {
+        for (const q of drainBackgroundLocations()) {
+          if (q.accuracy !== undefined && q.accuracy > ACCURACY_LIMIT_M) continue;
+          newPoints.push({ lat: q.lat, lon: q.lon, timestamp: q.timestamp });
+        }
       }
 
+      if (fixAccuracy !== undefined && fixAccuracy > ACCURACY_LIMIT_M) {
+        console.log(`📍 Skipped low-accuracy fix (${Math.round(fixAccuracy)}m)`);
+      } else {
+        newPoints.push({ lat: latitude, lon: longitude, timestamp: Date.now() });
+      }
+
+      if (newPoints.length === 0) return;
+
       setSessionRoute((prev) => {
-        const updated = [
-          ...prev,
-          {
-            lat: latitude,
-            lon: longitude,
-            timestamp: Date.now(),
-          },
-        ];
+        const updated = [...prev, ...newPoints];
         const now = Date.now();
         let mode = 'normal';
         if (now < highFrequencyEndRef.current) {
@@ -1381,6 +1468,11 @@ export default function MapScreen() {
   }, []);
 
   useEffect(() => {
+    // Don't broadcast anything until the mount-time recovery check above has
+    // resolved — otherwise a remount mid-walk would fire a false "idle" on
+    // the very first render, before we've had a chance to learn the walk is
+    // actually still running.
+    if (!walkIntentChecked) return;
     // `walkIntent`, not `isListening`: the watch goes active the instant Start is
     // tapped. Sending idle during the GPS warm-up is what made the watch flash a
     // count and then fall back to the Start screen.
@@ -1419,17 +1511,26 @@ export default function MapScreen() {
         progressText: activeLevel ? `${activeLevel.name} · ${activeLevel.freshPct}%` : (currentArea.neighborhood || ''),
       });
     }
-  }, [walkIntent, pickupCount, segmentsCompleted, elapsedSeconds, liveEvent, eventTotal]);
+  }, [walkIntent, walkIntentChecked, pickupCount, segmentsCompleted, elapsedSeconds, liveEvent, eventTotal]);
 
-  // A walk must run ≥2 minutes OR log ≥1 pickup to count as a cleanup —
+  // A walk must run this long OR log ≥1 pickup to count as a cleanup —
   // filters out tap-start-tap-stop test walks without ever losing a real one.
-  const MIN_CLEANUP_SECONDS = 120;
+  // TEMPORARY (17 Aug 2026): dropped 120 -> 20 for detector field testing.
+  // Short single-behaviour test walks (60s of walking with zero pickups, etc.)
+  // were being rejected, which forced padding the clock with standing-still
+  // minutes — and that padding contaminated the very false-positive counts the
+  // walks existed to measure. RESTORE TO 120 BEFORE LAUNCH.
+  const MIN_CLEANUP_SECONDS = 20;
 
   const saveSummary = async () => {
     if (elapsedSeconds < MIN_CLEANUP_SECONDS && pickupCount === 0) {
       Alert.alert(
         'Too short to count',
-        `Walks under ${Math.round(MIN_CLEANUP_SECONDS / 60)} minutes with no pickups aren't saved as cleanups.`,
+        `Walks under ${
+          MIN_CLEANUP_SECONDS < 60
+            ? `${MIN_CLEANUP_SECONDS} seconds`
+            : `${Math.round(MIN_CLEANUP_SECONDS / 60)} minutes`
+        } with no pickups aren't saved as cleanups.`,
         [
           { text: 'Back', style: 'cancel' },
           {
@@ -1848,6 +1949,7 @@ Generated by Pick App - Share this with the development team
               try {
                 await saveAdoptedBlock(seg, label);
                 Alert.alert('Block adopted', `You'll get an email if ${label} goes stale.`);
+                void refreshAdoptedMarkers();
               } catch (e: any) {
                 Alert.alert('Could not adopt', e?.message || 'Please try again.');
               }
@@ -1955,6 +2057,20 @@ Generated by Pick App - Share this with the development team
           <Text style={styles.levelRevealSub}>Entering</Text>
           <Text style={styles.levelRevealName}>{activating}</Text>
         </View>
+      )}
+
+      {/* Shown when activateHood's outer timeout fires — street detail is
+          still loading in the background; dismissible, auto-clears once it lands. */}
+      {slowLoadBanner && !activating && (
+        <TouchableOpacity
+          style={[styles.slowLoadBanner, { top: insets.top + 8 }]}
+          onPress={() => setSlowLoadBanner(null)}
+          accessibilityLabel="Dismiss slow-load notice"
+        >
+          <ActivityIndicator size="small" color={C.dark} />
+          <Text style={styles.slowLoadBannerText} numberOfLines={1}>Still loading street detail…</Text>
+          <Text style={styles.slowLoadBannerDismiss}>✕</Text>
+        </TouchableOpacity>
       )}
 
       {/* Level header — the active neighborhood's stats + exit */}
@@ -2151,6 +2267,27 @@ Generated by Pick App - Share this with the development team
       try { L.polyline(coords, { color: '#4B7A54', weight: 8, opacity: 0.95, lineCap: 'round', lineJoin: 'round' }).addTo(adoptGroup); } catch (e) {}
     };
     window.clearBlockHighlight = function() { adoptGroup.clearLayers(); };
+
+    // Persistent "these are mine" layer — small navy dots, always on, one per
+    // adopted block. Deliberately NOT a colored line: the street underneath
+    // is already colored by freshness (green→red), and covering that with a
+    // second color would hide whether an adopted block still needs a
+    // cleanup. Navy doesn't appear anywhere in that freshness gradient, so a
+    // dot reads unambiguously as "you adopted this," not "here's its status."
+    var myAdoptedGroup = L.featureGroup([]).addTo(map);
+    window.renderMyAdoptions = function(items) {
+      myAdoptedGroup.clearLayers();
+      (items || []).forEach(function(a) {
+        if (typeof a.lat !== 'number' || typeof a.lon !== 'number') return;
+        try {
+          L.circleMarker([a.lat, a.lon], {
+            radius: 6, color: '#FFFFFF', weight: 2,
+            fillColor: '#0F2F66', fillOpacity: 1
+          }).bindPopup('<b>' + (a.label || 'Adopted block') + '</b><br>You adopted this — you\\'ll get a nudge if it goes stale.', { className: 'seg-popup' })
+            .addTo(myAdoptedGroup);
+        } catch (e) {}
+      });
+    };
     L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png', {
       attribution: '© OpenStreetMap © CARTO',
       subdomains: 'abcd',
@@ -3212,6 +3349,16 @@ const styles = StyleSheet.create({
   },
   levelRevealSub: { color: 'rgba(255,255,255,0.75)', fontSize: 13, fontFamily: Fonts.bodySemibold, textTransform: 'uppercase', letterSpacing: 1.5, marginTop: 18 },
   levelRevealName: { color: '#fff', fontSize: 26, fontFamily: Fonts.headlineBold, letterSpacing: -0.4, marginTop: 4, textAlign: 'center', paddingHorizontal: 24 },
+  slowLoadBanner: {
+    position: 'absolute', left: 12, right: 12, zIndex: 60,
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    backgroundColor: C.white, borderRadius: radius.field,
+    paddingVertical: 10, paddingHorizontal: 14,
+    borderWidth: 1.5, borderColor: C.border,
+    shadowColor: '#000', shadowOpacity: 0.12, shadowRadius: 8, shadowOffset: { width: 0, height: 2 },
+  },
+  slowLoadBannerText: { flex: 1, fontSize: 13, fontFamily: Fonts.bodySemibold, color: C.dark },
+  slowLoadBannerDismiss: { fontSize: 13, color: C.muted, paddingHorizontal: 4 },
   levelBack: {
     width: 34, height: 34, borderRadius: 17, backgroundColor: C.white,
     alignItems: 'center', justifyContent: 'center', marginRight: 8,
