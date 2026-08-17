@@ -12,7 +12,28 @@
  * recall below 19/21, you've reintroduced the bug that cost 60% of pickups.
  */
 
-import { evaluatePickupProfile, isPickup, countDistinctPeaks, classifyCarryMode, THRESHOLDS, EvalProfile } from '../motionEvaluation';
+import {
+  evaluatePickupProfile,
+  isPickup,
+  countDistinctPeaks,
+  classifyCarryMode,
+  isWalkingCadence,
+  looksLikeStride,
+  stepCorroboratesCadence,
+  isBriskWalkingPace,
+  isSpeedFresh,
+  looksMonotonous,
+  isStandingStill,
+  isNotStriding,
+  metersBetween,
+  PACE,
+  MONOTONY,
+  STRIDE,
+  COOLDOWN,
+  THRESHOLDS,
+  CADENCE,
+  EvalProfile,
+} from '../motionEvaluation';
 import { simplifyRoute, dropOutliers, privacyTrimRoute } from '../routeUtils';
 
 // Every motion event from the June 10 log. peakAccelTime was only logged for
@@ -121,6 +142,237 @@ check('bend+straighten pick (peaks 2, 1196ms) accepted', isPickup({ ...ev(1.52, 
 check('3-peak SHORT window (1.5s spree) accepted', isPickup({ ...ev(1.5, 1500, 400), peaks: 3 }), true);
 // Legacy fixtures without peaks data unaffected
 check('no peaks data → no rhythmic rejection', isPickup(ev(1.49, 2594)), true);
+
+console.log('\n=== Cross-event walking cadence (Aug 16 — steady-walk overcount fix) ===');
+// This is the gap the June 11 tests above never covered: the within-window
+// rhythmic filter only fires on ONE long, multi-peak window. A CLEAN steady
+// walk settles between every step, so each footstep becomes its own short
+// single-peak window and never trips it — that's what was overcounting.
+// isWalkingCadence() looks across separate finalized windows instead.
+
+// A steady walk: footsteps landing every ~550ms (mid-range walking cadence).
+// The 4th event completes 3 consecutive in-band, low-jitter gaps → flagged.
+const steadyWalk = [0, 560, 1105, 1660];
+check(
+  `steady walk (3 gaps ~550-560ms) flagged as cadence`,
+  isWalkingCadence(steadyWalk),
+  true
+);
+// Only 2 events in so far — not enough of a streak yet to call it a rhythm
+// (this is exactly the gap looksLikeStride()/step corroboration covers).
+check('two events alone (no streak yet) NOT flagged', isWalkingCadence([0, 560]), false);
+// A real pause-and-bend breaks the rhythm: 3 steady strides, then a genuine
+// ~2s pause before the next candidate (bending to pick something up) — the
+// final gap blows the band, so this candidate must NOT be suppressed.
+const walkThenPause = [0, 560, 1105, 1660, 3660];
+check('walk then a real pause is NOT flagged as cadence (must count)', isWalkingCadence(walkThenPause), false);
+// A picking spree (grabber tool, pick-pick-pick) lands well outside the
+// walking-cadence band — each pause-to-bend cycle takes much longer than a
+// footstep-to-footstep gap — so it must never be misclassified as a stride.
+const pickingSpree = [0, 1800, 3900, 5600];
+check('picking spree (~1.7-2.1s apart) NOT flagged as cadence', isWalkingCadence(pickingSpree), false);
+// Uneven gaps that individually fall in-band but aren't metronomic (the
+// jitter guard) — real picks can coincidentally land at varying short
+// intervals; don't let that alone read as a stride.
+const unevenButInBand = [0, 400, 1000, 1080];
+check('in-band but high-jitter gaps NOT flagged as cadence', isWalkingCadence(unevenButInBand), false);
+
+// Step-counter fast path: confirms a stride from just ONE in-band gap when a
+// pedometer step corroborates it, instead of waiting for a 3-gap streak —
+// catches the first stride or two of a walk that isWalkingCadence() alone
+// would still miss.
+check(
+  'single in-band gap + step confirmation → stride (fast path)',
+  looksLikeStride(0, 600, true),
+  true
+);
+check('single in-band gap WITHOUT step confirmation → not enough alone', looksLikeStride(0, 600, false), false);
+check('gap outside the band, even with a step, is not a stride', looksLikeStride(0, 2000, true), false);
+check(`step 300ms before candidate corroborates (within ${CADENCE.stepCorroborationMs}ms)`, stepCorroboratesCadence(300), true);
+check('step 2s before candidate is too stale to corroborate', stepCorroboratesCadence(2000), false);
+check('no pedometer data (null) never corroborates', stepCorroboratesCadence(null), false);
+
+console.log('\n=== Speed-based pause gate (Aug 16 — prototype, TEST A/B field logs) ===');
+// Test A (0 actual picks, normal pace, no stopping) — 4 isolated single-
+// window events still slipped through the cadence fix as "ok", all at
+// normal walking pace. This gate alone doesn't zero out Test A (1.19 m/s
+// survives it), but it should catch the other 3 — see the pickup-
+// overcounting memory for the full 4-vs-1 accounting.
+check('Test A false "ok" @1.19 m/s NOT flagged (below threshold, known gap)', isBriskWalkingPace(1.19), false);
+check('Test A false "ok" @1.40 m/s flagged as still-walking', isBriskWalkingPace(1.4), true);
+check('Test A false "ok" @1.42 m/s flagged as still-walking', isBriskWalkingPace(1.42), true);
+check('Test A false "ok" @1.37 m/s flagged as still-walking', isBriskWalkingPace(1.37), true);
+// Test B (10 actual stops) — the densest real cluster (5 counted events in
+// 11s, GPS speed 0.09-1.26 m/s) must mostly survive: multi-item picks in one
+// spot (e.g. several cigarette butts) are a real, intended case, not noise.
+check('Test B cluster event @1.26 m/s NOT flagged (real cluster pick)', isBriskWalkingPace(1.2599), false);
+check('Test B cluster event @1.00 m/s NOT flagged (real cluster pick)', isBriskWalkingPace(1.0027), false);
+check('Test B cluster event @0.09 m/s NOT flagged (confirmed stop)', isBriskWalkingPace(0.0909), false);
+check('Test B cluster event @1.45 m/s flagged (still walking into the stop)', isBriskWalkingPace(1.446), true);
+// A missing/unknown GPS fix must never gate a pickup (same convention as the
+// existing too-fast gate) — losing signal can't silently kill real picks.
+check('unknown speed (-1) never flagged', isBriskWalkingPace(-1), false);
+check('threshold sanity: brisk-walk gate is 1.3 m/s', PACE.briskWalkSpeedMps === 1.3, true);
+
+console.log('\n=== GPS speed freshness guard (Aug 16 — A2/B2 undercount fix) ===');
+// A2 (0 picks, continuous walk) went 3 -> 0 counted: the gate works when the
+// fix is fresh. B2 (10 real stop-and-picks) went 21 -> 7 — it UNDERcounted,
+// because `distanceInterval: 2` meant a stationary phone emitted no fixes, so
+// stopping to pick froze `speed` at the last walking value. 8 of B2's 15 gate
+// rejections were on a stale reading. The gate must stand down on a stale fix.
+check('fresh fix (200ms old) lets the gate run', isSpeedFresh(200), true);
+check('fix right at the limit is still usable', isSpeedFresh(PACE.maxSpeedAgeMs), true);
+// The B2 killer: one reading (1.786 m/s) reused across 8 seconds of a stop.
+check('B2 8-second frozen fix is rejected as stale', isSpeedFresh(8000), false);
+check('B2 3-second-stale fix is rejected', isSpeedFresh(3000), false);
+// No fix at all must never gate — losing GPS can't be allowed to silently
+// suppress real pickups (same convention as the too-fast gate).
+check('no fix yet (null) is never fresh', isSpeedFresh(null), false);
+check('negative/garbage age is never fresh', isSpeedFresh(-1), false);
+check('freshness window sanity: 1800ms', PACE.maxSpeedAgeMs === 1800, true);
+// Combined contract: a stale fix must disable the gate even when the speed
+// reading itself looks damning. This exact pair (1.79 m/s, 8s old) rejected
+// real pickups on the B2 walk.
+const b2StaleFix = isSpeedFresh(8000) && isBriskWalkingPace(1.786);
+check('B2 case: 1.79 m/s but 8s stale → gate must NOT fire', b2StaleFix, false);
+// ...while a genuinely fresh brisk reading still gates (the A2 behaviour we
+// must not regress).
+const a2FreshFix = isSpeedFresh(400) && isBriskWalkingPace(1.42);
+check('A2 case: 1.42 m/s and fresh → gate DOES fire', a2FreshFix, true);
+
+console.log('\n=== Monotony filter (Aug 16 — A3 slow-walk false positives) ===');
+// A3 was a deliberately SLOW walk with ZERO pickups that still counted 12.
+// Every one of those false positives sat BELOW the 1.3 m/s speed gate, and
+// their spacing (~1-2s) matched real picking, so neither speed nor cadence
+// could see them. What gives them away is uniformity — real consecutive
+// windows from that walk:
+const a3Strides = [
+  { durationMs: 1194, gyro: 4.3 },
+  { durationMs: 1194, gyro: 4.46 },
+  { durationMs: 1194, gyro: 3.86 },
+  { durationMs: 1194, gyro: 4.41 },
+];
+check('A3 stride run (identical durations) flagged as monotonous', looksMonotonous(a3Strides), true);
+// Real picking from C3, same walk length — varied because items and bends differ.
+const c3RealPicking = [
+  { durationMs: 596, gyro: 3.44 },
+  { durationMs: 1094, gyro: 4.94 },
+  { durationMs: 1592, gyro: 4.94 },
+  { durationMs: 597, gyro: 2.03 },
+];
+check('C3 real picking (varied) NOT flagged', looksMonotonous(c3RealPicking), false);
+// Never judge on a short history — a couple of similar windows is not a pattern.
+check('too few candidates to judge yet', looksMonotonous(a3Strides.slice(0, 2)), false);
+check(`streak length is ${MONOTONY.streakLen}`, MONOTONY.streakLen === 4, true);
+// Duration alike but rotation varied → not the single repeated motion of a walk.
+const sameDurDifferentGyro = [
+  { durationMs: 1194, gyro: 1.9 },
+  { durationMs: 1194, gyro: 6.4 },
+  { durationMs: 1194, gyro: 2.5 },
+  { durationMs: 1194, gyro: 5.1 },
+];
+check('uniform duration but varied gyro NOT flagged', looksMonotonous(sameDurDifferentGyro), false);
+
+console.log('\n--- the cigarette-pile guard (PRODUCT REQUIREMENT) ---');
+// Rapid identical picks in one spot must ALL count. That motion is repetitive
+// by nature and would trip looksMonotonous(), so the veto is physical: with a
+// fresh fix showing you are not moving, you cannot be mid-stride.
+check('standing still on a fresh fix vetoes monotony', isStandingStill(0.0, 300), true);
+check('barely drifting (0.2 m/s) still counts as standing still', isStandingStill(0.2, 300), true);
+check('strolling at 1.0 m/s is NOT standing still', isStandingStill(1.0, 300), false);
+// A stale fix reading ~0 proves nothing — that was exactly the B2 failure,
+// where a frozen fix made the app believe something it could not know.
+check('stale fix reading 0.0 does NOT count as standing still', isStandingStill(0.0, 8000), false);
+check('no fix at all is never standing still', isStandingStill(null, null), false);
+// End-to-end contract: a pile of butts picked while stationary survives even
+// though the motion pattern itself looks monotonous.
+const buttPile = [
+  { durationMs: 900, gyro: 3.5 },
+  { durationMs: 920, gyro: 3.6 },
+  { durationMs: 890, gyro: 3.4 },
+  { durationMs: 910, gyro: 3.55 },
+];
+const wouldSuppressStationary = looksMonotonous(buttPile) && !isStandingStill(0.1, 250);
+check('cigarette pile while stationary is NOT suppressed', wouldSuppressStationary, false);
+const wouldSuppressWalking = looksMonotonous(buttPile) && !isStandingStill(1.15, 250);
+check('same uniform motion WHILE WALKING is suppressed', wouldSuppressWalking, true);
+
+console.log('\n=== Striding detection via GPS displacement (C5 opening-burst fix) ===');
+// C5 counted 11 picks in its first 24 seconds because isNotStriding() read
+// "pedometer hasn't called back yet" (msSinceLastStep === null) as "standing
+// still", switching off monotony, cadence AND the long cooldown at once.
+check('C5 case: walking, no step data YET => striding (filters stay ON)',
+  isNotStriding({ msSinceLastFixMs: 500, displacementM: 14, pedometerActive: true, msSinceLastStep: null }), false);
+// D4: standing still 84s. iOS stops emitting fixes entirely when you don't move,
+// so fix-silence is itself the stationary signal.
+check('D4 case: no fixes for 84s => not striding (protects rapid picking)',
+  isNotStriding({ msSinceLastFixMs: 84000, displacementM: null, pedometerActive: true, msSinceLastStep: null }), true);
+check('fixes flowing, moved 14m in the window => striding',
+  isNotStriding({ msSinceLastFixMs: 500, displacementM: 14, pedometerActive: true, msSinceLastStep: 4000 }), false);
+check('fixes flowing, moved 1m => not striding (picking in place)',
+  isNotStriding({ msSinceLastFixMs: 500, displacementM: 1, pedometerActive: true, msSinceLastStep: 4000 }), true);
+// A recent step overrides GPS — covers a dropout under trees that would
+// otherwise look like standing still and disable the filters mid-walk.
+check('recent step overrides GPS silence',
+  isNotStriding({ msSinceLastFixMs: 30000, displacementM: null, pedometerActive: true, msSinceLastStep: 400 }), false);
+// Nothing known at all must NOT be read as stationary — that was the bug.
+check('no fix and no step data => do not assume stationary',
+  isNotStriding({ msSinceLastFixMs: null, displacementM: null, pedometerActive: true, msSinceLastStep: null }), false);
+check(`displacement threshold ${STRIDE.movementM}m over ${STRIDE.windowMs}ms`,
+  STRIDE.movementM === 5 && STRIDE.windowMs === 10000, true);
+// Distance helper sanity: ~111m per 0.001 degree of latitude.
+check('metersBetween ~111m for 0.001 deg lat', Math.abs(metersBetween(33.4889, -79.0851, 33.4899, -79.0851) - 111) < 3, true);
+check('metersBetween is 0 for the same point', metersBetween(33.4889, -79.0851, 33.4889, -79.0851) === 0, true);
+
+console.log('\n--- step counter as a positive override (outdoor Test D) ---');
+// A step within the quiet window proves walking; suppression is allowed.
+check('step 400ms ago => striding', isNotStriding({ msSinceLastFixMs: 300, displacementM: 8, pedometerActive: true, msSinceLastStep: 400 }), false);
+check('step 1.2s ago (slow gait) => still striding', isNotStriding({ msSinceLastFixMs: 300, displacementM: 8, pedometerActive: true, msSinceLastStep: 1200 }), false);
+check(`quiet window is ${STRIDE.quietMs}ms`, STRIDE.quietMs === 2500, true);
+// Test D's real losses at 0.748 and 0.642 m/s: too slow to be striding, too
+// fast for the old <0.5 m/s GPS veto. Displacement settles it — barely moved.
+check('Test D loss @0.748 m/s: barely moved => not striding',
+  isNotStriding({ msSinceLastFixMs: 300, displacementM: 2, pedometerActive: true, msSinceLastStep: 4000 }), true);
+// REGRESSION GUARD: this case used to assert TRUE, and that assertion WAS the
+// C5 bug — "no step recorded yet" is not evidence of standing still.
+check('no step data + fresh fixes => NOT assumed stationary (was the C5 bug)',
+  isNotStriding({ msSinceLastFixMs: 300, displacementM: null, pedometerActive: true, msSinceLastStep: null }), false);
+// Devices with no step counter (Android lacks ACTIVITY_RECOGNITION in app.json)
+// still work off displacement and fix-silence.
+check('no pedometer, moved 12m => striding',
+  isNotStriding({ msSinceLastFixMs: 400, displacementM: 12, pedometerActive: false, msSinceLastStep: null }), false);
+check('no pedometer, moved 0.5m => not striding',
+  isNotStriding({ msSinceLastFixMs: 400, displacementM: 0.5, pedometerActive: false, msSinceLastStep: null }), true);
+// End-to-end: uniform motion that WOULD trip monotony must survive when the
+// user is demonstrably standing still — the cigarette-pile requirement.
+const uniformPicks = [
+  { durationMs: 1208, gyro: 3.7 },
+  { durationMs: 1208, gyro: 3.58 },
+  { durationMs: 1109, gyro: 3.09 },
+  { durationMs: 1208, gyro: 3.17 },
+];
+const stationary = { msSinceLastFixMs: 40000, displacementM: null, pedometerActive: true, msSinceLastStep: null };
+const walking = { msSinceLastFixMs: 300, displacementM: 9, pedometerActive: true, msSinceLastStep: 500 };
+check('uniform picks while stationary => NOT suppressed', looksMonotonous(uniformPicks) && !isNotStriding(stationary), false);
+check('same motion while walking => suppressed', looksMonotonous(uniformPicks) && !isNotStriding(walking), true);
+
+console.log('\n=== Adaptive cooldown (D4 + C4) ===');
+// One flat cooldown can't serve both patterns; the two walks pulled opposite ways.
+const cooldownFor = (notStriding: boolean) => (notStriding ? COOLDOWN.stationaryMs : COOLDOWN.stridingMs);
+check('striding => long cooldown', cooldownFor(false) === 2500, true);
+check('stationary => short cooldown', cooldownFor(true) === 800, true);
+check('the two are actually different', COOLDOWN.stridingMs > COOLDOWN.stationaryMs, true);
+// C4: seven pairs of counted events ~1-2s apart were one pick counted twice
+// (bend, then straighten) while strolling. The striding cooldown must absorb them.
+const c4Pairs = [1000, 1000, 2000, 2000, 2000, 1000, 1000]; // observed gaps, seconds-rounded
+check('C4 bend+straighten pairs all inside the striding cooldown',
+  c4Pairs.every((gap) => gap < COOLDOWN.stridingMs), true);
+// D4: rapid picking standing still produced real pickups ~1s apart. Those must survive.
+check('rapid stationary picks 1s apart survive the stationary cooldown', 1000 > COOLDOWN.stationaryMs, true);
+check('rapid stationary picks 1s apart would DIE on the striding cooldown', 1000 < COOLDOWN.stridingMs, true);
+// The floor: one motion's own double-trigger settles in ~500ms (June tuning).
+// Dropping below that would reintroduce the double-count this is meant to fix.
+check('stationary cooldown stays above the ~500ms self-echo', COOLDOWN.stationaryMs > 500, true);
 
 console.log('\n=== Route simplification ===');
 // Straight block walk with GPS jitter: 21 wobbly points → should collapse to ~2-3

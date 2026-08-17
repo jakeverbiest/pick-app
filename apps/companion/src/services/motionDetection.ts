@@ -4,13 +4,29 @@
  * Feeds into PickupAggregator for privacy-safe data handling
  */
 
-import { Accelerometer, Gyroscope } from 'expo-sensors';
+import { Accelerometer, Gyroscope, Pedometer } from 'expo-sensors';
 import * as Location from 'expo-location';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import PickupAggregator from './pickupAggregator';
 import GroundTruthCapture from './groundTruthCapture';
 import MotionShapeDetector from './motionShapeDetector';
-import { evaluatePickupProfile, countDistinctPeaks, classifyCarryMode } from './motionEvaluation';
+import {
+  evaluatePickupProfile,
+  countDistinctPeaks,
+  classifyCarryMode,
+  isWalkingCadence,
+  looksLikeStride,
+  stepCorroboratesCadence,
+  isBriskWalkingPace,
+  isSpeedFresh,
+  looksMonotonous,
+  isStandingStill,
+  isNotStriding,
+  metersBetween,
+  PACE,
+  COOLDOWN,
+  STRIDE,
+} from './motionEvaluation';
 
 interface PickupEvent {
   timestamp: number;
@@ -44,6 +60,11 @@ export interface MotionEventRecord {
   reason: string; // 'ok', rejection reason, or 'cooldown'
   peaks: number; // distinct accel spikes in the window (spree analysis — measurement only)
   speed: number; // GPS speed (m/s) at event time, -1 if unknown — walking-filter data
+  // Aug 16: age of the GPS fix that produced `speed`, -1 if there's never been
+  // a fix. Added because A2/B2 staleness could only be INFERRED from repeated
+  // speed values in the export; now it's measured. If the pause gate ever
+  // misbehaves again, check this column before touching the threshold.
+  speedAgeMs: number;
 }
 
 export const CARRY_MODE_KEY = '@pick_carry_mode_v2'; // 'auto' | 'pocket' | 'hand'
@@ -60,6 +81,10 @@ const WALKING_CONTEXT_MS = 2500;
 // never gated, so a missing fix can't nuke a legitimate pickup.
 const MAX_PICKUP_SPEED_MPS = 3.3;
 const GYRO_BASELINE_WINDOW = 8; // recent events used for auto carry classification
+// Backstop for the onset gate: after this long into a session, count pickups
+// even if neither GPS pace nor a walking rhythm has ever been seen. Protects
+// the stationary-picking case (outdoor Test D) from being stranded forever.
+const ONSET_FALLBACK_MS = 10000;
 
 class MotionDetector {
   private pickupEvents: PickupEvent[] = [];
@@ -78,18 +103,43 @@ class MotionDetector {
   private lastAccel = { x: 0, y: 0, z: 0 };
   private lastGyro = { x: 0, y: 0, z: 0 };
   private lastLocation: { latitude: number; longitude: number; accuracy: number; speed: number } | null = null;
+  // When the fix in lastLocation arrived. The pause gate is only allowed to
+  // judge a pickup on a FRESH fix — see isSpeedFresh() in motionEvaluation.ts.
+  private lastLocationAt: number | null = null;
+  // Recent fixes, for the displacement-based "am I walking?" test. Trimmed to
+  // STRIDE.windowMs. This replaced GPS *speed* as the movement signal because
+  // speed cannot separate slow-shuffling from striding — see isNotStriding().
+  private recentFixes: Array<{ at: number; lat: number; lon: number }> = [];
   private carryMode: CarryMode = 'auto';
   private recentGyros: number[] = []; // rolling gyro baseline for auto carry detection
   private lastAutoCarry: 'pocket' | 'hand' | 'unknown' = 'unknown';
+  // Aug 16 (steady-walk overcount fix): timestamps of recent shape-accepted
+  // candidates, across separate finalized windows — see isWalkingCadence()
+  // in motionEvaluation.ts for why this is needed on top of the existing
+  // within-one-window rhythmic filter.
+  private recentCandidateTimes: number[] = [];
+  // Aug 16 (A3/C3): shape of the same candidates — a slow walk's strides are
+  // near-identical in duration and rotation, real picking is irregular. See
+  // looksMonotonous() in motionEvaluation.ts.
+  private recentCandidateShapes: Array<{ durationMs: number; gyro: number }> = [];
+  private pedometerSubscription: any = null;
+  private lastStepAt: number | null = null; // last time the step counter incremented (coarse, corroborating only)
+  // Whether the step counter is actually running. Distinguishes "no steps
+  // taken" (meaningful — you're standing still) from "no step data at all"
+  // (meaningless — fall back to GPS). See isNotStriding().
+  private pedometerActive = false;
 
   private tuning: TuningParams = {
     accelThreshold: 0.85,
     gyroThreshold: 0.25,
-    // 2500ms swallowed clustered pickups (bend once, grab 2-3 nearby pieces) —
-    // field test (Jul): 100 real picks registered 48-62. Dropped to 1500ms so
-    // back-to-back picks count, while still filtering a single motion's double-
-    // trigger (~0.5s). Re-validate on the next walk.
-    cooldownMs: 1500,
+    // The WALKING cooldown. History: 2500ms swallowed clustered pickups (Jul:
+    // 100 real picks registered 48-62), so it dropped to 1500ms — but that let
+    // one pick's bend and straighten both count while strolling (C4: 27 counted
+    // for 15 real, 7 of the excess being ~2s-apart pairs). Back to 2500ms, which
+    // is now safe because standing still uses COOLDOWN.stationaryMs instead —
+    // see COOLDOWN in motionEvaluation.ts. Still the knob the dev tuning UI
+    // adjusts; the stationary value is deliberately not user-tunable.
+    cooldownMs: COOLDOWN.stridingMs,
   };
 
   private onPickupCallback: ((event: PickupEvent) => void) | null = null;
@@ -118,6 +168,12 @@ class MotionDetector {
       this.lastRhythmicTime = 0;
       this.hasStartedWalking = false; // arm counting only once real walking begins
       this.sessionStartTime = Date.now();
+      this.recentCandidateTimes = [];
+      this.recentCandidateShapes = [];
+      this.lastStepAt = null;
+      this.pedometerActive = false;
+      this.lastLocationAt = null;
+      this.recentFixes = [];
 
       // Carry mode is always 'auto' as of build 16 — the classifier reads
       // pocket-vs-hand from the gyro baseline as the session runs. The manual
@@ -143,8 +199,22 @@ class MotionDetector {
         this.locationSubscription = await Location.watchPositionAsync(
           {
             accuracy: Location.Accuracy.High,
-            timeInterval: 3000,
-            distanceInterval: 2,
+            // Aug 16 (A2/B2 field tests): both of these changed together, and
+            // the reason matters more than the numbers. `distanceInterval: 2`
+            // was a battery tune, but iOS applies it as a hard distance FILTER
+            // — a phone standing still emits NO fixes, whatever timeInterval
+            // says. So the moment you stopped to pick something up, `speed`
+            // froze at your last walking value and the pause gate below
+            // rejected the real pickup. B2 held one reading for 8 seconds
+            // straight across a stop. 0 = no distance filter, so fixes keep
+            // arriving while stationary and a stop reads as ~0 m/s.
+            // timeInterval 3000 -> 1000 for the same reason: a pick takes
+            // ~2s, so a 3s fix cadence can't resolve one. Battery cost is
+            // modest here because Accuracy.High already keeps the GPS warm —
+            // callback rate is the cheap part. Dial back to 2000 if a long
+            // walk shows real drain.
+            timeInterval: 1000,
+            distanceInterval: 0,
           },
           (location) => {
             this.lastLocation = {
@@ -153,6 +223,14 @@ class MotionDetector {
               accuracy: location.coords.accuracy || 0,
               speed: location.coords.speed ?? -1,
             };
+            this.lastLocationAt = Date.now();
+            this.recentFixes.push({
+              at: this.lastLocationAt,
+              lat: location.coords.latitude,
+              lon: location.coords.longitude,
+            });
+            const cutoff = this.lastLocationAt - STRIDE.windowMs;
+            while (this.recentFixes.length && this.recentFixes[0].at < cutoff) this.recentFixes.shift();
           }
         );
       }
@@ -169,6 +247,33 @@ class MotionDetector {
         this.lastGyro = { x, y, z };
       });
 
+      // Step-counter corroboration (Aug 16): a step landing on top of a
+      // pickup candidate is strong evidence it's a stride bounce, not a
+      // pause-and-bend pickup — see stepCorroboratesCadence() in
+      // motionEvaluation.ts. CMPedometer's live callback timing is
+      // batched/coarse, so this only corroborates the motion-based cadence
+      // check; it never runs alone. No-ops safely if unavailable (Android needs
+      // the ACTIVITY_RECOGNITION permission for step counting, not currently
+      // declared in app.json — cadence suppression falls back to motion-only there).
+      try {
+        const pedometerAvailable = await Pedometer.isAvailableAsync();
+        if (pedometerAvailable) {
+          this.pedometerSubscription = Pedometer.watchStepCount(() => {
+            this.lastStepAt = Date.now();
+            // A step means the session is genuinely under way — this is one of
+            // the ways the onset gate arms now, so standing-still picking is
+            // no longer stranded behind a GPS speed threshold it can't reach.
+            this.hasStartedWalking = true;
+          });
+          this.pedometerActive = true;
+          console.log('👣 Pedometer available — step corroboration on');
+        } else {
+          console.log('👣 Pedometer unavailable on this device — cadence check runs motion-only');
+        }
+      } catch (e) {
+        console.warn('Pedometer setup failed (continuing without step corroboration):', e);
+      }
+
       console.log('Motion detection started with location tracking');
     } catch (error) {
       console.error('Failed to start motion detection:', error);
@@ -183,6 +288,8 @@ class MotionDetector {
     this.accelSubscription?.remove?.();
     this.gyroSubscription?.remove?.();
     this.locationSubscription?.remove?.();
+    this.pedometerSubscription?.remove?.();
+    this.pedometerSubscription = null;
     this.isListening = false;
     console.log('Motion detection stopped');
   }
@@ -260,9 +367,38 @@ class MotionDetector {
             result = { confidence: 0, reason: `too fast: ${evSpeed.toFixed(1)} m/s > ${MAX_PICKUP_SPEED_MPS} (biking/driving?)` };
           }
 
+          // Pause gate (Aug 16 — see isBriskWalkingPace()/isSpeedFresh()/PACE
+          // in motionEvaluation.ts for the field evidence). Targets isolated
+          // single-window false positives that fire while still at normal
+          // walking pace — the cadence fix above only catches REPEATED
+          // evenly-spaced candidates, not a lone spike. Deliberately does not
+          // touch cadence/cooldown, so rapid back-to-back real picks (e.g.
+          // several cigarette butts in one spot) still all count.
+          //
+          // The freshness check is load-bearing, not defensive: on the B2
+          // walk a stale frozen fix made this gate reject REAL pickups and
+          // undercount 7-for-10. If the fix is old, stand down and let the
+          // walking-context/cadence checks below decide instead.
+          const speedAgeMs = this.lastLocationAt !== null ? now - this.lastLocationAt : null;
+          if (result.confidence > 0 && isSpeedFresh(speedAgeMs) && isBriskWalkingPace(evSpeed)) {
+            result = {
+              confidence: 0,
+              reason: `still at pace: ${evSpeed.toFixed(2)} m/s > ${PACE.briskWalkSpeedMps} (not paused to pick?)`,
+            };
+          }
+
           // Arm the onset gate once GPS shows a walking pace (they're outside and
           // moving), even if the motion rhythm was too subtle to register.
           if (evSpeed >= 0.7 && evSpeed <= MAX_PICKUP_SPEED_MPS) this.hasStartedWalking = true;
+          // Time fallback (Aug 16, outdoor Test D). GPS pace and a rhythmic
+          // window were the ONLY two ways to arm this gate, and standing in one
+          // spot picking litter produces neither — 13 consecutive real picks
+          // across the first 33 seconds were discarded as "pre-walk" until the
+          // user gave up and walked around to wake the app. The 5s arm delay in
+          // handleAcceleration already covers the phone-into-pocket motion this
+          // gate was guarding against, so after this long the session is simply
+          // under way. Steps arm it sooner (see the Pedometer listener).
+          if (now - this.sessionStartTime > ONSET_FALLBACK_MS) this.hasStartedWalking = true;
 
           const finalConfidence = result.confidence;
           const accepted = finalConfidence > 30;
@@ -282,7 +418,66 @@ class MotionDetector {
           let counted = false;
           let suppressed = false;
           let preWalk = false;
+          let cadenceSuppressed = false;
+          let monotonySuppressed = false;
+          // Which cooldown actually applied, so the flight recorder can say so
+          // instead of just "cooldown" — the striding/stationary split is the
+          // first thing to check if clustered picks go missing again.
+          let appliedCooldownMs = 0;
           if (accepted) {
+            // Cross-event cadence tracking (Aug 16): record this candidate's
+            // timestamp regardless of what happens next, so the gap chain
+            // stays intact even across events we go on to suppress.
+            this.recentCandidateTimes.push(now);
+            if (this.recentCandidateTimes.length > 8) this.recentCandidateTimes.shift();
+            // Same idea, but on SHAPE rather than timing — see looksMonotonous()
+            // in motionEvaluation.ts for why shape is what separates a slow
+            // walk's strides from real picking when speed and timing can't.
+            this.recentCandidateShapes.push({ durationMs: profile.duration, gyro: profile.peakGyro });
+            if (this.recentCandidateShapes.length > 8) this.recentCandidateShapes.shift();
+
+            const stepGap = this.lastStepAt !== null ? now - this.lastStepAt : null;
+            const stepConfirmed = stepCorroboratesCadence(stepGap);
+            const prevCandidateTime =
+              this.recentCandidateTimes.length >= 2
+                ? this.recentCandidateTimes[this.recentCandidateTimes.length - 2]
+                : undefined;
+            // Two ways to flag a stride: (a) 3+ consecutive evenly-spaced
+            // candidates (motion-only, no pedometer needed), or (b) just one
+            // in-band gap PLUS a corroborating step — catches the first 1-2
+            // strides of a walk that (a) alone would still miss.
+            const strideSuspect =
+              isWalkingCadence(this.recentCandidateTimes) ||
+              looksLikeStride(prevCandidateTime, now, stepConfirmed);
+
+            // The single "am I actually striding?" answer, from the step
+            // counter rather than GPS speed — see isNotStriding(). Both the
+            // cadence and monotony suppressions conclude "that was a walking
+            // stride," so neither may fire when the phone says no steps are
+            // being taken. Outdoor Test D lost real picks to both at 0.51-0.75
+            // m/s: too slow to be striding, too fast for the old < 0.5 m/s
+            // GPS veto. This is what protects rapid picking in one spot.
+            // How far we've physically travelled across the fix window. Null
+            // when there aren't two fixes to compare, which isNotStriding()
+            // treats as "unknown" rather than "stationary".
+            const displacementM =
+              this.recentFixes.length >= 2
+                ? metersBetween(
+                    this.recentFixes[0].lat,
+                    this.recentFixes[0].lon,
+                    this.recentFixes[this.recentFixes.length - 1].lat,
+                    this.recentFixes[this.recentFixes.length - 1].lon
+                  )
+                : null;
+            const notStriding = isNotStriding({
+              msSinceLastFixMs: speedAgeMs,
+              displacementM,
+              pedometerActive: this.pedometerActive,
+              msSinceLastStep: stepGap,
+              speedMps: evSpeed,
+              speedAgeMs,
+            });
+
             if (!this.hasStartedWalking) {
               // Not walking yet — pre-walk handling (phone out of pocket, the walk
               // to your starting spot). Don't count until real walking has begun.
@@ -292,9 +487,31 @@ class MotionDetector {
               // Still mid-stride — almost certainly a walking bounce, not a
               // pause-and-bend pickup. Suppress (logged, not counted).
               suppressed = true;
+            } else if (strideSuspect && !notStriding) {
+              // Separate short windows landing at a metronomic stride interval —
+              // the steady-walk case the old within-window filter couldn't see.
+              cadenceSuppressed = true;
+              suppressed = true;
+              this.lastRhythmicTime = now; // also feeds the existing context window above
+            } else if (looksMonotonous(this.recentCandidateShapes) && !notStriding) {
+              // A run of near-identical windows = one repeated mechanical
+              // motion, i.e. a SLOW walk whose strides each finalize as their
+              // own clean pickup-shaped window. This is what neither speed
+              // (no contrast at a stroll) nor cadence (same 1-2s spacing as
+              // real picking) can catch — see looksMonotonous().
+              //
+              // The isStandingStill() veto is the guard that keeps rapid
+              // back-to-back picking counted: if a fresh fix says you're not
+              // moving, you cannot be mid-stride, so a pile of cigarette
+              // butts in one spot is never suppressed here.
+              monotonySuppressed = true;
+              suppressed = true;
             } else {
-              // Confidence threshold: lowered from 40 to 30 to catch more pickups
-              counted = this.detectPickupFromShape(now, profile, finalConfidence);
+              // Adaptive cooldown: long while striding (merges one pick's bend
+              // and straighten), short while stationary (keeps every item of a
+              // rapid picking spree). Same isNotStriding() signal as above.
+              appliedCooldownMs = notStriding ? COOLDOWN.stationaryMs : this.tuning.cooldownMs;
+              counted = this.detectPickupFromShape(now, profile, finalConfidence, appliedCooldownMs);
             }
           }
 
@@ -310,9 +527,22 @@ class MotionDetector {
             confidence: finalConfidence,
             accepted,
             counted,
-            reason: !accepted ? result.reason : preWalk ? 'pre-walk (not walking yet)' : suppressed ? 'walking context (stride bounce?)' : counted ? 'ok' : 'cooldown',
+            reason: !accepted
+              ? result.reason
+              : preWalk
+              ? 'pre-walk (not walking yet)'
+              : cadenceSuppressed
+              ? 'cadence: regular-interval stride (steady walk?)'
+              : monotonySuppressed
+              ? 'monotony: repeated near-identical motion (slow walk?)'
+              : suppressed
+              ? 'walking context (stride bounce?)'
+              : counted
+              ? 'ok'
+              : `cooldown (${appliedCooldownMs}ms, ${appliedCooldownMs === COOLDOWN.stationaryMs ? 'stationary' : 'striding'})`,
             peaks,
             speed: this.lastLocation?.speed ?? -1,
+            speedAgeMs: speedAgeMs === null ? -1 : speedAgeMs,
           });
 
           console.log(`⏸️ Motion stopped. Duration: ${profile.duration}ms, Peak: ${profile.peakAccel.toFixed(2)}g, Gyro: ${profile.peakGyro.toFixed(2)}, Confidence: ${finalConfidence}%${accepted && !counted ? ' (cooldown — not counted)' : ''}`);
@@ -337,10 +567,15 @@ class MotionDetector {
   }
 
   /** Returns true if the pickup was counted (false = cooldown-suppressed). */
-  private detectPickupFromShape(timestamp: number, profile: any, confidence: number): boolean {
+  private detectPickupFromShape(
+    timestamp: number,
+    profile: any,
+    confidence: number,
+    cooldownMs: number = this.tuning.cooldownMs
+  ): boolean {
     const now = Date.now();
 
-    if (now - this.lastPickupTime < this.tuning.cooldownMs) {
+    if (now - this.lastPickupTime < cooldownMs) {
       return false;
     }
 
