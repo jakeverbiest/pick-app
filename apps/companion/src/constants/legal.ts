@@ -4,7 +4,7 @@
  * Full versions: legal/PRIVACY_POLICY.md, legal/TERMS_OF_SERVICE.md
  */
 
-export const LEGAL_LAST_UPDATED = 'July 31, 2026';
+export const LEGAL_LAST_UPDATED = 'August 12, 2026';
 
 export const PRIVACY_POLICY_TEXT = `PICK Privacy Policy (Draft)
 Last updated: ${LEGAL_LAST_UPDATED}
@@ -12,7 +12,7 @@ Last updated: ${LEGAL_LAST_UPDATED}
 WHAT WE COLLECT
 • Account info: display name, email, neighborhood, optional team name.
 • Cleanup sessions: pickup counts, duration, estimated/reported weight, date/time, and GPS data — your walking route and approximate pickup locations. Stored in our cloud database (Google Firebase) so history, maps, and leaderboards work.
-• Motion sensors: accelerometer/gyroscope readings are processed on your device in real time and never transmitted — only detection events are kept.
+• Motion sensors: raw accelerometer/gyroscope samples are processed on your device in real time and never transmitted anywhere — only a compact summary of each detected motion event (strength, duration, accepted as a pickup or not) is kept, alongside the session data above.
 • Weight calibration entries stay on your device only.
 
 WHAT WE DON'T DO

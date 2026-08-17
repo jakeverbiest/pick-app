@@ -91,7 +91,7 @@ class AuthService {
     callback(this.currentUser);
   }
 
-  async signup(email: string, password: string, displayName: string, neighborhood: string): Promise<AuthUser> {
+  async signup(email: string, password: string, displayName: string, neighborhood: string = ''): Promise<AuthUser> {
     try {
       console.log(`🚀 Signing up: ${email}`);
       const cred = await createUserWithEmailAndPassword(auth, email, password);

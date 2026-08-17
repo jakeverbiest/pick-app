@@ -13,7 +13,7 @@ PICK ("the App") is a community cleanup tracking app operated by Jake Verbiest (
 
 **Cleanup session data.** When you start a cleanup session, the App records: the number of pickups detected, session duration, estimated and self-reported trash weight, the date and time of the session, and GPS location data — including your walking route (a series of GPS points) and the approximate locations of detected pickups. Route and session data are stored in our cloud database (Google Firebase) so your history, stats, maps, and leaderboards work across devices.
 
-**Motion sensor data.** The App uses your phone's accelerometer and gyroscope to detect pickup motions. Raw sensor readings are processed on your device in real time and are not transmitted or stored — only the resulting detection events (count and location) are kept.
+**Motion sensor data.** The App uses your phone's accelerometer and gyroscope to detect pickup motions. Raw sensor readings (individual accelerometer/gyroscope samples) are processed on your device in real time and are never transmitted or stored anywhere — only a compact summary of each detected motion event (its strength, duration, and whether it was accepted as a pickup) is kept, alongside the route and session data described above.
 
 **Weight calibration data.** If you weigh your collected trash and enter the measurement, the App stores the measurement on your device to improve weight estimates. This data stays on your device.
 

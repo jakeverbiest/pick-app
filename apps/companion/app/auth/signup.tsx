@@ -9,21 +9,13 @@ export default function SignupScreen() {
   const router = useRouter();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [confirmPassword, setConfirmPassword] = useState('');
   const [displayName, setDisplayName] = useState('');
-  const [neighborhood, setNeighborhood] = useState('');
   const [loading, setLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
-  const [showConfirm, setShowConfirm] = useState(false);
 
   const validateForm = () => {
-    if (!email.trim() || !password.trim() || !confirmPassword.trim() || !displayName.trim() || !neighborhood.trim()) {
+    if (!email.trim() || !password.trim() || !displayName.trim()) {
       Alert.alert('❌ Error', 'Please fill in all fields');
-      return false;
-    }
-
-    if (password !== confirmPassword) {
-      Alert.alert('❌ Error', 'Passwords do not match');
       return false;
     }
 
@@ -41,7 +33,10 @@ export default function SignupScreen() {
     try {
       setLoading(true);
       const authService = getAuthService();
-      await authService.signup(email.trim(), password, displayName.trim(), neighborhood.trim());
+      // Neighborhood is deferred off signup — it's freeform text with no
+      // validation/autocomplete here; set later from the map or Settings
+      // once the user's real location is known.
+      await authService.signup(email.trim(), password, displayName.trim());
 
       console.log('✅ Signup successful, navigating to home');
       router.replace('/(tabs)/map');
@@ -84,17 +79,6 @@ export default function SignupScreen() {
             autoCapitalize="words"
           />
 
-          <Text style={styles.label}>Neighborhood</Text>
-          <TextInput
-            style={styles.input}
-            placeholder="e.g., Lower East Side"
-            placeholderTextColor={C.muted}
-            value={neighborhood}
-            onChangeText={setNeighborhood}
-            editable={!loading}
-            autoCapitalize="words"
-          />
-
           <Text style={styles.label}>Email Address</Text>
           <TextInput
             style={styles.input}
@@ -126,26 +110,9 @@ export default function SignupScreen() {
               <Text style={styles.eyeIcon}>{showPassword ? '👁️' : '👁️‍🗨️'}</Text>
             </TouchableOpacity>
           </View>
-
-          <Text style={styles.label}>Confirm Password</Text>
-          <View style={styles.passwordContainer}>
-            <TextInput
-              style={styles.passwordInput}
-              placeholder="••••••••"
-              placeholderTextColor={C.muted}
-              value={confirmPassword}
-              onChangeText={setConfirmPassword}
-              editable={!loading}
-              secureTextEntry={!showConfirm}
-            />
-            <TouchableOpacity
-              style={styles.eyeButton}
-              onPress={() => setShowConfirm(!showConfirm)}
-              disabled={loading}
-            >
-              <Text style={styles.eyeIcon}>{showConfirm ? '👁️' : '👁️‍🗨️'}</Text>
-            </TouchableOpacity>
-          </View>
+          {password.length > 0 && password.length < 6 && (
+            <Text style={styles.hint}>At least 6 characters</Text>
+          )}
 
           {/* Signup Button */}
           <TouchableOpacity
@@ -220,6 +187,12 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: C.dark,
     marginBottom: 6,
+  },
+  hint: {
+    fontFamily: Fonts.body,
+    fontSize: 12,
+    color: C.muted,
+    marginTop: -8,
   },
   input: {
     backgroundColor: C.white,
