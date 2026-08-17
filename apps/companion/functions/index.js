@@ -26,9 +26,11 @@ const { onSchedule } = require('firebase-functions/v2/scheduler');
 const { initializeApp } = require('firebase-admin/app');
 const { getFirestore, FieldValue } = require('firebase-admin/firestore');
 const { getAuth } = require('firebase-admin/auth');
+const { getStorage } = require('firebase-admin/storage');
 
 initializeApp();
 const db = getFirestore();
+const bucket = getStorage().bucket();
 
 // Owner alerts (new signups, etc.) go here.
 const OWNER_EMAIL = 'hello@pickglobal.org';
@@ -380,6 +382,38 @@ function esc(s) {
   return String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 }
 
+/**
+ * Wraps an email body in PICK's branded shell — navy header band with the
+ * wordmark, white content card, muted footer. Matches the app's "Civic
+ * Blueprint" design system (apps/companion/src/pick/theme.ts: navy #0F2F66,
+ * cream text #FEFCDD) so mail reads as the same product as the app instead
+ * of a bare unstyled fallback. Table layout + inline styles only — the
+ * safest baseline across Gmail/Apple Mail/Outlook, none of which reliably
+ * load embedded <style> blocks or modern CSS.
+ */
+function emailShell(bodyHtml) {
+  return `<!doctype html>
+<html>
+<body style="margin:0;padding:0;background:#E8ECF5;font-family:-apple-system,Helvetica,Arial,sans-serif;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#E8ECF5;padding:24px 0;">
+    <tr><td align="center">
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:480px;background:#FFFFFF;border-radius:16px;overflow:hidden;">
+        <tr><td style="background:#0F2F66;padding:20px 28px;">
+          <span style="color:#FEFCDD;font-size:20px;font-weight:700;letter-spacing:0.5px;">PICK</span>
+        </td></tr>
+        <tr><td style="padding:28px;color:#0F2F66;font-size:15px;line-height:1.6;">
+          ${bodyHtml}
+        </td></tr>
+        <tr><td style="padding:0 28px 24px;color:rgba(15,47,102,0.55);font-size:12px;">
+          — PICK · pickglobal.org
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>`;
+}
+
 async function checkAdoptions() {
   const now = Date.now();
   const adSnap = await db.collection('adoptions').get();
@@ -426,7 +460,11 @@ async function checkAdoptions() {
       message: {
         subject: `${a.label} could use a pick`,
         text: `Hi! ${a.label} hasn't had a cleanup nearby in over ${thresh} days (last one was ${sinceText}). If you're passing by, pop your phone in your pocket and give it a quick pick. — PICK`,
-        html: `<p>Hi!</p><p><strong>${esc(a.label)}</strong> hasn't had a cleanup nearby in over ${thresh} days (last one was ${sinceText}).</p><p>If you're passing by, pop your phone in your pocket and give it a quick pick.</p><p>— PICK</p>`,
+        html: emailShell(
+          `<p style="margin:0 0 12px;">Hi!</p>` +
+          `<p style="margin:0 0 12px;"><strong>${esc(a.label)}</strong> hasn't had a cleanup nearby in over ${thresh} days <span style="color:rgba(15,47,102,0.55);">(last one was ${esc(sinceText)})</span>.</p>` +
+          `<p style="margin:0;">If you're passing by, pop your phone in your pocket and give it a quick pick.</p>`
+        ),
       },
     });
     // Push too — lands on the phone and mirrors to the Apple Watch when the
@@ -468,7 +506,11 @@ exports.onAdoptionCreated = onDocumentCreated('adoptions/{adoptionId}', async (e
     message: {
       subject: `You adopted ${label}`,
       text: `Nice — you just adopted ${label} on PICK.\n\nWe'll keep an eye on it. If it goes more than ${thresh} days without a cleanup nearby, we'll send you a friendly nudge to swing by and give it a pick.\n\nThanks for looking after your streets. — PICK`,
-      html: `<p>Nice — you just adopted <strong>${esc(label)}</strong> on PICK.</p><p>We'll keep an eye on it. If it goes more than ${thresh} days without a cleanup nearby, we'll send you a friendly nudge to swing by and give it a pick.</p><p>Thanks for looking after your streets.</p><p>— PICK</p>`,
+      html: emailShell(
+        `<p style="margin:0 0 12px;">Nice — you just adopted <strong style="color:#C1502E;">${esc(label)}</strong> on PICK.</p>` +
+        `<p style="margin:0 0 12px;">We'll keep an eye on it. If it goes more than ${thresh} days without a cleanup nearby, we'll send you a friendly nudge to swing by and give it a pick.</p>` +
+        `<p style="margin:0;">Thanks for looking after your streets.</p>`
+      ),
     },
   });
   console.log(`📬 Adoption confirmation queued: ${a.email} (${label})`);
@@ -508,7 +550,16 @@ exports.notifyNewSignup = onDocumentCreated('users/{uid}', async (event) => {
     message: {
       subject: `New Pick signup${name ? `: ${name}` : ''}`,
       text: `A new Picker just joined.\n\nName: ${name || '(none)'}\nEmail: ${email}\nNeighborhood: ${data.neighborhood || '(none)'}\nUID: ${uid}\nWhen: ${when} ET`,
-      html: `<p>A new Picker just joined.</p><ul><li><strong>Name:</strong> ${esc(name || '(none)')}</li><li><strong>Email:</strong> ${esc(email)}</li><li><strong>Neighborhood:</strong> ${esc(data.neighborhood || '(none)')}</li><li><strong>UID:</strong> ${esc(uid)}</li><li><strong>When:</strong> ${when} ET</li></ul>`,
+      html: emailShell(
+        `<p style="margin:0 0 12px;">A new Picker just joined.</p>` +
+        `<table role="presentation" cellpadding="0" cellspacing="0" style="width:100%;font-size:14px;">` +
+        `<tr><td style="padding:4px 0;color:rgba(15,47,102,0.55);">Name</td><td style="padding:4px 0;"><strong>${esc(name || '(none)')}</strong></td></tr>` +
+        `<tr><td style="padding:4px 0;color:rgba(15,47,102,0.55);">Email</td><td style="padding:4px 0;">${esc(email)}</td></tr>` +
+        `<tr><td style="padding:4px 0;color:rgba(15,47,102,0.55);">Neighborhood</td><td style="padding:4px 0;">${esc(data.neighborhood || '(none)')}</td></tr>` +
+        `<tr><td style="padding:4px 0;color:rgba(15,47,102,0.55);">UID</td><td style="padding:4px 0;">${esc(uid)}</td></tr>` +
+        `<tr><td style="padding:4px 0;color:rgba(15,47,102,0.55);">When</td><td style="padding:4px 0;">${esc(when)} ET</td></tr>` +
+        `</table>`
+      ),
     },
   });
   console.log(`📬 New signup notified to owner: ${email} (${uid})`);
@@ -619,6 +670,29 @@ exports.deleteMyPrivateData = onCall(async (request) => {
   } catch (error) {
     console.error('deleteMyPrivateData: follows cleanup failed', error);
     steps.follows_incoming = false;
+  }
+
+  // Storage-hosted files (cleanup photos, avatar) — the privacy policy
+  // promises deletion "removes your account and all associated data
+  // permanently," but this function used to only touch Firestore, leaving
+  // uploaded images in Storage forever. Deletes each user's own-folder
+  // prefix (storage.rules already scopes cleanup_photos/{uid}/ and
+  // avatars/{uid}/ to owner-only writes, so this mirrors that same
+  // per-user boundary).
+  try {
+    await bucket.deleteFiles({ prefix: `cleanup_photos/${uid}/` });
+    steps.cleanup_photos = true;
+  } catch (error) {
+    console.error('deleteMyPrivateData: cleanup_photos deletion failed', error);
+    steps.cleanup_photos = false;
+  }
+
+  try {
+    await bucket.deleteFiles({ prefix: `avatars/${uid}/` });
+    steps.avatars = true;
+  } catch (error) {
+    console.error('deleteMyPrivateData: avatars deletion failed', error);
+    steps.avatars = false;
   }
 
   return { steps };
