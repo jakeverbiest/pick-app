@@ -30,9 +30,22 @@ export interface Cleanup {
   location_lon: number;
   items_count: number;
   bag_qty: number;
+  /** How full the reported bags were, 0-100. Added 17 Aug: before this only
+   *  the derived `bags_est` was kept, so an edit screen had to back fullness
+   *  out of it. Older records still take that path (see storedFullness). */
+  bag_fullness?: number;
   bag_size: string; // '13', '30', '39', '55'
   /** Bags for this session: user's end-of-session report, else derived from items. */
   bags_est?: number;
+  /**
+   * What the motion detector counted, before any user correction.
+   * `items_count` is the truth users see and what totals use; this is kept
+   * alongside it purely as detector training data. Field walks show the
+   * detector runs well over on a slow stroll, and every threshold today is
+   * fitted to a single tester — real (detected, corrected) pairs are the only
+   * route to tuning against actual users. Never displayed.
+   */
+  items_detected?: number;
   /** @deprecated legacy — weight was dropped in favor of bags. */
   weight_lb?: number;
   duration_seconds: number;

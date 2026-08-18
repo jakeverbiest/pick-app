@@ -30,13 +30,34 @@
  */
 export const PICKUPS_PER_BAG = 200;
 
-/** Bag-report sizes, in standard-bag (13-gal) volume equivalents. */
+/**
+ * Bag-report sizes, in standard-bag (13-gal) volume equivalents.
+ *
+ * The named sizes (17 Aug) are what users actually pick from, and they use the
+ * same vocabulary as CHALLENGE_GUEST_MODE_SPEC so guest submissions and app
+ * submissions mean the same thing. The legacy small/medium/large/xl keys are
+ * KEPT because they are persisted in `bag_size` on existing cleanups — removing
+ * them would silently re-scale historical data. New reports write named sizes.
+ */
 export const BAG_SIZE_FACTORS: Record<string, number> = {
-  small: 1, // 13-15 gal — the standard bag
-  medium: 2.3, // 30-35 gal
+  // Named sizes — what the UI offers.
+  wastebasket: 0.3, // ~4 gal — a bathroom/office bin liner
+  kitchen: 1, // 13-15 gal — the standard bag, the unit everything is expressed in
+  yard: 2.3, // 30-39 gal — a yard/contractor waste bag
+
+  // Legacy keys, still present in stored cleanups. Do not remove.
+  small: 1, // == kitchen
+  medium: 2.3, // == yard
   large: 4, // 45-60 gal
   xl: 5, // 60+ gal
 };
+
+/** The sizes offered in the UI, in order, with human labels. */
+export const BAG_SIZE_OPTIONS: { key: string; label: string; hint: string }[] = [
+  { key: 'wastebasket', label: 'Wastebasket', hint: '~4 gal' },
+  { key: 'kitchen', label: 'Kitchen bag', hint: '13 gal' },
+  { key: 'yard', label: 'Yard bag', hint: '30+ gal' },
+];
 
 export interface ImpactSummary {
   items: number;
@@ -49,10 +70,51 @@ export function itemsToBags(items: number): number {
   return items / PICKUPS_PER_BAG;
 }
 
-/** Bags from an end-of-session bag report (size + fullness %). */
-export function reportedBags(size: string, fullnessPct: number): number {
+/**
+ * Bags from an end-of-session bag report.
+ *
+ * `count` (added 17 Aug) is how many bags of that size — the previous signature
+ * could only express one, so "3 yard bags" had no way to be reported. Fullness
+ * applies to the whole report, i.e. count=2, fullness=50 means two half-full
+ * bags. Defaults to 1 so every existing call site is unchanged.
+ */
+export function reportedBags(size: string, fullnessPct: number, count: number = 1): number {
   const factor = BAG_SIZE_FACTORS[size] ?? BAG_SIZE_FACTORS.large;
-  return factor * (Math.max(0, Math.min(100, fullnessPct)) / 100);
+  const safeCount = Math.max(0, Number.isFinite(count) ? count : 1);
+  return safeCount * factor * (Math.max(0, Math.min(100, fullnessPct)) / 100);
+}
+
+/**
+ * Recover "how full" from a stored cleanup, for the edit screen.
+ *
+ * New records carry `bag_fullness` directly. Older ones only kept the derived
+ * `bags_est`, but that is enough to recover it exactly, since
+ * `bags_est = qty x sizeFactor x fullness/100`. Returns null when the walk
+ * carries no bag report at all (the count-derived estimate stands).
+ */
+export function storedFullness(c: {
+  bag_fullness?: number | null;
+  bag_size?: string | null;
+  bag_qty?: number | null;
+  bags_est?: number | null;
+}): number | null {
+  if (typeof c.bag_fullness === 'number' && c.bag_fullness > 0) {
+    return Math.max(1, Math.min(100, Math.round(c.bag_fullness)));
+  }
+  const factor = BAG_SIZE_FACTORS[c.bag_size || ''];
+  const qty = c.bag_qty || 0;
+  if (!factor || qty <= 0 || typeof c.bags_est !== 'number' || c.bags_est <= 0) return null;
+  return Math.max(1, Math.min(100, Math.round((c.bags_est / (factor * qty)) * 100)));
+}
+
+/**
+ * Nearest value the fullness chips can express. Legacy reports used arbitrary
+ * percentages (the old "just a handful" preset was 20%), which would leave the
+ * editor with no chip selected and invite a mis-tap. Snapping is a visible
+ * change the user can see in the "That's about ..." line before they save.
+ */
+export function snapFullness(pct: number): number {
+  return [25, 50, 75, 100].reduce((best, o) => (Math.abs(o - pct) < Math.abs(best - pct) ? o : best), 25);
 }
 
 /** Bags for one stored cleanup: the user's report wins, else derive. */

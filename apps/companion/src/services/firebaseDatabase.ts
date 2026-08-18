@@ -51,8 +51,20 @@ export interface Cleanup {
   items_count: number;
   bag_qty: number;
   bag_size: string;
+  /** How full the reported bags were, 0-100. Added 17 Aug so a later edit
+   *  can round-trip the report; older records back it out of bags_est. */
+  bag_fullness?: number;
   /** Bags for this session: the user's end-of-session report, else derived from items. */
   bags_est?: number;
+  /**
+   * What the motion detector counted, before any user correction.
+   * `items_count` is the truth users see and what totals use; this is kept
+   * alongside it purely as detector training data. Field walks show the
+   * detector runs well over on a slow stroll, and every threshold today is
+   * fitted to a single tester — real (detected, corrected) pairs are the only
+   * route to tuning against actual users. Never displayed.
+   */
+  items_detected?: number;
   /** @deprecated legacy — weight was dropped from the product in favor of bags. */
   weight_lb?: number;
   duration_seconds: number;
@@ -485,7 +497,10 @@ class FirebaseDatabase {
    */
   async updateCleanup(
     cleanupId: string,
-    fields: Partial<Pick<Cleanup, 'bags_est' | 'items_count'>>
+    // NOTE: `bags_est` is the only field aggregates actually read
+    // (cleanupBags). Writing bag_size/qty/fullness without recomputing
+    // bags_est would change the record and nothing the user can see.
+    fields: Partial<Pick<Cleanup, 'bags_est' | 'items_count' | 'bag_size' | 'bag_qty' | 'bag_fullness'>>
   ): Promise<boolean> {
     try {
       this.invalidateCleanupsMemo();
