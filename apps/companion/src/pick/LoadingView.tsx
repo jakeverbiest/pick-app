@@ -11,8 +11,14 @@ import { StatusBar } from 'expo-status-bar';
 import { C, Fonts } from './theme';
 
 function Logo() {
-  // The trash-bag "G" mark — same asset as the native splash, so the OS
-  // splash → JS loading handoff reads as one continuous screen.
+  // Same asset as the native splash, so the OS splash -> JS loading handoff
+  // reads as one continuous screen. The PNG background is TRANSPARENT on
+  // purpose (17 Aug): it used to bake in #05286E, which was invisible on the
+  // native splash (same colour) but drew a visible square on this screen,
+  // which uses C.primary #0F2F66. Transparent means it composites correctly
+  // on any background, so a future palette change can't reintroduce it.
+  // Keep it alpha — do NOT copy this treatment to icon.png, since iOS
+  // rejects app icons containing transparency.
   return (
     <Image
       source={require('../../assets/images/splash-icon.png')}
