@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Alert, Keyboard, KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { Alert, Keyboard, Modal, Pressable, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import * as Clipboard from 'expo-clipboard';
@@ -12,7 +12,15 @@ import { Card, ProgressBar } from '../../src/pick/ui';
 import { StreakCard } from '../../src/pick/StreakCard';
 import { RecapModal } from '../../src/pick/RecapModal';
 import { RecapHistory } from '../../src/pick/RecapHistory';
-import { cleanupBags, formatBagsShort } from '../../src/services/impactMetrics';
+import {
+  BAG_SIZE_FACTORS,
+  cleanupBags,
+  formatBagsShort,
+  reportedBags,
+  snapFullness,
+  storedFullness,
+} from '../../src/services/impactMetrics';
+import { BagDetails, type BagDetailsValue } from '../../src/pick/BagDetails';
 import { levelTierColor, milestoneProgress } from '../../src/services/milestones';
 import { buildRecap, getUnseenRecap, listRecentRanges, markRecapSeen, type RecapData, type RecapPeriod } from '../../src/services/recap';
 import { RecapCard } from '../../src/pick/RecapCard';
@@ -60,7 +68,7 @@ export default function ActivityScreen() {
   const [stats, setStats] = useState<any>(null);
   const [cleanups, setCleanups] = useState<any[]>([]);
   const [editing, setEditing] = useState<any | null>(null);
-  const [editBags, setEditBags] = useState('');
+  const [editValue, setEditValue] = useState<BagDetailsValue | null>(null);
   const [badges, setBadges] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -184,24 +192,49 @@ export default function ActivityScreen() {
     }
   };
 
+  /**
+   * Rebuild the four values a walk was reported with, so the sheet opens
+   * showing roughly what the record already says instead of a blank form the
+   * user could silently overwrite by tapping Save.
+   *
+   * `bag_fullness` is stored directly on walks saved from 17 Aug on. Older
+   * ones only kept the derived `bags_est`, so fullness is backed out of it
+   * (storedFullness); walks with no bag report at all fall back to whatever
+   * fullness best matches the pickup-derived estimate currently displayed.
+   */
   const openEdit = (cleanup: any) => {
+    const size = BAG_SIZE_FACTORS[cleanup.bag_size || ''] ? cleanup.bag_size : 'kitchen';
+    const qty = cleanup.bag_qty > 0 ? cleanup.bag_qty : 1;
+    const reported = storedFullness(cleanup);
+    const derived = Math.min(100, (cleanupBags(cleanup) / (BAG_SIZE_FACTORS[size] * qty)) * 100);
     setEditing(cleanup);
-    setEditBags(cleanup.bags_est ? String(cleanup.bags_est) : '');
+    setEditValue({
+      count: cleanup.items_count || 0,
+      size,
+      qty,
+      fullness: snapFullness(reported ?? derived),
+    });
   };
 
   const saveEdit = async () => {
-    if (!editing) return;
-    const b = parseFloat(editBags);
-    if (isNaN(b) || b < 0) {
-      Alert.alert('Enter bags', 'How many standard (13-gal) bags did you fill? e.g. 0.5 or 2');
-      return;
-    }
+    if (!editing || !editValue) return;
     try {
       const db = await getDatabase();
-      const ok = await db.updateCleanup(editing.id, { bags_est: b });
+      // bags_est is recomputed here on purpose: it is the ONLY field the
+      // aggregates read (cleanupBags), so writing size/qty/fullness without it
+      // would change the record and nothing the user can see. items_detected
+      // is never touched — it stays the raw sensor figure for detector tuning.
+      const ok = await db.updateCleanup(editing.id, {
+        items_count: editValue.count,
+        bag_size: editValue.size,
+        bag_qty: editValue.qty,
+        bag_fullness: editValue.fullness,
+        bags_est: reportedBags(editValue.size, editValue.fullness, editValue.qty),
+      });
       if (ok) {
         Keyboard.dismiss();
         setEditing(null);
+        setEditValue(null);
         loadActivity();
       } else {
         Alert.alert('Error', 'Could not update that cleanup.');
@@ -480,30 +513,39 @@ export default function ActivityScreen() {
 
       {/* Edit / add-weight-later for a saved cleanup */}
       <Modal visible={!!editing} transparent animationType="slide" onRequestClose={() => setEditing(null)}>
-        <KeyboardAvoidingView style={styles.editOverlay} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
+        {/* No KeyboardAvoidingView: this sheet is bottom-anchored and taller
+            than the screen, so padding the container by the keyboard height
+            pushes the field you just tapped off the TOP of the display. The
+            ScrollView takes the inset instead and scrolls focus into view. */}
+        <View style={styles.editOverlay}>
           <TouchableOpacity style={StyleSheet.absoluteFill} activeOpacity={1} onPress={() => Keyboard.dismiss()} />
           <View style={styles.editSheet}>
-            <Text style={styles.editTitle}>Edit bags</Text>
-            {editing && <Text style={styles.editSub}>{formatDate(editing.timestamp)} · {editing.items_count} pieces</Text>}
-            <TextInput
-              style={styles.editInput}
-              placeholder="Standard 13-gal bags (e.g. 0.5 or 2)"
-              placeholderTextColor={C.muted}
-              keyboardType="decimal-pad"
-              value={editBags}
-              onChangeText={setEditBags}
-              autoFocus
-            />
-            <View style={styles.editActions}>
-              <TouchableOpacity style={[styles.editBtn, styles.editCancel]} onPress={() => { Keyboard.dismiss(); setEditing(null); }}>
-                <Text style={styles.editCancelText}>Cancel</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={[styles.editBtn, styles.editSave]} onPress={saveEdit}>
-                <Text style={styles.editSaveText}>Save</Text>
-              </TouchableOpacity>
-            </View>
+            <ScrollView
+              contentContainerStyle={styles.editScroll}
+              keyboardShouldPersistTaps="handled"
+              automaticallyAdjustKeyboardInsets
+              showsVerticalScrollIndicator={false}
+            >
+              <Text style={styles.editTitle}>Edit this walk</Text>
+              {editing && <Text style={styles.editSub}>{formatDate(editing.timestamp)}</Text>}
+              {editValue && (
+                <BagDetails
+                  value={editValue}
+                  onChange={setEditValue}
+                  detectedCount={typeof editing?.items_detected === 'number' ? editing.items_detected : null}
+                />
+              )}
+              <View style={styles.editActions}>
+                <TouchableOpacity style={[styles.editBtn, styles.editCancel]} onPress={() => { Keyboard.dismiss(); setEditing(null); }}>
+                  <Text style={styles.editCancelText}>Cancel</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={[styles.editBtn, styles.editSave]} onPress={saveEdit}>
+                  <Text style={styles.editSaveText}>Save</Text>
+                </TouchableOpacity>
+              </View>
+            </ScrollView>
           </View>
-        </KeyboardAvoidingView>
+        </View>
       </Modal>
     </SafeAreaView>
   );
@@ -625,10 +667,10 @@ const styles = StyleSheet.create({
   empty: { fontFamily: Fonts.body, fontSize: 14, color: C.muted, textAlign: 'center', paddingVertical: 12 },
 
   editOverlay: { flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(15,47,102,0.45)' },
-  editSheet: { backgroundColor: C.white, borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 22, paddingBottom: 34 },
+  editSheet: { backgroundColor: C.white, borderTopLeftRadius: 24, borderTopRightRadius: 24, maxHeight: '90%' },
+  editScroll: { padding: 22, paddingBottom: 34 },
   editTitle: { fontFamily: Fonts.headlineBold, fontSize: 21, color: C.dark },
-  editSub: { fontFamily: Fonts.body, fontSize: 13, color: C.muted, marginTop: 2, marginBottom: 14 },
-  editInput: { backgroundColor: C.white, borderRadius: 12, borderWidth: 1, borderColor: C.border3, paddingVertical: 14, paddingHorizontal: 14, fontFamily: Fonts.body, fontSize: 16, color: C.dark },
+  editSub: { fontFamily: Fonts.body, fontSize: 13, color: C.muted, marginTop: 2, marginBottom: 6 },
   editActions: { flexDirection: 'row', gap: 12, marginTop: 16 },
   editBtn: { flex: 1, borderRadius: 12, paddingVertical: 14, alignItems: 'center' },
   editCancel: { backgroundColor: C.white, borderWidth: 1, borderColor: C.border3 },

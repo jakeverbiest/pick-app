@@ -8,7 +8,8 @@ import * as Location from 'expo-location';
 import { WebView } from 'react-native-webview';
 import MotionDetector from '../../src/services/motionDetection';
 import PickupAggregator from '../../src/services/pickupAggregator';
-import { itemsToBags, reportedBags, formatBags, formatKitchenBags } from '../../src/services/impactMetrics';
+import { itemsToBags, reportedBags, formatBags, formatKitchenBags, BAG_SIZE_OPTIONS, BAG_SIZE_FACTORS } from '../../src/services/impactMetrics';
+import { BagDetails } from '../../src/pick/BagDetails';
 import { getCoverage, markRouteCleaned, getParkCoverage, markParksCleaned, getTileStats, tileId, getCoverageForRing, routeCoverageFraction, nearestStreetSegment, type RenderSegment } from '../../src/services/streetSegments';
 import { saveAdoptedBlock, listMyAdoptions } from '../../src/services/adoptions';
 import { osmNeighborhood, getHoodsInBounds, getOsmHoodsInBounds, hoodLabelsNeeded, hasNeighborhoods, polygonStats, HoodShape } from '../../src/services/neighborhoods';
@@ -39,6 +40,8 @@ import { isSegmentHapticsEnabled, segmentHapticsEnabledSync, segmentCompleteHapt
 import { ShareComposer } from '../../src/pick/ShareComposer';
 import { TESTFLIGHT_URL } from '../../src/services/recap';
 import { postToBluesky } from '../../src/services/bluesky';
+
+const LAST_BAG_SIZE_KEY = '@pick_last_bag_size';
 
 export default function MapScreen() {
   const router = useRouter();
@@ -96,19 +99,40 @@ export default function MapScreen() {
       { text: 'Cancel', style: 'cancel' },
     ]);
   };
-  const [bagSize, setBagSize] = useState<'small' | 'medium' | 'large' | 'xl'>('small');
+  // Bag size persists across walks: someone who uses yard bags uses them
+  // every time, and re-picking it after every walk is pure friction. Written
+  // through to disk on every change, restored on mount.
+  const [bagSize, setBagSize] = useState<string>('kitchen');
+  const chooseBagSize = (key: string) => {
+    setBagSize(key);
+    AsyncStorage.setItem(LAST_BAG_SIZE_KEY, key).catch(() => {});
+  };
+  useEffect(() => {
+    AsyncStorage.getItem(LAST_BAG_SIZE_KEY)
+      .then((v) => { if (v && BAG_SIZE_FACTORS[v]) setBagSize(v); })
+      .catch(() => {});
+  }, []);
+  const [bagCount, setBagCount] = useState(1);
+  // User's correction to the detected pickup count. null = untouched, so the
+  // detector's number stands. Deliberately separate from pickupCount: that
+  // stays the RAW sensor figure and is stored as items_detected for tuning.
+  const [userCount, setUserCount] = useState<number | null>(null);
+  const [showAdjust, setShowAdjust] = useState(false);
   const [bagFullness, setBagFullness] = useState(50);
   // True once the user touches the bag report — their report then wins over the estimate.
   const [bagReported, setBagReported] = useState(false);
-  // Plain-language "how much did you collect?" chips. Each maps to the
-  // (size, fullness) the impact math already understands (reportedBags), so
-  // saving, the leaderboard, and sharing stay unchanged. The resulting
-  // standard-bag equivalents are: handful 0.2, half 0.5, full 1, 2+ = 2.
-  const AMOUNT_OPTIONS: { key: string; label: string; size: 'small' | 'large'; fullness: number }[] = [
-    { key: 'handful', label: 'Just a handful', size: 'small', fullness: 20 },
-    { key: 'half', label: 'Half a bag', size: 'small', fullness: 50 },
-    { key: 'full', label: 'A full bag', size: 'small', fullness: 100 },
-    { key: 'multi', label: '2+ bags', size: 'large', fullness: 50 },
+  // Plain-language "how much did you collect?" chips — fullness and quantity
+  // only, RELATIVE to whichever bag size is selected above them.
+  //
+  // These used to hardcode size: 'kitchen'. Someone filling a 30-gallon yard
+  // bag tapped "A full bag" and was credited one kitchen bag — a 2.3x
+  // under-credit falling hardest on the people doing the most work. Size is
+  // now its own always-visible control and these express amount against it.
+  const AMOUNT_OPTIONS: { key: string; label: string; fullness: number; count: number }[] = [
+    { key: 'handful', label: 'Just a handful', fullness: 25, count: 1 },
+    { key: 'half', label: 'Half a bag', fullness: 50, count: 1 },
+    { key: 'full', label: 'A full bag', fullness: 100, count: 1 },
+    { key: 'multi', label: '2 bags', fullness: 100, count: 2 },
   ];
   const [stats, setStats] = useState<any>(null);
   const [user, setUser] = useState<any>(null);
@@ -1374,8 +1398,11 @@ export default function MapScreen() {
     setIsListening(false);
     setShowSummary(true);
     setBagReported(false);
-    setBagSize('small');
+    // NB: bagSize deliberately NOT reset — it carries over from the last walk.
     setBagFullness(50);
+    setBagCount(1);
+    setUserCount(null);
+    setShowAdjust(false);
 
     // SAVE-FIRST: persist the whole walk to disk the instant Stop is pressed —
     // BEFORE the summary sheet renders. If the summary is dismissed, the app is
@@ -1565,7 +1592,7 @@ export default function MapScreen() {
     try {
       // The user's bag report wins; otherwise derive bags from the pickup count.
       const finalBags = bagReported
-        ? reportedBags(bagSize, bagFullness)
+        ? reportedBags(bagSize, bagFullness, bagCount)
         : itemsToBags(pickupCount);
 
       const db = await getDatabase();
@@ -1601,9 +1628,16 @@ export default function MapScreen() {
         timestamp: Date.now(),
         location_lat: centerLat,
         location_lon: centerLon,
-        items_count: pickupCount,
-        bag_qty: 0,
+        // What the user says they picked up — their correction wins if they
+        // made one, otherwise the detector's figure.
+        items_count: userCount ?? pickupCount,
+        // What the sensors actually counted, always. Never shown; this is the
+        // labelled training data that lets thresholds be tuned against real
+        // users instead of one tester's walks.
+        items_detected: pickupCount,
+        bag_qty: bagCount,
         bag_size: bagReported ? bagSize : '',
+        bag_fullness: bagFullness,
         bags_est: finalBags,
         duration_seconds: elapsedSeconds,
         // Record the user's actual team so it counts toward the team leaderboard
@@ -2993,100 +3027,161 @@ Generated by Pick App - Share this with the development team
 
       {/* Session Summary Modal */}
       <Modal visible={showSummary} transparent animationType="slide">
-        <KeyboardAvoidingView style={styles.modalContainer} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
+        {/* Deliberately NOT a KeyboardAvoidingView. This sheet is bottom-anchored
+            and, with "Adjust details" open, taller than the display — so padding
+            the container by the keyboard height shoved the top of the card off
+            the top of the screen, taking the piece-count field you had just
+            tapped with it. The ScrollView below absorbs the keyboard inset
+            instead and scrolls the focused field into view, which is what you
+            actually wanted. */}
+        <View style={styles.modalContainer}>
           {/* Tap the dimmed area to dismiss the (done-less) decimal keypad */}
           <TouchableOpacity style={StyleSheet.absoluteFill} activeOpacity={1} onPress={() => Keyboard.dismiss()} />
           <View style={styles.modalContent}>
-            <View style={styles.grabber} />
-            <Text style={styles.doneTitle}>Nice walk!</Text>
-            <Text style={styles.doneSub}>Here’s what you logged.</Text>
-
-            <View style={styles.heroRow}>
-              <View style={styles.heroStat}>
-                <Text style={styles.heroNum} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.5}>{pickupCount}</Text>
-                <Text style={styles.heroLabel}>{pickupCount === 1 ? 'pickup' : 'pickups'}</Text>
-              </View>
-              <View style={styles.heroDivider} />
-              <View style={styles.heroStat}>
-                <Text style={styles.heroNum} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.5}>{formatTime(elapsedSeconds)}</Text>
-                <Text style={styles.heroLabel}>on the walk</Text>
-              </View>
-            </View>
-            <Text style={styles.estLine}>
-              Est. {formatKitchenBags(itemsToBags(pickupCount))} collected
-            </Text>
-
-            <Text style={styles.qLabel}>How much did you collect?</Text>
-            <View style={styles.amountGrid}>
-              {AMOUNT_OPTIONS.map((a) => {
-                const active = bagReported && bagSize === a.size && bagFullness === a.fullness;
-                return (
-                  <TouchableOpacity
-                    key={a.key}
-                    style={[styles.amountChip, active && styles.amountChipActive]}
-                    onPress={() => { setBagSize(a.size); setBagFullness(a.fullness); setBagReported(true); }}
-                  >
-                    <Text style={[styles.amountChipText, active && styles.amountChipTextActive]}>{a.label}</Text>
-                  </TouchableOpacity>
-                );
-              })}
-            </View>
-            <Text style={styles.optionalNote}>Optional — we’ll estimate from your pickups if you skip.</Text>
-
-            {/* Photo intake */}
-            {photoUri ? (
-              <View style={styles.photoWrap}>
-                <Image source={{ uri: photoUri }} style={styles.photoPreview} />
-                <TouchableOpacity style={styles.photoRemove} onPress={() => setPhotoUri(null)}>
-                  <Icon name="close" size={16} color="#fff" sw={2.2} />
-                </TouchableOpacity>
-              </View>
-            ) : (
-              <TouchableOpacity style={styles.addPhoto} onPress={pickPhoto}>
-                <View style={styles.addPhotoWell}>
-                  <Icon name="camera" size={22} color={C.primary} sw={1.7} />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.addPhotoTitle}>Add a photo</Text>
-                  <Text style={styles.addPhotoSub}>Show the spot you cleaned up</Text>
-                </View>
-              </TouchableOpacity>
-            )}
-
-            <TouchableOpacity style={styles.primarySave} onPress={saveSummary} activeOpacity={0.85}>
-              <Text style={styles.primarySaveText}>Save & log</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={styles.discardLink}
-              onPress={() => {
-                // Guarded discard — a single mistap must never throw away a
-                // walk. Require an explicit, counted confirmation.
-                Alert.alert(
-                  'Discard this walk?',
-                  `You logged ${pickupCount} pickup${pickupCount === 1 ? '' : 's'}${elapsedSeconds ? ` over ${formatTime(elapsedSeconds)}` : ''}. This can’t be undone.`,
-                  [
-                    { text: 'Keep walk', style: 'cancel' },
-                    {
-                      text: 'Discard',
-                      style: 'destructive',
-                      onPress: () => {
-                        clearWalkDraft();
-                        setShowSummary(false);
-                        setPickupCount(0);
-                        setElapsedSeconds(0);
-                        setPhotoUri(null);
-                        setSessionRoute([]);
-                        setPickupLocations([]);
-                      },
-                    },
-                  ],
-                );
-              }}
+            <ScrollView
+              contentContainerStyle={styles.modalScroll}
+              keyboardShouldPersistTaps="handled"
+              automaticallyAdjustKeyboardInsets
+              showsVerticalScrollIndicator={false}
             >
-              <Text style={styles.discardLinkText}>Discard walk</Text>
-            </TouchableOpacity>
+              <View style={styles.grabber} />
+              <Text style={styles.doneTitle}>Nice walk!</Text>
+              <Text style={styles.doneSub}>Here’s what you logged.</Text>
+
+              <View style={styles.heroRow}>
+                <TouchableOpacity style={styles.heroStat} activeOpacity={0.7} onPress={() => setShowAdjust(true)}>
+                  <Text style={styles.heroNum} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.5}>{userCount ?? pickupCount}</Text>
+                  <Text style={styles.heroLabel}>{(userCount ?? pickupCount) === 1 ? 'pickup' : 'pickups'}</Text>
+                </TouchableOpacity>
+                <View style={styles.heroDivider} />
+                <View style={styles.heroStat}>
+                  <Text style={styles.heroNum} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.5}>{formatTime(elapsedSeconds)}</Text>
+                  <Text style={styles.heroLabel}>on the walk</Text>
+                </View>
+              </View>
+              <Text style={styles.estLine}>
+                Est. {formatKitchenBags(itemsToBags(userCount ?? pickupCount))} collected
+              </Text>
+
+              {/* Bag size first, always visible, never behind a disclosure —
+                  everything below is expressed relative to it. */}
+              <Text style={styles.qLabel}>What were you filling?</Text>
+              <View style={styles.amountGrid}>
+                {BAG_SIZE_OPTIONS.map((o) => {
+                  const on = bagSize === o.key;
+                  return (
+                    <TouchableOpacity
+                      key={o.key}
+                      style={[styles.amountChip, styles.sizeChip, on && styles.amountChipActive]}
+                      onPress={() => chooseBagSize(o.key)}
+                    >
+                      <Text style={[styles.amountChipText, on && styles.amountChipTextActive]}>{o.label}</Text>
+                      <Text style={[styles.adjustChipHint, on && styles.amountChipTextActive]}>{o.hint}</Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+
+              <Text style={[styles.qLabel, styles.qLabel2]}>How much did you collect?</Text>
+              <View style={styles.amountGrid}>
+                {AMOUNT_OPTIONS.map((a) => {
+                  const active = bagReported && bagFullness === a.fullness && bagCount === a.count;
+                  return (
+                    <TouchableOpacity
+                      key={a.key}
+                      style={[styles.amountChip, active && styles.amountChipActive]}
+                      onPress={() => { setBagFullness(a.fullness); setBagCount(a.count); setBagReported(true); }}
+                    >
+                      <Text style={[styles.amountChipText, active && styles.amountChipTextActive]}>{a.label}</Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+              <Text style={styles.optionalNote}>
+                {bagReported
+                  ? `That’s ${formatKitchenBags(reportedBags(bagSize, bagFullness, bagCount))}.`
+                  : 'Optional — we’ll estimate from your pickups if you skip.'}
+              </Text>
+
+              {/* Count correction. The detector runs well over on a slow stroll and
+                  that is a sensor limit, not a bug we can filter away — so the
+                  honest thing is to let people fix the number. Tucked behind a
+                  disclosure so the one-tap path above stays the default. */}
+              <TouchableOpacity style={styles.adjustToggle} activeOpacity={0.7} onPress={() => setShowAdjust((v) => !v)}>
+                <Text style={styles.adjustToggleText}>{showAdjust ? 'Hide details' : 'Adjust details'}</Text>
+              </TouchableOpacity>
+
+              {showAdjust ? (
+                <BagDetails
+                  value={{ count: userCount ?? pickupCount, size: bagSize, qty: bagCount, fullness: bagFullness }}
+                  detectedCount={pickupCount}
+                  showSize={false}
+                  onChange={(v) => {
+                    setUserCount(v.count);
+                    setBagCount(v.qty);
+                    setBagFullness(v.fullness);
+                    // Touching anything here is an explicit report, so it wins
+                    // over the pickup-derived estimate from here on.
+                    setBagReported(true);
+                  }}
+                />
+              ) : null}
+
+              {/* Photo intake */}
+              {photoUri ? (
+                <View style={styles.photoWrap}>
+                  <Image source={{ uri: photoUri }} style={styles.photoPreview} />
+                  <TouchableOpacity style={styles.photoRemove} onPress={() => setPhotoUri(null)}>
+                    <Icon name="close" size={16} color="#fff" sw={2.2} />
+                  </TouchableOpacity>
+                </View>
+              ) : (
+                <TouchableOpacity style={styles.addPhoto} onPress={pickPhoto}>
+                  <View style={styles.addPhotoWell}>
+                    <Icon name="camera" size={22} color={C.primary} sw={1.7} />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.addPhotoTitle}>Add a photo</Text>
+                    <Text style={styles.addPhotoSub}>Show the spot you cleaned up</Text>
+                  </View>
+                </TouchableOpacity>
+              )}
+
+              <TouchableOpacity style={styles.primarySave} onPress={saveSummary} activeOpacity={0.85}>
+                <Text style={styles.primarySaveText}>Save & log</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.discardLink}
+                onPress={() => {
+                  // Guarded discard — a single mistap must never throw away a
+                  // walk. Require an explicit, counted confirmation.
+                  Alert.alert(
+                    'Discard this walk?',
+                    `You logged ${pickupCount} pickup${pickupCount === 1 ? '' : 's'}${elapsedSeconds ? ` over ${formatTime(elapsedSeconds)}` : ''}. This can’t be undone.`,
+                    [
+                      { text: 'Keep walk', style: 'cancel' },
+                      {
+                        text: 'Discard',
+                        style: 'destructive',
+                        onPress: () => {
+                          clearWalkDraft();
+                          setShowSummary(false);
+                          setPickupCount(0);
+                          setElapsedSeconds(0);
+                          setPhotoUri(null);
+                          setSessionRoute([]);
+                          setPickupLocations([]);
+                        },
+                      },
+                    ],
+                  );
+                }}
+              >
+                <Text style={styles.discardLinkText}>Discard walk</Text>
+              </TouchableOpacity>
+            </ScrollView>
           </View>
-        </KeyboardAvoidingView>
+        </View>
       </Modal>
 
       {/* Session Results Modal */}
@@ -3632,6 +3727,11 @@ const styles = StyleSheet.create({
     backgroundColor: '#fff',
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,
+    // Bounded so the sheet can never grow past the screen and strand its own
+    // top edge. Anything longer scrolls.
+    maxHeight: '90%',
+  },
+  modalScroll: {
     padding: 20,
     paddingBottom: 30,
   },
@@ -3670,14 +3770,15 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: C.tint,
+    // Civic Blueprint: navy surface + cream numerals, matching the Impact hero.
+    backgroundColor: C.primary,
     borderRadius: 16,
     paddingVertical: 18,
   },
   heroStat: { flex: 1, alignItems: 'center', minWidth: 0, paddingHorizontal: 8 },
-  heroDivider: { width: 1, height: 40, backgroundColor: C.border2 },
-  heroNum: { fontSize: 44, fontFamily: Fonts.displayBold, color: C.accent, letterSpacing: -1 },
-  heroLabel: { fontSize: 13, color: C.muted, marginTop: 3 },
+  heroDivider: { width: 1, height: 40, backgroundColor: 'rgba(254,252,221,0.22)' },
+  heroNum: { fontSize: 44, fontFamily: Fonts.displayBold, color: C.creamText, letterSpacing: -1 },
+  heroLabel: { fontSize: 13, color: C.heroSub, marginTop: 3 },
   estLine: {
     fontSize: 13,
     color: C.muted,
@@ -3691,6 +3792,9 @@ const styles = StyleSheet.create({
     color: C.dark,
     marginBottom: 12,
   },
+  qLabel2: { marginTop: 22 },
+  // Three across rather than two — size is a quick, low-stakes pick.
+  sizeChip: { width: '30%', paddingVertical: 12 },
   amountGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
@@ -3706,8 +3810,10 @@ const styles = StyleSheet.create({
     backgroundColor: '#fff',
     alignItems: 'center',
   },
+  // Navy is the selected state everywhere else in the app (settings pills,
+  // adopt button, leaderboard). Green is progress/success, not selection.
   amountChipActive: {
-    borderColor: C.accent,
+    borderColor: C.primary,
     backgroundColor: C.tint,
   },
   amountChipText: { fontSize: 15, fontFamily: Fonts.bodyBold, color: C.dark },
@@ -3719,8 +3825,20 @@ const styles = StyleSheet.create({
     marginTop: 10,
     marginBottom: 20,
   },
+  // "Adjust details" — count/bag correction, tucked behind a disclosure so the
+  // one-tap chips stay the default path.
+  adjustToggle: { alignItems: 'center', paddingVertical: 6, marginBottom: 8 },
+  adjustToggleText: {
+    fontSize: 14,
+    fontFamily: Fonts.bodySemibold,
+    color: C.primary,
+    textDecorationLine: 'underline',
+  },
+  adjustChipHint: { fontSize: 11.5, color: C.muted, marginTop: 2 },
+  // Every other primary CTA in the app is navy (login, signup, settings save,
+  // leaderboard join, adopt). This one was the last green holdout.
   primarySave: {
-    backgroundColor: C.accent,
+    backgroundColor: C.primary,
     borderRadius: 14,
     height: 54,
     alignItems: 'center',
