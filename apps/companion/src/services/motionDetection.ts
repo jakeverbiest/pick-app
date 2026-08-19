@@ -187,6 +187,13 @@ class MotionDetector {
       this.lastLocationAt = null;
       this.recentFixes = [];
       this.speedHistory = [];
+      // The shape detector is a module singleton, so an in-progress recording
+      // window survives across sessions. Found 19 Aug 2026: walks opened with
+      // a phantom first event of 40s (B5B) and 602s (indoor run) — a window
+      // opened before the session started and finalized inside it. Harmlessly
+      // rejected by the 500-5000ms duration bound, but it is real state
+      // carryover and the first genuine event of a walk can be mis-measured.
+      MotionShapeDetector.resetRecording();
 
       // Carry mode is always 'auto' as of build 16 — the classifier reads
       // pocket-vs-hand from the gyro baseline as the session runs. The manual

@@ -49,3 +49,7 @@ ehthumbs.db
 logs/
 *.log
 *.bak
+Pick Images/
+design-audit/
+finish-commits.sh
+apps/companion/assets/images/splash-icon_backup_opaque_05286E.png

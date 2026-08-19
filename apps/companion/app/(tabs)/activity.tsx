@@ -184,6 +184,14 @@ export default function ActivityScreen() {
         // be <= the motion_log 'counted' total: trimRecentPickups(6000)
         // discards the last 6s on Stop as a pocket-removal guard.
         items_detected: typeof cleanup.items_detected === 'number' ? cleanup.items_detected : null,
+        // Walk-level pace summary. A stroll makes the detector's number
+        // unreliable (A7a 0.73 m/s -> 9.7 false pos/min; C6a 1.19 -> 2.0), so
+        // reading a log requires knowing the pace. Stored since c384599 but
+        // dropped from the export, which forced reconstructing it by hand from
+        // per-event speeds. See walkPaceProfile() in motionEvaluation.ts.
+        pace_median_mps: cleanup.pace_median_mps ?? null,
+        pace_slow_share: cleanup.pace_slow_share ?? null,
+        pace_low_confidence: cleanup.pace_low_confidence ?? null,
         bags_est: cleanupBags(cleanup),
         team: cleanup.team,
         location: { lat: cleanup.location_lat, lon: cleanup.location_lon },
