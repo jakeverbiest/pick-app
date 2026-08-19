@@ -65,6 +65,12 @@ export interface Cleanup {
    * route to tuning against actual users. Never displayed.
    */
   items_detected?: number;
+  /** Median GPS speed over the walk's motion events, m/s. -1 = unknown. */
+  pace_median_mps?: number;
+  /** Share of speed samples below PACE_CONTEXT.strollMps, 0-1. -1 = unknown. */
+  pace_slow_share?: number;
+  /** True when the walk was mostly a stroll, so the count needs human review. */
+  pace_low_confidence?: boolean;
   /** @deprecated legacy — weight was dropped from the product in favor of bags. */
   weight_lb?: number;
   duration_seconds: number;

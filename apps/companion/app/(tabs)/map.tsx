@@ -23,6 +23,7 @@ import { startPresence, pingPresence, endPresence, getLiveWalks } from '../../sr
 import { computeNeed, parseRoute, needColor, needTileKey, type NeedTile } from '../../src/services/needMap';
 import { syncWorkoutToHealth, isHealthSyncEnabled } from '../../src/services/healthService';
 import { simplifyRoute, simplifyCoordPairs, privacyTrimRoute } from '../../src/services/routeUtils';
+import { walkPaceProfile } from '../../src/services/motionEvaluation';
 import { getFitnessService } from '../../src/services/fitnessService';
 import { getDatabase } from '../../src/services/database';
 import { getAuthService } from '../../src/services/authService';
@@ -1284,6 +1285,10 @@ export default function MapScreen() {
     setWalkIntent(true);
     try {
     setPickupCount(0);
+    // Per-SESSION counter. Was never reset (found 19 Aug 2026): it feeds
+    // commitSessionPickups() for the challenge live counter and the crash
+    // heartbeat, so the 2nd+ walk in one app lifetime over-reported both.
+    pickupCounterRef.current = 0;
     setSegmentsCompleted(0);
     setElapsedSeconds(0);
     setSessionRoute([]);
@@ -1595,6 +1600,13 @@ export default function MapScreen() {
         ? reportedBags(bagSize, bagFullness, bagCount)
         : itemsToBags(pickupCount);
 
+      // Pace context for the whole walk. A stroll makes the detector's number
+      // untrustworthy: A7a at 0.73 m/s produced 9.7 false positives/min, C6a at
+      // 1.19 m/s produced 2.0 (same tester, same phone, 90 minutes apart).
+      // Persisted on every walk so future tuning never has to reconstruct pace
+      // by hand, and used ONLY to invite a correction — never to suppress a count.
+      const pace = walkPaceProfile(MotionDetector.getSessionEvents());
+
       const db = await getDatabase();
       const userService = getAuthService();
       const currentUser = userService.getCurrentUser();
@@ -1635,6 +1647,10 @@ export default function MapScreen() {
         // labelled training data that lets thresholds be tuned against real
         // users instead of one tester's walks.
         items_detected: pickupCount,
+        // Walk-level pace summary — see walkPaceProfile() for the field evidence.
+        pace_median_mps: pace.medianMps,
+        pace_slow_share: pace.slowShare,
+        pace_low_confidence: pace.lowConfidence,
         bag_qty: bagCount,
         bag_size: bagReported ? bagSize : '',
         bag_fullness: bagFullness,

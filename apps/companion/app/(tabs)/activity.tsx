@@ -176,7 +176,14 @@ export default function ActivityScreen() {
         id: cleanup.id,
         date: new Date(cleanup.timestamp * 1000).toISOString(),
         duration: formatTime(cleanup.duration_seconds),
-        items_detected: cleanup.items_count,
+        // What the user says they picked up (their correction, if any).
+        items_count: cleanup.items_count,
+        // The RAW sensor figure — the whole reason this export exists.
+        // Was previously aliased to items_count, which silently hid the
+        // detector's number on every walk the user corrected. Expect it to
+        // be <= the motion_log 'counted' total: trimRecentPickups(6000)
+        // discards the last 6s on Stop as a pocket-removal guard.
+        items_detected: typeof cleanup.items_detected === 'number' ? cleanup.items_detected : null,
         bags_est: cleanupBags(cleanup),
         team: cleanup.team,
         location: { lat: cleanup.location_lat, lon: cleanup.location_lon },

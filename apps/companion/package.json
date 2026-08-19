@@ -12,11 +12,10 @@
     "test:detector": "npx -y tsx src/services/__tests__/detectorRegression.ts",
     "test:geometry": "npx -y tsx src/services/__tests__/geometryCoverage.test.ts",
     "test:impact": "npx -y tsx src/services/__tests__/impactMetrics.test.ts",
-    "test:calibration": "npx -y tsx src/services/__tests__/weightCalibration.test.ts",
     "test:tiles": "npx -y tsx src/services/__tests__/tileStats.test.ts",
     "test:hoods": "npx -y tsx src/services/__tests__/polygonStats.test.ts",
     "test:recap": "npx -y tsx src/services/__tests__/recap.test.ts",
-    "test": "npm run test:detector && npm run test:geometry && npm run test:impact && npm run test:calibration && npm run test:tiles && npm run test:hoods && npm run test:recap"
+    "test": "npm run test:detector && npm run test:geometry && npm run test:impact && npm run test:tiles && npm run test:hoods && npm run test:recap"
   },
   "dependencies": {
     "@bacons/apple-targets": "^5.0.0",

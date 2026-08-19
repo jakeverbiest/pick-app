@@ -539,3 +539,70 @@ export function countDistinctPeaks(
   }
   return Math.max(peaks, 1);
 }
+
+/**
+ * Pace context for a whole walk — "was this a stroll?" as opposed to
+ * `isBriskWalkingPace()`, which only ever asks "am I slowing down right now?".
+ *
+ * WHY THIS EXISTS (field evidence, 19 Aug 2026 — A7a vs C6a, same tester, same
+ * phone, ~90 minutes apart):
+ *
+ *   A7a  stroll, zero pickups   median 0.73 m/s   92% of samples < 1.0   9.7 false pos/min
+ *   C6a  normal pace, blocked   median 1.19 m/s   18% of samples < 1.0   2.0 false pos/min
+ *
+ * A ~5x difference in false-positive rate from pace alone. The mechanism: at
+ * normal pace a stride throws a vigorous MULTI-PEAK event that countDistinctPeaks
+ * rejects outright as "rhythmic motion" (C6a: 48 such rejections, 42% multi-peak).
+ * At a stroll the same stride is a single gentle ~500ms peak, shape-identical to
+ * a gentle pick (A7a: ZERO rhythmic rejections, ~0% multi-peak). Every filter in
+ * the stack keys on stride vigor, and a stroll has none.
+ *
+ * DELIBERATELY NOT A FILTER. It would separate those two walks perfectly, but
+ * only because one is a stroll and the other isn't — it cannot tell a stroll
+ * with picking from a stroll without, and a continuous slow walk is the stated
+ * normal technique. Used ONLY to flag a count as unreliable and invite the user
+ * to correct it. Never suppress a pickup on this signal.
+ */
+export const PACE_CONTEXT = {
+  /** Below this, stride vigor is too low for the filter stack to work. */
+  strollMps: 1.0,
+  /** Share of a walk spent below strollMps that makes the count untrustworthy.
+   *  A7a measured 92%, C6a 18% — 0.5 sits in the middle of a very wide gap. */
+  maxSlowShare: 0.5,
+  /** Need at least this many speed samples before judging a walk at all. */
+  minSamples: 8,
+} as const;
+
+export interface PaceProfile {
+  /** Median GPS speed across the walk's motion events, m/s. -1 if unknown. */
+  medianMps: number;
+  /** Share of samples below strollMps, 0-1. -1 if unknown. */
+  slowShare: number;
+  /** True when the walk was mostly a stroll, so the count needs human review. */
+  lowConfidence: boolean;
+}
+
+/**
+ * Summarise a walk's pace from the flight recorder's per-event speeds.
+ * Unknown speeds (-1) are ignored; too few samples returns lowConfidence false
+ * rather than guessing, so a short or GPS-starved walk is never falsely flagged.
+ */
+export function walkPaceProfile(events: { speed?: number }[]): PaceProfile {
+  const speeds = events
+    .map((e) => (typeof e.speed === 'number' ? e.speed : -1))
+    .filter((s) => s > 0)
+    .sort((a, b) => a - b);
+  if (speeds.length < PACE_CONTEXT.minSamples) {
+    return { medianMps: -1, slowShare: -1, lowConfidence: false };
+  }
+  const mid = Math.floor(speeds.length / 2);
+  const medianMps =
+    speeds.length % 2 ? speeds[mid] : (speeds[mid - 1] + speeds[mid]) / 2;
+  const slowShare =
+    speeds.filter((s) => s < PACE_CONTEXT.strollMps).length / speeds.length;
+  return {
+    medianMps: Math.round(medianMps * 100) / 100,
+    slowShare: Math.round(slowShare * 100) / 100,
+    lowConfidence: slowShare > PACE_CONTEXT.maxSlowShare,
+  };
+}

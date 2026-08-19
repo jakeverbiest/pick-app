@@ -32,6 +32,8 @@ import {
   COOLDOWN,
   THRESHOLDS,
   CADENCE,
+  PACE_CONTEXT,
+  walkPaceProfile,
   EvalProfile,
 } from '../motionEvaluation';
 import { simplifyRoute, dropOutliers, privacyTrimRoute } from '../routeUtils';
@@ -441,6 +443,43 @@ check('June 11 pocket session → pocket', classifyCarryMode(pocketGyros) === 'p
 check('too few events → unknown (filter stays off)', classifyCarryMode([3.0, 4.0]) === 'unknown', true);
 // One outlier doesn't flip the classification (median, not mean)
 check('hand baseline survives one high-gyro event', classifyCarryMode([0.8, 1.1, 0.9, 7.0, 1.2]) === 'hand', true);
+
+
+console.log('\n=== Walk pace context (19 Aug 2026 — A7a vs C6a field walks) ===');
+// Real per-event GPS speeds, phone in pocket, same tester, same phone, 90 min apart.
+// A7a: 2.4 min stroll, ZERO pickups, 21 counted -> 9.7 false positives/min.
+const a7aSpeeds = [
+  0.74, 0.74, 0.74, 0.69, 0.69, 0.61, 0.61, 0.56, 0.56, 0.56, 0.52, 0.24, 0.70,
+  0.64, 0.64, 0.64, 0.73, 0.73, 0.59, 0.59, 0.79, 0.68, 0.68, 0.59, 0.59, 0.54,
+  0.67, 0.67, 0.67, 0.27, 0.69, 0.57, 0.45, 0.47, 0.69, 0.68, 0.58, 0.90, 0.69,
+  0.67, 0.68, 0.64, 0.95, 0.73, 0.73, 0.69, 0.79, 0.73, 0.73, 0.78, 0.64, 0.67,
+].map((speed) => ({ speed }));
+// C6a: 4 min at normal pace, blocked 30s walk / 30s pick-5, 12 of 20 found,
+// only 4 false positives across the walk-only blocks -> 2.0/min.
+const c6aSpeeds = [
+  1.31, 1.27, 1.29, 1.29, 1.11, 1.13, 1.02, 1.02, 1.03, 1.39, 1.34, 1.34, 1.14,
+  1.19, 1.12, 1.03, 1.03, 0.95, 1.06, 0.89, 1.12, 1.11, 0.83, 0.97, 0.92, 1.37,
+  1.30, 0.79, 1.21, 1.30, 1.06, 1.30, 1.16, 1.28, 1.64, 1.73, 1.69, 1.59, 1.45,
+  1.67, 1.58, 1.30, 0.57, 1.05, 0.29, 1.05, 1.14, 0.97, 1.16, 1.13, 1.32, 1.07,
+].map((speed) => ({ speed }));
+
+const a7aPace = walkPaceProfile(a7aSpeeds);
+const c6aPace = walkPaceProfile(c6aSpeeds);
+check('A7a stroll flagged low-confidence', a7aPace.lowConfidence, true);
+check('C6a normal-pace walk NOT flagged', c6aPace.lowConfidence, false);
+check('A7a median pace is stroll-speed (<0.9)', a7aPace.medianMps < 0.9, true);
+check('C6a median pace is walking-speed (>1.05)', c6aPace.medianMps > 1.05, true);
+check('A7a is mostly slow (>80% below stroll threshold)', a7aPace.slowShare > 0.8, true);
+check('C6a is mostly not slow (<35% below stroll threshold)', c6aPace.slowShare < 0.35, true);
+// The gap between the two is very wide; the threshold sits in the middle of it,
+// not shaved to either side.
+check('threshold sits between the two walks',
+  a7aPace.slowShare > PACE_CONTEXT.maxSlowShare && c6aPace.slowShare < PACE_CONTEXT.maxSlowShare, true);
+// Never guess on thin data — a short or GPS-starved walk must not be flagged.
+check('too few samples => not flagged', walkPaceProfile([{ speed: 0.4 }, { speed: 0.4 }]).lowConfidence, false);
+check('missing speeds (-1) are ignored, not treated as slow',
+  walkPaceProfile(Array(12).fill({ speed: -1 })).lowConfidence, false);
+check('stroll threshold sanity: 1.0 m/s', PACE_CONTEXT.strollMps === 1.0, true);
 
 console.log('\n=== Threshold sanity ===');
 check('confidence threshold unchanged at 30', THRESHOLDS.confidenceThreshold === 30, true);
