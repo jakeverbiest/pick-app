@@ -236,13 +236,13 @@ export default function MapScreen() {
   // stopCleanup) for a heartbeat recent enough to trust as "still walking
   // right now," not just "crashed at some point and never cleaned up."
   useEffect(() => {
-    let cancelled = false;
+    let canceled = false;
     isSessionActiveFresh().then((active) => {
-      if (cancelled) return;
+      if (canceled) return;
       if (active) setWalkIntent(true);
       setWalkIntentChecked(true);
     });
-    return () => { cancelled = true; };
+    return () => { canceled = true; };
     // Run once on mount.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -678,7 +678,7 @@ export default function MapScreen() {
         );
       } else if (mapVisible()) {
         // One batched call: promoting a never-cleaned street means redrawing
-        // both the grey "to do" layer and the colored one.
+        // both the gray "to do" layer and the colored one.
         webviewRef.current?.injectJavaScript(
           `if(window.markSegmentsClean){window.markSegmentsClean(${JSON.stringify(newlyClean)});} true;`
         );
@@ -712,10 +712,10 @@ export default function MapScreen() {
   // saved (summary dismissed, app force-quit, or a crash at the summary), a
   // draft survived on disk — offer to bring it back so it can be logged.
   useEffect(() => {
-    let cancelled = false;
+    let canceled = false;
     (async () => {
       const draft = await loadWalkDraft();
-      if (cancelled || !draft || isListening) return;
+      if (canceled || !draft || isListening) return;
       Alert.alert(
         'Recover your last walk?',
         `A walk from ${new Date(draft.startedAt).toLocaleString()} with ${draft.pickupCount} pickup${draft.pickupCount === 1 ? '' : 's'} was never saved. Restore it so you can log it?`,
@@ -734,7 +734,7 @@ export default function MapScreen() {
         ],
       );
     })();
-    return () => { cancelled = true; };
+    return () => { canceled = true; };
     // Run once on mount.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -1389,7 +1389,39 @@ export default function MapScreen() {
     }
   };
 
+  /**
+   * Confirm before ending a walk.
+   *
+   * WHY (19 Aug 2026): three walks in one afternoon ended by themselves in a
+   * pocket — one died at 22s with a single pickup and saved itself. `Stop &
+   * save` was a single unguarded tap at the bottom of the screen, and the
+   * summary sheet's Save button lands in roughly the same region, so one
+   * sustained fabric contact could do both. The screen is live for this the
+   * whole time: keep-awake is forced on while `sessionMode` is null, and after
+   * it releases the phone still waits out the user's iOS Auto-Lock (which may
+   * be "Never").
+   *
+   * MIN_CLEANUP_SECONDS does NOT cover this — its guard is
+   * `elapsed < MIN && pickupCount === 0`, so any walk with one stray pickup
+   * saves regardless of length.
+   *
+   * A miscount is recoverable via the correction panel. A walk that ends itself
+   * is not, so this is deliberately a hard confirm on every stop rather than a
+   * heuristic that could misfire.
+   */
   const stopCleanup = () => {
+    Alert.alert(
+      'End this cleanup?',
+      'Your walk will be saved and the timer will stop.',
+      [
+        { text: 'Keep walking', style: 'cancel' },
+        { text: 'End cleanup', onPress: finishCleanup },
+      ],
+      { cancelable: true }
+    );
+  };
+
+  const finishCleanup = () => {
     setWalkIntent(false);
     watchSessionRef.current = '';
     stopBackgroundSession();
@@ -1437,9 +1469,13 @@ export default function MapScreen() {
   // events; stats go out every few seconds. All no-ops without the native
   // module (Android / Expo Go).
   const startCleanupRef = useRef(startCleanup);
-  const stopCleanupRef = useRef(stopCleanup);
+  // Points at finishCleanup, NOT stopCleanup: the watch's End button already
+  // has its own two-tap confirmation, and routing it through the phone's
+  // confirm would pop an Alert on a phone that is in a pocket — the walk would
+  // simply never end. (Would have been introduced 19 Aug with the stop confirm.)
+  const finishCleanupRef = useRef(finishCleanup);
   startCleanupRef.current = startCleanup;
-  stopCleanupRef.current = stopCleanup;
+  finishCleanupRef.current = finishCleanup;
   const isListeningRef = useRef(isListening);
   isListeningRef.current = isListening;
   // Last snapshot actually pushed, so a pickup can jump the 3s throttle queue.
@@ -1459,18 +1495,18 @@ export default function MapScreen() {
       return;
     }
     let unsubTotal: (() => void) | null = null;
-    let cancelled = false;
+    let canceled = false;
     (async () => {
       const uid = getAuthService().getCurrentUser()?.uid;
       if (!uid) return;
       const event = await findMyLiveEvent(uid);
-      if (cancelled || !event) return;
+      if (canceled || !event) return;
       setLiveEvent(event);
       unsubTotal = subscribeEventTotal(event.id, (total) => setEventTotal(total));
       void reportSessionPickups(event.id, uid, 0, true);
     })();
     return () => {
-      cancelled = true;
+      canceled = true;
       if (unsubTotal) unsubTotal();
       // Fold this session into my standing contribution on walk end.
       const uid = getAuthService().getCurrentUser()?.uid;
@@ -1493,7 +1529,7 @@ export default function MapScreen() {
       if (cmd === 'startWalk' && !isListeningRef.current) {
         void startCleanupRef.current();
       } else if (cmd === 'endWalk' && isListeningRef.current) {
-        stopCleanupRef.current();
+        finishCleanupRef.current();
       }
     });
     return () => sub.remove();
@@ -1548,7 +1584,7 @@ export default function MapScreen() {
   // A walk must run this long OR log ≥1 pickup to count as a cleanup —
   // filters out tap-start-tap-stop test walks without ever losing a real one.
   // TEMPORARY (17 Aug 2026): dropped 120 -> 20 for detector field testing.
-  // Short single-behaviour test walks (60s of walking with zero pickups, etc.)
+  // Short single-behavior test walks (60s of walking with zero pickups, etc.)
   // were being rejected, which forced padding the clock with standing-still
   // minutes — and that padding contaminated the very false-positive counts the
   // walks existed to measure. RESTORE TO 120 BEFORE LAUNCH.
@@ -1644,7 +1680,7 @@ export default function MapScreen() {
         // made one, otherwise the detector's figure.
         items_count: userCount ?? pickupCount,
         // What the sensors actually counted, always. Never shown; this is the
-        // labelled training data that lets thresholds be tuned against real
+        // labeled training data that lets thresholds be tuned against real
         // users instead of one tester's walks.
         items_detected: pickupCount,
         // Walk-level pace summary — see walkPaceProfile() for the field evidence.
@@ -2524,9 +2560,9 @@ Generated by Pick App - Share this with the development team
     window.drawHotspots = function() {};
 
     // Street-segment coverage layer (shared across ALL users).
-    // Grey dashes = never cleaned; green→red = freshness since last clean.
+    // Gray dashes = never cleaned; green→red = freshness since last clean.
     // Two coverage sublayers:
-    //  - todoGroup: the grey "never cleaned" dashes. Numerous and ambient, so
+    //  - todoGroup: the gray "never cleaned" dashes. Numerous and ambient, so
     //    they stay bubble-scoped (replaced each fetch, skipped when zoomed out)
     //    to protect WebView memory.
     //  - cleanedGroup: your colored progress. Few in number and the whole point,
@@ -2536,7 +2572,7 @@ Generated by Pick App - Share this with the development team
     let cleanedGroup = L.featureGroup([]).addTo(map);
     var cleanedById = {};
     // Never-cleaned streets are kept by id too, so a block finished mid-walk can
-    // be promoted out of the grey dashes and into the colored layer live.
+    // be promoted out of the gray dashes and into the colored layer live.
     var todoById = {};
     var CLEANED_CAP = 4000; // hard ceiling so a marathon session can't grow unbounded
 
@@ -2580,7 +2616,7 @@ Generated by Pick App - Share this with the development team
       segments.forEach(function(seg) {
         if (seg.daysOld === null || seg.daysOld === undefined) {
           // Already flipped green earlier in this walk? Don't demote it back to
-          // a grey dash just because the shared data hasn't synced yet.
+          // a gray dash just because the shared data hasn't synced yet.
           if (cleanedById[seg.id]) return;
           todoById[seg.id] = { coords: seg.coords };
         } else {
@@ -2590,7 +2626,7 @@ Generated by Pick App - Share this with the development team
       });
       redrawTodo();
       if (cleanedTouched) redrawCleaned();
-      // z-order: grey furthest back, green just above it, both under routes/markers
+      // z-order: gray furthest back, green just above it, both under routes/markers
       cleanedGroup.bringToBack();
       todoGroup.bringToBack();
       console.log('Segments: ' + segments.length + ' in view, ' + Object.keys(cleanedById).length + ' cleaned retained');

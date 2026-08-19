@@ -257,9 +257,20 @@ export function isSpeedFresh(ageMs: number | null | undefined): boolean {
  * B3 has one (walking 1.5-1.86 m/s, stops 0-0.25). A slow stroll does not:
  * A3's pure-walking events sat at 0.48-1.27 m/s and C3's real picks at
  * 0.00-1.28 — total overlap, and every one of A3's false positives fell
- * BELOW the 1.3 threshold, so the gate never even engaged. Since a
- * continuous slow walk is the normal Pick technique, speed cannot be the
- * primary mechanism.
+ * BELOW the 1.3 threshold, so the gate never even engaged.
+ *
+ * REVISED 19 Aug 2026 — the premise here was wrong. This paragraph used to
+ * conclude "since a continuous slow walk is the normal Pick technique, speed
+ * cannot be the primary mechanism." Product call reversed: the normal user
+ * pattern is walk -> STOP -> pick -> continue, not a continuous slow walk.
+ * That is the B-series, and it has a real speed contrast (B3: walking
+ * 1.5-1.86 m/s, stops 0-0.25), which is exactly what this gate needs — B went
+ * 21 counted against 10 actual, down to 13 once the gate was added.
+ *
+ * So speed IS the primary mechanism for the common case. The continuous slow
+ * walk is the EDGE case, and per A7a/C7a (19 Aug) it is not solvable in-pocket
+ * at all — a stroll produces ~10 false positives/min whether or not the user
+ * is picking. Do not contort this filter to serve it.
  *
  * Timing can't do it either — a deliberately checked negative result. Gaps
  * between accepted candidates were ~1-2s in BOTH A3 (strides) and C3 (real
@@ -583,7 +594,7 @@ export interface PaceProfile {
 }
 
 /**
- * Summarise a walk's pace from the flight recorder's per-event speeds.
+ * Summarize a walk's pace from the flight recorder's per-event speeds.
  * Unknown speeds (-1) are ignored; too few samples returns lowConfidence false
  * rather than guessing, so a short or GPS-starved walk is never falsely flagged.
  */
@@ -605,4 +616,103 @@ export function walkPaceProfile(events: { speed?: number }[]): PaceProfile {
     slowShare: Math.round(slowShare * 100) / 100,
     lowConfidence: slowShare > PACE_CONTEXT.maxSlowShare,
   };
+}
+
+/**
+ * RELATIVE pause gate (19 Aug 2026, from field walks A7a / C6a / B4).
+ *
+ * THE PROBLEM the absolute gate can't solve. `isBriskWalkingPace()` asks
+ * "are you above 1.3 m/s?". On B4 — 20 picks, full stop for each, ambling
+ * between them — that fired **3 times in a 4-minute walk**, because a 0.7 m/s
+ * amble never reaches 1.3. Yet the walking segments still produced 31 false
+ * positives (90 candidate events while moving >0.5 m/s). The contrast was
+ * right there in the data (stops at 0.03-0.30 m/s vs walking at 0.5-1.15) —
+ * it just sat entirely below the absolute threshold.
+ *
+ * THE FIX: compare each event's speed to the walker's OWN recent median rather
+ * than to a fixed number. On B4 the ratio at real picks had median 0.36; at
+ * false positives, 1.05.
+ *
+ * ONLY ACTIVE ON A STROLL. If the trailing median is at or above
+ * PACE_CONTEXT.strollMps the absolute gate and the rhythmic/multi-peak filters
+ * already work, and applying this as well would suppress genuine picks taken
+ * without stopping. Measured on C6a (picking at 1.19 m/s WITHOUT stopping):
+ * always-on costs 5 of 12 real picks; stroll-only costs zero.
+ *
+ * Simulated effect at ratio 0.8 (see docs/fielddata/*.csv):
+ *   B4  keeps 12/17 picks, cuts 28/31 false positives -> ~15 counted for 20
+ *       real (0.75x), down from 48 (2.4x)
+ *   A7a cuts 18/23 false positives -> 9.7/min down to ~2.1/min
+ *   C6a untouched (12/12 picks kept)
+ *
+ * NOT a cross-user pace baseline — that idea needed HealthKit and a native
+ * build and was killed by C7a. This is computed within a single walk from GPS
+ * the app already has.
+ */
+export const RELATIVE_PACE = {
+  /** Above this fraction of your own trailing median = still walking, not paused. */
+  ratio: 0.8,
+  /** Trailing window used for the personal median. */
+  windowMs: 30000,
+  /** Fewer samples than this and we decline to judge. */
+  minSamples: 3,
+  /**
+   * Absolute floor: below this the walker is stopped by any reasonable
+   * definition, and the gate must never fire no matter what the median says.
+   *
+   * FOUND ON B5B (19 Aug 2026). During a long stationary stretch the trailing
+   * median collapses toward zero — it fell to 0.14-0.15 m/s — so ordinary
+   * residual sway reads as "still at your own pace" and gets suppressed. Three
+   * real suppressions looked like this: 0.28 vs 0.15 median (ratio 1.83),
+   * 0.26 vs 0.14 (1.87), 0.17 vs 0.14 (1.20). That inverts the gate's purpose
+   * and directly threatens the standing constraint that rapid back-to-back
+   * picks in one spot must all count — a cigarette pile IS a long stationary
+   * stretch. All 21 correct suppressions on B5B were above 0.5 m/s, so this
+   * floor costs nothing.
+   */
+  minStopMps: 0.35,
+} as const;
+
+/**
+ * Median speed over the trailing window. Returns null when there isn't enough
+ * evidence, which callers must treat as "don't judge" rather than "slow".
+ */
+export function trailingMedianSpeed(
+  samples: { atMs: number; speedMps: number }[],
+  nowMs: number,
+  windowMs: number = RELATIVE_PACE.windowMs
+): number | null {
+  const recent = samples
+    .filter((s) => s.speedMps > 0 && nowMs - s.atMs >= 0 && nowMs - s.atMs <= windowMs)
+    .map((s) => s.speedMps)
+    .sort((a, b) => a - b);
+  if (recent.length < RELATIVE_PACE.minSamples) return null;
+  const mid = Math.floor(recent.length / 2);
+  return recent.length % 2 ? recent[mid] : (recent[mid - 1] + recent[mid]) / 2;
+}
+
+/**
+ * True when this event happened at the walker's own ongoing pace — i.e. they
+ * had NOT paused, so it's probably a stride rather than a pick.
+ *
+ * Stands down (returns false) whenever it cannot be sure:
+ *  - stale GPS fix. This is load-bearing, not defensive: on the B2 walk a
+ *    frozen fix made the absolute gate reject REAL pickups, 7-for-10. Five of
+ *    B4's 17 real picks likewise showed a ratio above 1 because GPS had not
+ *    caught the stop yet.
+ *  - unknown speed, or too few samples for a trailing median
+ *  - trailing median at or above strollMps — not a stroll, so leave it alone
+ */
+export function isStillAtOwnPace(
+  speedMps: number,
+  trailingMedianMps: number | null,
+  speedAgeMs: number | null
+): boolean {
+  if (!isSpeedFresh(speedAgeMs)) return false;
+  if (speedMps < 0) return false;
+  if (trailingMedianMps === null || trailingMedianMps <= 0) return false;
+  if (trailingMedianMps >= PACE_CONTEXT.strollMps) return false;
+  // You are stopped. Never suppress, whatever the median has collapsed to.
+  if (speedMps < RELATIVE_PACE.minStopMps) return false;
+  return speedMps > RELATIVE_PACE.ratio * trailingMedianMps;
 }

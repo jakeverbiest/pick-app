@@ -19,6 +19,9 @@ import {
   stepCorroboratesCadence,
   isBriskWalkingPace,
   isSpeedFresh,
+  isStillAtOwnPace,
+  trailingMedianSpeed,
+  RELATIVE_PACE,
   looksMonotonous,
   isStandingStill,
   isNotStriding,
@@ -27,6 +30,10 @@ import {
   COOLDOWN,
   STRIDE,
 } from './motionEvaluation';
+
+/** Trailing GPS speed samples, for the relative pause gate. Capped so a
+ *  multi-hour walk can't grow it without bound. */
+interface SpeedSample { atMs: number; speedMps: number }
 
 interface PickupEvent {
   timestamp: number;
@@ -110,6 +117,11 @@ class MotionDetector {
   // STRIDE.windowMs. This replaced GPS *speed* as the movement signal because
   // speed cannot separate slow-shuffling from striding — see isNotStriding().
   private recentFixes: Array<{ at: number; lat: number; lon: number }> = [];
+  // Trailing GPS speeds for the RELATIVE pause gate — "are you moving at your
+  // own ongoing pace, or did you actually pause?". Separate from recentFixes
+  // because it needs a longer window (RELATIVE_PACE.windowMs) than the
+  // displacement test. See isStillAtOwnPace().
+  private speedHistory: SpeedSample[] = [];
   private carryMode: CarryMode = 'auto';
   private recentGyros: number[] = []; // rolling gyro baseline for auto carry detection
   private lastAutoCarry: 'pocket' | 'hand' | 'unknown' = 'unknown';
@@ -174,6 +186,7 @@ class MotionDetector {
       this.pedometerActive = false;
       this.lastLocationAt = null;
       this.recentFixes = [];
+      this.speedHistory = [];
 
       // Carry mode is always 'auto' as of build 16 — the classifier reads
       // pocket-vs-hand from the gyro baseline as the session runs. The manual
@@ -229,6 +242,11 @@ class MotionDetector {
               lat: location.coords.latitude,
               lon: location.coords.longitude,
             });
+            if (typeof location.coords.speed === 'number' && location.coords.speed > 0) {
+              this.speedHistory.push({ atMs: this.lastLocationAt, speedMps: location.coords.speed });
+              const sCut = this.lastLocationAt - RELATIVE_PACE.windowMs;
+              this.speedHistory = this.speedHistory.filter((x) => x.atMs >= sCut);
+            }
             const cutoff = this.lastLocationAt - STRIDE.windowMs;
             while (this.recentFixes.length && this.recentFixes[0].at < cutoff) this.recentFixes.shift();
           }
@@ -380,6 +398,20 @@ class MotionDetector {
           // undercount 7-for-10. If the fix is old, stand down and let the
           // walking-context/cadence checks below decide instead.
           const speedAgeMs = this.lastLocationAt !== null ? now - this.lastLocationAt : null;
+          // RELATIVE pause gate (19 Aug 2026, walks A7a/C6a/B4). The absolute
+          // gate below only sees speeds above 1.3 m/s, so on a stroll it never
+          // engages — it fired 3 times in the whole of B4 while the walking
+          // segments threw 31 false positives. This compares the event against
+          // the walker's OWN trailing median instead, and is deliberately
+          // inert unless that median says they're strolling. See
+          // isStillAtOwnPace() for the field evidence and the C6a trade-off.
+          const trailingMps = trailingMedianSpeed(this.speedHistory, now);
+          if (result.confidence > 0 && isStillAtOwnPace(evSpeed, trailingMps, speedAgeMs)) {
+            result = {
+              confidence: 0,
+              reason: `still at own pace: ${evSpeed.toFixed(2)} m/s vs ${(trailingMps as number).toFixed(2)} median (not paused to pick?)`,
+            };
+          }
           if (result.confidence > 0 && isSpeedFresh(speedAgeMs) && isBriskWalkingPace(evSpeed)) {
             result = {
               confidence: 0,

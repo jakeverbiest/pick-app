@@ -34,6 +34,9 @@ import {
   CADENCE,
   PACE_CONTEXT,
   walkPaceProfile,
+  RELATIVE_PACE,
+  trailingMedianSpeed,
+  isStillAtOwnPace,
   EvalProfile,
 } from '../motionEvaluation';
 import { simplifyRoute, dropOutliers, privacyTrimRoute } from '../routeUtils';
@@ -237,7 +240,7 @@ check('freshness window sanity: 1800ms', PACE.maxSpeedAgeMs === 1800, true);
 // real pickups on the B2 walk.
 const b2StaleFix = isSpeedFresh(8000) && isBriskWalkingPace(1.786);
 check('B2 case: 1.79 m/s but 8s stale → gate must NOT fire', b2StaleFix, false);
-// ...while a genuinely fresh brisk reading still gates (the A2 behaviour we
+// ...while a genuinely fresh brisk reading still gates (the A2 behavior we
 // must not regress).
 const a2FreshFix = isSpeedFresh(400) && isBriskWalkingPace(1.42);
 check('A2 case: 1.42 m/s and fresh → gate DOES fire', a2FreshFix, true);
@@ -480,6 +483,74 @@ check('too few samples => not flagged', walkPaceProfile([{ speed: 0.4 }, { speed
 check('missing speeds (-1) are ignored, not treated as slow',
   walkPaceProfile(Array(12).fill({ speed: -1 })).lowConfidence, false);
 check('stroll threshold sanity: 1.0 m/s', PACE_CONTEXT.strollMps === 1.0, true);
+
+
+console.log('\n=== Relative pause gate (19 Aug 2026 — walks A7a / C6a / B4) ===');
+// B4: 20 picks, full stop for each, ambling between. The ABSOLUTE gate fired
+// 3 times in 4 minutes; the walking segments still threw 31 false positives.
+const B4_STROLL_MEDIAN = 0.75;   // measured trailing median on B4
+const C6A_WALK_MEDIAN  = 1.21;   // measured trailing median on C6a (normal pace)
+const FRESH = 200;               // a fresh fix
+
+// --- real picks: B4 stops measured 0.03-0.30 m/s ---
+check('B4 dead stop (0.05) is NOT still-at-pace',
+  isStillAtOwnPace(0.05, B4_STROLL_MEDIAN, FRESH), false);
+check('B4 near-stop (0.28) is NOT still-at-pace',
+  isStillAtOwnPace(0.28, B4_STROLL_MEDIAN, FRESH), false);
+// --- false positives: B4 walking segments measured 0.50-1.15 m/s ---
+check('B4 amble (0.69) IS still-at-pace -> suppressed',
+  isStillAtOwnPace(0.69, B4_STROLL_MEDIAN, FRESH), true);
+check('B4 amble (0.90) IS still-at-pace -> suppressed',
+  isStillAtOwnPace(0.90, B4_STROLL_MEDIAN, FRESH), true);
+// The absolute gate would have caught NONE of those — that is the whole point.
+check('the absolute gate misses all of them', isBriskWalkingPace(0.90), false);
+
+// --- stroll-only: C6a picked WITHOUT stopping at 1.19 m/s. Always-on costs
+//     5 of 12 real picks there; gating on the stroll threshold costs zero. ---
+check('C6a normal-pace walk: gate stays OFF even at pace',
+  isStillAtOwnPace(1.19, C6A_WALK_MEDIAN, FRESH), false);
+check('C6a normal-pace walk: gate stays OFF at a slow moment too',
+  isStillAtOwnPace(0.60, C6A_WALK_MEDIAN, FRESH), false);
+check('threshold that switches it on is PACE_CONTEXT.strollMps',
+  C6A_WALK_MEDIAN >= PACE_CONTEXT.strollMps && B4_STROLL_MEDIAN < PACE_CONTEXT.strollMps, true);
+
+// --- stands down rather than guessing ---
+// Load-bearing: on B2 a frozen fix made the absolute gate reject REAL pickups
+// 7-for-10, and 5 of B4's 17 real picks showed a ratio > 1 because GPS had not
+// yet caught the stop.
+check('stale fix => stand down', isStillAtOwnPace(0.69, B4_STROLL_MEDIAN, 8000), false);
+check('unknown speed (-1) => stand down', isStillAtOwnPace(-1, B4_STROLL_MEDIAN, FRESH), false);
+check('no trailing median yet => stand down', isStillAtOwnPace(0.69, null, FRESH), false);
+check('zero trailing median => stand down', isStillAtOwnPace(0.69, 0, FRESH), false);
+
+// --- trailing median helper ---
+const now = 100000;
+const samples = [0.70, 0.75, 0.80, 0.65, 0.72].map((speedMps, i) => ({ atMs: now - 20000 + i * 1000, speedMps }));
+check('trailing median over the window', trailingMedianSpeed(samples, now) === 0.72, true);
+check('samples outside the window are ignored',
+  trailingMedianSpeed([{ atMs: now - 60000, speedMps: 5 }, ...samples], now) === 0.72, true);
+check('too few samples => null', trailingMedianSpeed(samples.slice(0, 2), now) === null, true);
+check('unknown speeds are not counted as slow',
+  trailingMedianSpeed([{ atMs: now, speedMps: -1 }, { atMs: now, speedMps: -1 }, { atMs: now, speedMps: -1 }], now) === null, true);
+check(`ratio sanity: ${RELATIVE_PACE.ratio}`, RELATIVE_PACE.ratio === 0.8, true);
+check('window sanity: 30s', RELATIVE_PACE.windowMs === 30000, true);
+
+// --- B5B (19 Aug): during a long STOP the trailing median collapses toward
+// zero, and residual sway then reads as "still at your own pace". Real cases
+// from that walk. This inverts the gate and would eat a cigarette-pile spree,
+// which standing constraint #1 says must always count.
+check('B5B t=166: 0.28 m/s vs a collapsed 0.15 median => NOT suppressed',
+  isStillAtOwnPace(0.275, 0.15, FRESH), false);
+check('B5B t=167: 0.26 m/s vs 0.14 median => NOT suppressed',
+  isStillAtOwnPace(0.262, 0.14, FRESH), false);
+check('B5B t=172: 0.17 m/s vs 0.14 median => NOT suppressed',
+  isStillAtOwnPace(0.168, 0.14, FRESH), false);
+// ...but real walking against the same collapsed median MUST still be caught.
+check('B5B t=176: 1.15 m/s vs 0.15 median => still suppressed',
+  isStillAtOwnPace(1.152, 0.15, FRESH), true);
+check(`stop floor sanity: ${RELATIVE_PACE.minStopMps} m/s`, RELATIVE_PACE.minStopMps === 0.35, true);
+check('all 21 correct B5B suppressions were above the floor',
+  isStillAtOwnPace(0.51, 0.40, FRESH), true);
 
 console.log('\n=== Threshold sanity ===');
 check('confidence threshold unchanged at 30', THRESHOLDS.confidenceThreshold === 30, true);
