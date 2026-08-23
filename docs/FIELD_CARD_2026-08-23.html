@@ -1,0 +1,79 @@
+<title>Zero-Pickup Field Card</title>
+<style>
+  :root{ --bg:#fff; --fg:#111; --dim:#555; --rule:#bbb; }
+  @media (prefers-color-scheme:dark){
+    :root:not([data-theme="light"]){ --bg:#111417; --fg:#e9ecef; --dim:#9aa2ac; --rule:#39404a; }
+  }
+  :root[data-theme="dark"]{ --bg:#111417; --fg:#e9ecef; --dim:#9aa2ac; --rule:#39404a; }
+
+  *{box-sizing:border-box}
+  body{
+    background:var(--bg); color:var(--fg);
+    font-family:Georgia,"Times New Roman",serif;
+    font-size:16px; line-height:1.45;
+    margin:0 auto; padding:36px 24px 60px; max-width:44em;
+  }
+  h1{ font-size:23px; margin:0 0 2px; letter-spacing:-.01em }
+  .date{ color:var(--dim); font-size:14px; margin:0 0 22px }
+  h2{
+    font-size:13px; text-transform:uppercase; letter-spacing:.09em;
+    margin:22px 0 7px; padding-bottom:3px; border-bottom:1px solid var(--rule);
+  }
+  p{ margin:0 0 7px }
+  ul{ margin:0 0 7px; padding-left:20px }
+  li{ margin-bottom:5px }
+  .flag{ color:var(--fg) }
+  .note{ color:var(--dim); font-size:14px; margin-top:14px }
+  b{ font-weight:700 }
+  code{ font-family:ui-monospace,Menlo,Consolas,monospace; font-size:.9em }
+
+  @media print{
+    @page{ margin:16mm }
+    :root{ --bg:#fff; --fg:#000; --dim:#444; --rule:#999 }
+    body{ padding:0; max-width:none; font-size:11pt; line-height:1.38 }
+    h1{ font-size:16pt }
+    h2{ font-size:9.5pt; margin:14px 0 5px }
+    .date{ margin-bottom:14px; font-size:9.5pt }
+    .note{ font-size:9.5pt }
+    section{ break-inside:avoid }
+  }
+</style>
+
+<h1>Zero-Pickup Field Card</h1>
+<p class="date">Two solo walks · 23–24 Aug 2026 · pick up nothing on either</p>
+
+<section>
+<h2>Both walks</h2>
+<ul>
+  <li><b>Six minutes.</b> Phone in front pocket, screen off, the whole time.</li>
+  <li><b>Pick up nothing.</b> Not one thing, not reflexively.</li>
+  <li><b>Before starting:</b> tap Stop and check the confirm dialog appears. No dialog = old bundle = <b>void walk</b>.</li>
+  <li><b>Don't correct the count afterward.</b> The wrong number is the measurement.</li>
+  <li>Walk an ordinary street, like A7a and C6a, so the comparison holds.</li>
+</ul>
+</section>
+
+<section>
+<h2>Walk 1 — this afternoon — natural pace</h2>
+<p>Walk your normal pace, the one you'd walk to the store. Don't slow down, don't stop.</p>
+<p>Expect <b>10–16</b> counted, pace <b>1.0–1.4 m/s</b>. The gate is inert above 1.0, so this should match C6a's ungated 2.0 false positives/min.</p>
+<p class="flag">Flag: materially <b>below 10</b> means this morning's publish changed something.</p>
+</section>
+
+<section>
+<h2>Walk 2 — tomorrow morning — slow amble</h2>
+<p>Identical, but slower than feels natural — around 0.7 m/s. If you feel slightly silly, that's right.</p>
+<p>Expect <b>6–12</b> counted, pace <b>0.55–0.85 m/s</b>. Ungated, A7a threw 9.7/min at this pace — about 58 over six minutes.</p>
+<p class="flag">Flag: anywhere <b>near 50</b> and the gate doesn't work outside B5's stop-for-every-pick protocol. Stop there.</p>
+</section>
+
+<section>
+<h2>Send back, per walk</h2>
+<ul>
+  <li>Activity tab → the walk's row → share icon. Copies the full export to your clipboard. Paste it.</li>
+  <li><b>"Actual pickups: 0"</b> — explicit confirmation.</li>
+  <li>Anything unusual: a light, a crossing, phone out of pocket, a dog. A long stop moves the trailing median and reads oddly in the log.</li>
+</ul>
+</section>
+
+<p class="note">Predictions frozen 13:30 ET, 23 Aug, before any data exists. Neither walk replaces multi-tester validation — that's still the launch gate.</p>

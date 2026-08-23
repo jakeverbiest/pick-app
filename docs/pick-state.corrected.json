@@ -1,0 +1,101 @@
+{
+  "_readme": "Memory for the Pick Chief of Staff agent. The ledger of record is docs/LAUNCH_LEDGER.md in the pick-app repo on Jake's Mac; this file exists so a scheduled cloud run still has memory and can still report when the Mac is unreachable. Agent writes this every run. Safe to edit by hand.",
+  "last_run": "2026-08-23T22:00:00Z",
+  "last_run_reached_mac": true,
+  "ledger_path": "~/Desktop/pick-app/docs/LAUNCH_LEDGER.md",
+  "gmail_scanned_through": "2026-08-23T22:00:00Z",
+  "hard_blockers": [],
+  "closed_blockers": [
+    {
+      "id": "apple-dpla-attachment-14",
+      "opened": "2026-08-18",
+      "closed": "2026-08-23",
+      "summary": "Apple DPLA Attachment 14 accepted by Jake in App Store Connect. Releases no longer blocked."
+    },
+    {
+      "id": "eas-build-limit",
+      "opened": "2026-08-13",
+      "closed": "2026-08-23",
+      "summary": "Closed as MISREAD, not resolved. The 13 Aug Expo email body says 80% of the Free-plan iOS build limit used - a courtesy warning. Only the subject line and preheader say 'limit reached'. Build 32 was never quota-blocked.",
+      "note": "Do not re-open from the subject line of message 19ffbfce53fed803."
+    }
+  ],
+  "watch_items": [
+    {
+      "id": "eas-ios-quota",
+      "summary": "Expo Free-plan iOS build quota at 80% as of 2026-08-13. Headroom remains this billing period; confirm the count at expo.dev/accounts/jakeverbiest/settings/billing before cutting build 32."
+    }
+  ],
+  "open_decisions": [
+    {
+      "id": "keep-awake-sessionmode-null",
+      "opened": "2026-08-19",
+      "owner": "jake",
+      "summary": "Narrow keep-awake or leave it; root enabler of the pocket-stop bug"
+    }
+  ],
+  "repo": {
+    "branch": "main",
+    "commits_ahead_of_origin": 29,
+    "uncommitted": [
+      "targets/watch/ContentView.swift",
+      "targets/watch/PhoneLink.swift"
+    ],
+    "untracked": [
+      "docs/LAUNCH_LEDGER.md",
+      "ship-cleanup.sh",
+      "ship-fixes.sh",
+      "ship-gate.sh"
+    ],
+    "last_commit": "5c1e75b 2026-08-19"
+  },
+  "testflight": {
+    "latest_build": 31,
+    "version": "1.2.2",
+    "live_since": "2026-08-13"
+  },
+  "detector": {
+    "validated_testers": 1,
+    "last_result": "B5: 20 counted / 20 real, 1.00x",
+    "measured_against": "TestFlight build 31 (1.2.2) binary + the 19 Aug OTA bundle carrying the relative pause gate (commit 3eb95f2). Detector is JS, so the gate reached the phone by eas update, not a new build.",
+    "phonelink_guard_state": "OUT - the broadened guard was uncommitted, so build 31 carries the narrow cached-only guard. Irrelevant to B5 either way: B5 is a phone-side motion-log test with no watch involvement."
+  },
+  "fielddata_files_seen": [
+    "A7a",
+    "C6a",
+    "C7a",
+    "B4",
+    "B5B",
+    "B5"
+  ],
+  "notified_message_ids": [
+    "1a015d04ff471bff",
+    "19ffbfce53fed803",
+    "19ffc305705336fc"
+  ],
+  "closed_decisions": [
+    {
+      "id": "phonelink-swift",
+      "opened": "2026-08-17",
+      "closed": "2026-08-23",
+      "owner": "jake",
+      "chose": "split-response (third option) \u2014 NOT the 17 Aug diff, and not a revert",
+      "summary": "Staleness CHECK now covers both the activation snapshot and the ongoing didReceiveApplicationContext path. The RESPONSE splits: resetToIdle() when cached (activation) or when the payload explicitly says state 'idle'; otherwise drop the stale payload and keep current state. Out-of-order lastAppliedAt check moved above the staleness check.",
+      "why": "The 17 Aug diff routed every stale payload into resetToIdle(), which calls WorkoutSession.shared.end(). On the ongoing path that is reachable mid-walk, and age there is ambiguous - a backgrounded phone whose JS push effect is throttled looks identical to a delayed delivery. A false positive would drop the watch out of a live walk and make the app more suspendable.",
+      "correction": "Prior wording 'stale-snapshot guard removal' was wrong in the ledger, the buglist and this file. The change broadens the guard; what the 17 Aug diff removed was the 'cached' parameter.",
+      "state": "UNCOMMITTED and UNVERIFIED - no xcodebuild run, no Swift toolchain reachable. Verify before cutting build 32."
+    }
+  ],
+  "watching": [
+    {
+      "id": "watch-stale-payload-handling",
+      "since": "2026-08-23",
+      "summary": "Neither failure mode has ever been seen in the field. In-tree fix is reasoned from code, not measured.",
+      "field_symptoms": [
+        "Watch shows 'Start cleanup' or 0 during a walk the phone is still tracking",
+        "Watch stuck showing an active walk after the phone finished one",
+        "Wrist-raise mid-walk lands on the clock face instead of the walk screen (WorkoutSession ended)"
+      ]
+    }
+  ]
+}
