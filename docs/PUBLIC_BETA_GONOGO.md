@@ -15,7 +15,23 @@ two text fields.
 So this is not an engineering decision. It's a "how many strangers do I want,
 and what breaks when they arrive" decision.
 
-## Check first — you may already be public
+## ANSWERED 23 Aug — the beta is already public
+
+`testflight.apple.com/join/6753UhuM` is a live public link and it is published
+on `download.html`. **This document is not a go/no-go any more.** Everything
+below is a description of a beta that is already running, and every gate in it
+is current exposure rather than a future decision. Read it that way.
+
+Two things to check in App Store Connect right now, because both may be
+unset and both are live:
+
+1. **Tester limit.** If none was set, the link runs to the 10,000 ceiling.
+2. **Beta App Description.** It is the first thing a stranger reads, and it may
+   still describe the pre-19-August detector — or be empty.
+
+<details><summary>Original "check first" section, kept for the record</summary>
+
+### Check first — you may already be public
 
 `download.html` links to `testflight.apple.com/join/6753UhuM`.
 
@@ -31,6 +47,8 @@ changes the whole question:
   about tightening it, not starting it.
 - **Not public** → the site has been promising an open beta behind a link that
   can't deliver one, and that's the first thing to fix either way.
+
+</details>
 
 ## Mechanics — the whole list
 

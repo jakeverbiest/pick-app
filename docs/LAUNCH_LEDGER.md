@@ -53,10 +53,12 @@ Ledger opened: 2026-08-23
 | Item | Status |
 |---|---|
 | Approved build | ✅ Build 31, cleared TestFlight review 12–13 Aug. **No build 32 needed, no Apple wait.** |
-| **Is the link already public?** | **UNKNOWN — check first.** `download.html` links `testflight.apple.com/join/6753UhuM`; that `/join/` form is the public-link format, but the ledger calls the group friends-and-family. Both can't be true. |
+| **Is the link already public?** | **CONFIRMED PUBLIC 2026-08-23 (Jake).** `testflight.apple.com/join/6753UhuM` is a live public link, published on `download.html`. **The public beta is already running** — the question was never go/no-go, it is how to tighten a beta that is already open. Every item below is live exposure, not a future risk. |
+| Tester limit — set? | **CHECK.** If no limit was set, the link is open to the 10,000 ceiling. This is the support-load lever and it may currently be wide open. |
+| Beta App Description — current? | **CHECK.** It is the first thing a public joiner reads. Unknown whether it was ever written or whether it still describes the pre-19-Aug detector. Draft in `PUBLIC_BETA_GONOGO.md`. |
 | Test Information | Beta App Description + feedback email required. Draft in `PUBLIC_BETA_GONOGO.md`. |
 | Tester limit | 1–10,000, editable any time. **The support-load lever.** |
-| Detector export CF | **Gates the value, not the launch.** Public testers are anonymous in App Store Connect — no one to ask for a screenshot. Without it a public beta yields zero detector evidence. |
+| Detector export CF | **Now the top priority — the beta is already open.** Any stranger who has walked since the link went up produced `items_detected` that is stored, owned, and unreadable. The function recovers it retroactively. **Gates the value, not the launch.** Public testers are anonymous in App Store Connect — no one to ask for a screenshot. Without it a public beta yields zero detector evidence. |
 | Support promises | `support.html` commits to "every message is read" and reports "reviewed within 24 hours" — a moderation SLA in writing. Cap the beta so both stay true, or soften them. |
 | Stale detector claim | `index`, `about`, `support` all still say the detector over-counts on a slow stroll. Untrue since 19 Aug. Fix before inviting strangers. |
 
@@ -105,6 +107,7 @@ Ledger opened: 2026-08-23
 
 | Run | Moved | Notes |
 |---|---|---|
+| 2026-08-23 (local, 4th) | Public link confirmed live; docs committed | Beta is already public — reframes go/no-go as "tighten what's running". Site copy corrected on disk (4 pages) and index trimmed 1168→920 words; **not yet deployed**. Ledger + docs committed in `9c0b778`. **Push still pending — no GitHub credentials reachable from the agent session.** |
 | 2026-08-23 (local, 3rd) | Public beta assessed; website scoped | Build 31 is already approved — a public beta needs no new build. LLC deferred by Jake. Two docs added. Open question: whether the TestFlight link is already public. |
 | 2026-08-23 (local, 2nd) | PhoneLink resolved in tree | Jake chose the split-response option over commit-as-is / revert. Written, unverified, uncommitted. Opened a Watching section. |
 | 2026-08-23 (local) | EAS blocker retired; PhoneLink row corrected | Re-read the 13 Aug Expo email: 80% used, a warning, not a stop — EAS moved out of hard blockers. PhoneLink row said the change "removes" the guard; the diff broadens it. No hard blockers open. `pick-state.json` in Drive still carries both stale facts — see note below. |
