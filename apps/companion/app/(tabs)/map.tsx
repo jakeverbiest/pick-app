@@ -1349,6 +1349,20 @@ export default function MapScreen() {
     );
     setIsListening(true);
 
+    // Walk 1b (24 Aug 2026) saved as a clean-looking 6-minute walk with an
+    // empty motion_log — startListening() had failed partway and never attached
+    // the accelerometer, but the timer ran and the route drew from the watch
+    // below, so nothing on screen said otherwise. A silent zero-count walk is
+    // worse than a visible error: the user finishes, sees 0, and concludes the
+    // app doesn't work. Ask up front rather than let them walk for nothing.
+    if (!MotionDetector.sensorsAttached()) {
+      Alert.alert(
+        'Motion sensors did not start',
+        "This walk won't count pickups automatically. You can still walk and add your count at the end, or stop and try starting again.",
+        [{ text: 'OK' }]
+      );
+    }
+
     // Black box: drop a sentinel to disk so a screen-off crash leaves a trail
     // (recovered at next launch). Cleared on a clean Stop below. The build label
     // tells us dev/Expo-Go vs a real build when reading recovered reports.

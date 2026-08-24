@@ -633,11 +633,19 @@ export function walkPaceProfile(events: { speed?: number }[]): PaceProfile {
  * than to a fixed number. On B4 the ratio at real picks had median 0.36; at
  * false positives, 1.05.
  *
- * ONLY ACTIVE ON A STROLL. If the trailing median is at or above
- * PACE_CONTEXT.strollMps the absolute gate and the rhythmic/multi-peak filters
- * already work, and applying this as well would suppress genuine picks taken
- * without stopping. Measured on C6a (picking at 1.19 m/s WITHOUT stopping):
- * always-on costs 5 of 12 real picks; stroll-only costs zero.
+ * SCOPE, AND THE TRADE IT MAKES (revised 24 Aug 2026).
+ * This was stroll-only until 24 Aug, on the assumption that above
+ * PACE_CONTEXT.strollMps the absolute gate and the rhythmic filters already
+ * coped. Walks 1a/2a/2b disproved that: 1.0-1.3 m/s was covered by neither
+ * gate and leaked ~1.1 false positives per minute. The ceiling is now removed.
+ *
+ * That is a trade, not a free win, and the cost is measured. On C6a (picking
+ * at 1.19 m/s WITHOUT ever stopping) an always-on gate costs 5 of 12 real
+ * picks; stroll-only cost zero. So this change buys precision for the walk ->
+ * STOP -> pick pattern and takes ~40% recall from anyone who picks on the
+ * move. It is justified only because stopping to pick is the normal technique
+ * and picking at full stride is the edge case. If that premise ever changes,
+ * this ceiling is the first thing to put back.
  *
  * Simulated effect at ratio 0.8 (see docs/fielddata/*.csv):
  *   B4  keeps 12/17 picks, cuts 28/31 false positives -> ~15 counted for 20
@@ -701,7 +709,20 @@ export function trailingMedianSpeed(
  *    B4's 17 real picks likewise showed a ratio above 1 because GPS had not
  *    caught the stop yet.
  *  - unknown speed, or too few samples for a trailing median
- *  - trailing median at or above strollMps — not a stroll, so leave it alone
+ *
+ * The strollMps ceiling that used to sit here is GONE (24 Aug 2026). It was
+ * meant to keep this gate out of the way at normal walking speeds, where the
+ * absolute gate and the rhythmic filters were assumed to cope. Walks 1a/2a/2b
+ * showed they don't: the absolute gate only fires above briskWalkSpeedMps 1.3
+ * and this one switched itself off at 1.0, leaving 1.0-1.3 m/s — an ordinary
+ * moderate walking pace — covered by neither. False positives rose straight
+ * down that ramp (1.34 m/s: 0.16/min; 1.19: 1.11/min; 1.07: 1.33/min), and all
+ * three of 2b's leaks sat at 1.08-1.20 m/s, dead centre of the gap.
+ *
+ * The effective threshold is now min(briskWalkSpeedMps, ratio * median), so it
+ * tightens where the band was open and changes nothing at a sprint. A genuine
+ * stop reads near zero and clears it by a wide margin; minStopMps below is
+ * still the hard floor.
  */
 export function isStillAtOwnPace(
   speedMps: number,
@@ -711,7 +732,6 @@ export function isStillAtOwnPace(
   if (!isSpeedFresh(speedAgeMs)) return false;
   if (speedMps < 0) return false;
   if (trailingMedianMps === null || trailingMedianMps <= 0) return false;
-  if (trailingMedianMps >= PACE_CONTEXT.strollMps) return false;
   // You are stopped. Never suppress, whatever the median has collapsed to.
   if (speedMps < RELATIVE_PACE.minStopMps) return false;
   return speedMps > RELATIVE_PACE.ratio * trailingMedianMps;

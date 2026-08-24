@@ -170,6 +170,8 @@ class MotionDetector {
       this.onPickupCallback = onPickup || null;
       this.onErrorCallback = onError || null;
       this.isListening = true;
+      this.accelSubscription = null;
+      this.gyroSubscription = null;
       this.sessionEvents = [];
       // Reset per-session pickup state. These were NOT cleared before, so
       // pickupEvents accumulated across every walk in an app session — and the
@@ -205,61 +207,15 @@ class MotionDetector {
       this.lastAutoCarry = 'unknown';
       console.log('👖 Carry mode: auto (classifying from gyro baseline)');
 
-      // Request location permissions
-      const { status } = await Location.requestForegroundPermissionsAsync();
-      if (status !== 'granted') {
-        console.warn('Location permission denied');
-      } else {
-        // Start location tracking
-        // High/3s: Balanced (~100m) scattered route points across the street,
-        // which broke sidewalk-level segment snapping (11m snap + 80% coverage)
-        // — cleaned blocks never registered as fresh. High (~5-10m) keeps the
-        // route on the correct side. 3s cadence (vs 1s) keeps most of the
-        // battery win from the old Balanced/5s config.
-        this.locationSubscription = await Location.watchPositionAsync(
-          {
-            accuracy: Location.Accuracy.High,
-            // Aug 16 (A2/B2 field tests): both of these changed together, and
-            // the reason matters more than the numbers. `distanceInterval: 2`
-            // was a battery tune, but iOS applies it as a hard distance FILTER
-            // — a phone standing still emits NO fixes, whatever timeInterval
-            // says. So the moment you stopped to pick something up, `speed`
-            // froze at your last walking value and the pause gate below
-            // rejected the real pickup. B2 held one reading for 8 seconds
-            // straight across a stop. 0 = no distance filter, so fixes keep
-            // arriving while stationary and a stop reads as ~0 m/s.
-            // timeInterval 3000 -> 1000 for the same reason: a pick takes
-            // ~2s, so a 3s fix cadence can't resolve one. Battery cost is
-            // modest here because Accuracy.High already keeps the GPS warm —
-            // callback rate is the cheap part. Dial back to 2000 if a long
-            // walk shows real drain.
-            timeInterval: 1000,
-            distanceInterval: 0,
-          },
-          (location) => {
-            this.lastLocation = {
-              latitude: location.coords.latitude,
-              longitude: location.coords.longitude,
-              accuracy: location.coords.accuracy || 0,
-              speed: location.coords.speed ?? -1,
-            };
-            this.lastLocationAt = Date.now();
-            this.recentFixes.push({
-              at: this.lastLocationAt,
-              lat: location.coords.latitude,
-              lon: location.coords.longitude,
-            });
-            if (typeof location.coords.speed === 'number' && location.coords.speed > 0) {
-              this.speedHistory.push({ atMs: this.lastLocationAt, speedMps: location.coords.speed });
-              const sCut = this.lastLocationAt - RELATIVE_PACE.windowMs;
-              this.speedHistory = this.speedHistory.filter((x) => x.atMs >= sCut);
-            }
-            const cutoff = this.lastLocationAt - STRIDE.windowMs;
-            while (this.recentFixes.length && this.recentFixes[0].at < cutoff) this.recentFixes.shift();
-          }
-        );
-      }
-
+      // Sensors FIRST, before anything that can throw (24 Aug 2026, walk 1b).
+      // 1b saved as a normal-looking 6-minute walk with a COMPLETELY EMPTY
+      // motion_log: zero events, zero counted, pace -1. The route drew fine
+      // because map.tsx runs its own location watch, so nothing looked wrong.
+      // Cause: the location setup below used to sit between the sessionEvents
+      // reset and this subscribe, inside the same try. Location.watchPositionAsync
+      // can reject, and when it did the catch swallowed it and the accelerometer
+      // was never attached at all — a silent, total detection failure for the
+      // whole walk. Detection must not be downstream of a location call.
       Accelerometer.setUpdateInterval(100);
       Gyroscope.setUpdateInterval(100);
 
@@ -271,6 +227,69 @@ class MotionDetector {
       this.gyroSubscription = Gyroscope.addListener(({ x, y, z }) => {
         this.lastGyro = { x, y, z };
       });
+
+      // Location is best-effort: without it the pace gates go inert and
+      // detection gets less selective, but it still runs. A failure here must
+      // never take the accelerometer down with it — see the note above.
+      try {
+        // Request location permissions
+        const { status } = await Location.requestForegroundPermissionsAsync();
+        if (status !== 'granted') {
+          console.warn('Location permission denied');
+        } else {
+          // Start location tracking
+          // High/3s: Balanced (~100m) scattered route points across the street,
+          // which broke sidewalk-level segment snapping (11m snap + 80% coverage)
+          // — cleaned blocks never registered as fresh. High (~5-10m) keeps the
+          // route on the correct side. 3s cadence (vs 1s) keeps most of the
+          // battery win from the old Balanced/5s config.
+          this.locationSubscription = await Location.watchPositionAsync(
+            {
+              accuracy: Location.Accuracy.High,
+              // Aug 16 (A2/B2 field tests): both of these changed together, and
+              // the reason matters more than the numbers. `distanceInterval: 2`
+              // was a battery tune, but iOS applies it as a hard distance FILTER
+              // — a phone standing still emits NO fixes, whatever timeInterval
+              // says. So the moment you stopped to pick something up, `speed`
+              // froze at your last walking value and the pause gate below
+              // rejected the real pickup. B2 held one reading for 8 seconds
+              // straight across a stop. 0 = no distance filter, so fixes keep
+              // arriving while stationary and a stop reads as ~0 m/s.
+              // timeInterval 3000 -> 1000 for the same reason: a pick takes
+              // ~2s, so a 3s fix cadence can't resolve one. Battery cost is
+              // modest here because Accuracy.High already keeps the GPS warm —
+              // callback rate is the cheap part. Dial back to 2000 if a long
+              // walk shows real drain.
+              timeInterval: 1000,
+              distanceInterval: 0,
+            },
+            (location) => {
+              this.lastLocation = {
+                latitude: location.coords.latitude,
+                longitude: location.coords.longitude,
+                accuracy: location.coords.accuracy || 0,
+                speed: location.coords.speed ?? -1,
+              };
+              this.lastLocationAt = Date.now();
+              this.recentFixes.push({
+                at: this.lastLocationAt,
+                lat: location.coords.latitude,
+                lon: location.coords.longitude,
+              });
+              if (typeof location.coords.speed === 'number' && location.coords.speed > 0) {
+                this.speedHistory.push({ atMs: this.lastLocationAt, speedMps: location.coords.speed });
+                const sCut = this.lastLocationAt - RELATIVE_PACE.windowMs;
+                this.speedHistory = this.speedHistory.filter((x) => x.atMs >= sCut);
+              }
+              const cutoff = this.lastLocationAt - STRIDE.windowMs;
+              while (this.recentFixes.length && this.recentFixes[0].at < cutoff) this.recentFixes.shift();
+            }
+          );
+        }
+      } catch (locErr) {
+        console.warn('Location setup failed — detection continues without pace context:', locErr);
+        this.onErrorCallback?.('Location unavailable — pickup counts may be less accurate');
+      }
 
       // Step-counter corroboration (Aug 16): a step landing on top of a
       // pickup candidate is strong evidence it's a stride bounce, not a
@@ -314,6 +333,13 @@ class MotionDetector {
     this.gyroSubscription?.remove?.();
     this.locationSubscription?.remove?.();
     this.pedometerSubscription?.remove?.();
+    // Null every handle, not just the pedometer's. sensorsAttached() reads
+    // accelSubscription to answer "is detection actually live?", and a stale
+    // non-null handle from a previous walk would make a dead session look
+    // healthy — the exact failure that check exists to catch.
+    this.accelSubscription = null;
+    this.gyroSubscription = null;
+    this.locationSubscription = null;
     this.pedometerSubscription = null;
     this.isListening = false;
     console.log('Motion detection stopped');
@@ -526,6 +552,23 @@ class MotionDetector {
               // Still mid-stride — almost certainly a walking bounce, not a
               // pause-and-bend pickup. Suppress (logged, not counted).
               suppressed = true;
+              // Walk 2b (24 Aug 2026): this branch used to suppress WITHOUT
+              // refreshing lastRhythmicTime, so the 2.5s window only ever ran
+              // from the last *rhythmic* window. At a moderate pace rhythmic
+              // windows land every 2-3s, and every time two of them happened to
+              // fall more than 2.5s apart, whichever stride sat in the gap was
+              // counted. All three of 2b's false positives are that exact
+              // pattern — rhythmic, then a suppressed stride, then a counted
+              // one 2-3s later. Nothing distinguished the counted events from
+              // the 14 suppressed ones; they just landed in the hole.
+              //
+              // A suppressed stride is evidence of walking too, so it extends
+              // the window — but ONLY while the phone agrees we're striding.
+              // Without the veto this could chain forward through a
+              // deceleration and swallow the first pick after a stop; with it,
+              // slowing to a stop stops refreshing and the window expires on
+              // its own. Same veto the cadence and monotony branches use.
+              if (!notStriding) this.lastRhythmicTime = now;
             } else if (strideSuspect && !notStriding) {
               // Separate short windows landing at a metronomic stride interval —
               // the steady-walk case the old within-window filter couldn't see.
@@ -592,6 +635,19 @@ class MotionDetector {
         }
       }
     }
+  }
+
+  /**
+   * Did the accelerometer actually attach? (24 Aug 2026, walk 1b.)
+   *
+   * startListening() can fail partway and leave a session running with no
+   * motion subscription at all — the timer counts, the route draws from
+   * map.tsx's own watch, and the walk saves looking clean with an empty
+   * motion_log and a count of zero. There is no way for the user to tell.
+   * The caller checks this right after starting so the failure is loud.
+   */
+  sensorsAttached(): boolean {
+    return this.isListening && this.accelSubscription !== null;
   }
 
   /** Flight recorder: all motion events from the current/last session. */

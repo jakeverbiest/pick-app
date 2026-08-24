@@ -505,14 +505,33 @@ check('B4 amble (0.90) IS still-at-pace -> suppressed',
 // The absolute gate would have caught NONE of those — that is the whole point.
 check('the absolute gate misses all of them', isBriskWalkingPace(0.90), false);
 
-// --- stroll-only: C6a picked WITHOUT stopping at 1.19 m/s. Always-on costs
-//     5 of 12 real picks there; gating on the stroll threshold costs zero. ---
-check('C6a normal-pace walk: gate stays OFF even at pace',
-  isStillAtOwnPace(1.19, C6A_WALK_MEDIAN, FRESH), false);
-check('C6a normal-pace walk: gate stays OFF at a slow moment too',
-  isStillAtOwnPace(0.60, C6A_WALK_MEDIAN, FRESH), false);
-check('threshold that switches it on is PACE_CONTEXT.strollMps',
-  C6A_WALK_MEDIAN >= PACE_CONTEXT.strollMps && B4_STROLL_MEDIAN < PACE_CONTEXT.strollMps, true);
+// --- the 1.0-1.3 m/s band (24 Aug 2026, walks 1a/2a/2b) ---
+// This gate was stroll-only until 24 Aug. That left an ordinary moderate
+// walking pace covered by NEITHER gate: the absolute one only fires above
+// briskWalkSpeedMps 1.3, this one switched off at strollMps 1.0. False
+// positives climbed straight down that ramp on zero-pick walks --
+// 1.34 m/s: 0.16/min, 1.19: 1.11/min, 1.07: 1.33/min -- and all three of 2b's
+// leaks sat at 1.08-1.20 m/s. The ceiling is gone; the gate now runs at any pace.
+check('2b band (1.19 at a 1.19 median) IS still-at-pace -> suppressed',
+  isStillAtOwnPace(1.19, C6A_WALK_MEDIAN, FRESH), true);
+check('2b leak speeds are all suppressed at their own median',
+  [1.20, 1.15, 1.08].every((v) => isStillAtOwnPace(v, 1.19, FRESH)), true);
+// A real STOP still clears it by a wide margin at any pace -- that is what
+// makes removing the ceiling safe for the walk -> stop -> pick pattern.
+check('a real stop at moderate pace is NOT suppressed',
+  isStillAtOwnPace(0.20, C6A_WALK_MEDIAN, FRESH), false);
+check('a real stop at brisk pace is NOT suppressed',
+  isStillAtOwnPace(0.20, 1.50, FRESH), false);
+// THE COST, recorded so it cannot be quietly forgotten. C6a picked WITHOUT
+// stopping at 1.19 m/s; an always-on gate costs 5 of its 12 real picks. This
+// change buys precision for walk -> stop -> pick and takes ~40% recall from
+// picking on the move. Justified only while stopping is the normal technique.
+check('C6a-style pick-on-the-move IS now suppressed (the accepted cost)',
+  isStillAtOwnPace(1.05, C6A_WALK_MEDIAN, FRESH), true);
+// Above briskWalkSpeedMps the absolute gate already covered things, so the
+// union threshold is unchanged at a sprint -- this only tightens the gap band.
+check('effective threshold is min(brisk, ratio * median)',
+  Math.min(PACE.briskWalkSpeedMps, RELATIVE_PACE.ratio * 2.0) === PACE.briskWalkSpeedMps, true);
 
 // --- stands down rather than guessing ---
 // Load-bearing: on B2 a frozen fix made the absolute gate reject REAL pickups
