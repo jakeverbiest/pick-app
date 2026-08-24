@@ -601,7 +601,7 @@ check('peak window is 0.9-3.5g', THRESHOLDS.peakAccelMin === 0.9 && THRESHOLDS.p
     isStillAtOwnPace(0.15, med, 200), false);
   // all-stopped window => too few pace samples => stand down rather than guess
   check('a fully stopped window yields no median (stands down)',
-    trailingMedianSpeed(mk([0.1, 0.05, 0.2]), now), null);
+    trailingMedianSpeed(mk([0.1, 0.05, 0.2]), now) === null, true);
 }
 
 console.log(`\n${failures === 0 ? '✅ ALL PASSED' : `❌ ${failures} FAILURE(S)`}`);
