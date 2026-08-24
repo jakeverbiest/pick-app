@@ -53,11 +53,27 @@ technique. B6 is the test of whether the trade lands where I think it does.
 
 **B6 — recall.** Moderate pace, target **1.1-1.3 m/s** (this is the band the
 change targets; do NOT stroll and do NOT stride). **Full stop for each pick**,
-about 2 seconds down and back up as if dropping into a bag. **20 picks** over
-roughly 6 minutes. Phone pocketed.
+about 2 seconds down and back up as if dropping into a bag. **20 picks, spaced
+about 10 seconds apart** — roughly 4 minutes. Phone pocketed.
+
+Duration is not the requirement here; **spacing** is. B6 counts events, so what
+matters is that consecutive picks clear `COOLDOWN.stridingMs` (2500ms), below
+which two picks merge into one and cost recall for a reason that has nothing to
+do with the change under test. 10s spacing clears it four times over. Stops do
+not degrade the trailing median either — `speedHistory` only records fixes with
+`speed > 0`, so a stopped sample is never in the median. Dense picking is safe.
+
+**Walk for at least 10 seconds after the final pick before tapping Stop.**
+`trimRecentPickups(6000)` discards every pickup detected in the last 6 seconds
+of a session — it is the pocket-removal guard, working as designed. Pick number
+20 and then immediately stop, and B6 reads 19 for a protocol reason. This has
+already caused one false bug report (the 23-vs-21 gap on an earlier walk).
 
 **A8 — precision.** Same moderate pace, **zero picks, zero stops**, about 4
-minutes. This is the direct rerun of 2b.
+minutes. This is the direct rerun of 2b, and unlike B6 the **duration is the
+sample size** — A8 measures a rate, so cutting it short widens the error bar on
+the one number it exists to produce. At 4 minutes, PASS is 0-1 counted events
+and FAIL is 3 or more. Do not shorten this one.
 
 ## Predictions (falsifiable, frozen)
 
