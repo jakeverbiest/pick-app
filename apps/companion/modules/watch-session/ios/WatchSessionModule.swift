@@ -12,7 +12,10 @@ final class PhoneWatchLink: NSObject, WCSessionDelegate {
   static let shared = PhoneWatchLink()
 
   /// Set by the module; called on the main queue with the command string.
-  var onCommand: ((String) -> Void)?
+  /// (command, atMs). atMs is the WATCH's own capture time for ground-truth
+  /// taps, 0 for plain commands — see PhoneLink.logPick() for why it cannot be
+  /// stamped on arrival here.
+  var onCommand: ((String, Double) -> Void)?
 
   private override init() {
     super.init()
@@ -73,10 +76,22 @@ final class PhoneWatchLink: NSObject, WCSessionDelegate {
     replyHandler(["ok": true])
   }
 
+  /// `transferUserInfo` lands here. Ground-truth taps use that path rather than
+  /// sendMessage because it is queued and guaranteed: sendMessage needs
+  /// `isReachable` and drops the payload otherwise, and a dropped tap would read
+  /// downstream as a pick the detector missed.
+  func session(
+    _ session: WCSession,
+    didReceiveUserInfo userInfo: [String: Any] = [:]
+  ) {
+    handle(message: userInfo)
+  }
+
   private func handle(message: [String: Any]) {
     guard let cmd = message["cmd"] as? String else { return }
+    let atMs = message["atMs"] as? Double ?? 0
     DispatchQueue.main.async { [weak self] in
-      self?.onCommand?(cmd)
+      self?.onCommand?(cmd, atMs)
     }
   }
 }
@@ -88,8 +103,8 @@ public class WatchSessionModule: Module {
     Events("onWatchCommand")
 
     OnCreate {
-      PhoneWatchLink.shared.onCommand = { [weak self] cmd in
-        self?.sendEvent("onWatchCommand", ["command": cmd])
+      PhoneWatchLink.shared.onCommand = { [weak self] cmd, atMs in
+        self?.sendEvent("onWatchCommand", ["command": cmd, "atMs": atMs])
       }
       PhoneWatchLink.shared.activate()
     }

@@ -81,6 +81,10 @@ export interface Cleanup {
   neighborhood?: string; // geo-derived — the local board this walk counts toward
   route_points?: string; // JSON array of [lat, lon] pairs
   motion_log?: string; // JSON flight-recorder events (tuning data, ~100B/event)
+  /** JSON number[] — walk-seconds of each tester LOG PICK tap on the watch.
+   *  Absent on ordinary walks. The labelled truth that makes items_detected
+   *  scoreable rather than just a total. */
+  ground_truth?: string;
   synced?: boolean;
 }
 

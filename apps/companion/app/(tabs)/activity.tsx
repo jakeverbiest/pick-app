@@ -197,6 +197,8 @@ export default function ActivityScreen() {
         location: { lat: cleanup.location_lat, lon: cleanup.location_lon },
         route_points: cleanup.route_points ? JSON.parse(cleanup.route_points) : [],
         motion_log: cleanup.motion_log ? JSON.parse(cleanup.motion_log) : 'not recorded',
+        // Present only on tester walks with ground-truth mode on.
+        ground_truth: cleanup.ground_truth ? JSON.parse(cleanup.ground_truth) : [],
         notes: cleanup.notes || 'N/A',
       };
       await Clipboard.setStringAsync(JSON.stringify(exportData, null, 2));

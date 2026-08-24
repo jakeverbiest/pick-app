@@ -32,6 +32,7 @@ import { SPACING } from '../../src/constants/colors';
 import { C, Fonts, radius } from '../../src/pick/theme';
 import { Icon } from '../../src/pick/Icon';
 import { addWatchCommandListener, sendStatsToWatch } from '../../modules/watch-session';
+import { groundTruthModeSync, isGroundTruthMode } from '../../src/services/groundTruthMode';
 import { startCleanupActivity, updateCleanupActivity, endCleanupActivity } from '../../modules/live-activity';
 import { findMyLiveEvent, subscribeEventTotal, reportSessionPickups, commitSessionPickups, LiveEvent } from '../../src/services/challengeLive';
 import { refreshMyChallengeContributions } from '../../src/services/challenges';
@@ -165,6 +166,9 @@ export default function MapScreen() {
   const [tooFast, setTooFast] = useState(false);
   const [batterySaver, setBatterySaver] = useState(true); // Optimized for battery
   const pickupCounterRef = useRef(0); // Track pickups since last location record
+  /** Tester ground truth: walk-seconds of each LOG PICK tap on the watch.
+   *  Never feeds the count — it is the measuring stick, not a measurement. */
+  const groundTruthRef = useRef<number[]>([]);
   const currentLocationRef = useRef<{ lat: number; lon: number } | null>(null); // latest fix — pickup-pin fallback
   const [gpsInterval, setGpsInterval] = useState(20000); // 20s base interval
   const lastPickupTimeRef = useRef(0);
@@ -290,6 +294,8 @@ export default function MapScreen() {
     requestLocationPermission();
     // Warm the haptics preference cache so the in-walk path stays synchronous.
     void isSegmentHapticsEnabled();
+    // Same for ground-truth mode: the watch push reads it synchronously.
+    void isGroundTruthMode();
     // Get initial location on mount
     trackLocation();
   }, []);
@@ -1289,6 +1295,7 @@ export default function MapScreen() {
     // commitSessionPickups() for the challenge live counter and the crash
     // heartbeat, so the 2nd+ walk in one app lifetime over-reported both.
     pickupCounterRef.current = 0;
+    groundTruthRef.current = [];
     setSegmentsCompleted(0);
     setElapsedSeconds(0);
     setSessionRoute([]);
@@ -1543,11 +1550,23 @@ export default function MapScreen() {
   }, [pickupCount, isListening, liveEvent]);
 
   useEffect(() => {
-    const sub = addWatchCommandListener((cmd) => {
+    const sub = addWatchCommandListener((cmd, atMs) => {
       if (cmd === 'startWalk' && !isListeningRef.current) {
         void startCleanupRef.current();
       } else if (cmd === 'endWalk' && isListeningRef.current) {
         finishCleanupRef.current();
+      } else if (cmd === 'logPick' && isListeningRef.current) {
+        // Tester ground truth. Stored as walk-seconds so it lines up directly
+        // against motion_log.t, and derived from the WATCH's capture time
+        // (atMs) rather than arrival: transferUserInfo is queued, so a tap can
+        // land here seconds late and would otherwise misalign by exactly the
+        // amount the analysis is trying to resolve. Falls back to arrival time
+        // only if the watch sent none.
+        const startedAt = sessionStartRef.current;
+        if (startedAt > 0) {
+          const at = atMs > 0 ? atMs : Date.now();
+          groundTruthRef.current.push(Math.round((at - startedAt) / 1000));
+        }
       }
     });
     return () => sub.remove();
@@ -1598,6 +1617,7 @@ export default function MapScreen() {
       sessionId: watchSessionRef.current,
       segments: String(segmentsCompleted),
       haptics: segmentHapticsEnabledSync() ? '1' : '0',
+      groundTruth: groundTruthModeSync() ? '1' : '0',
       distance: fmtDistance(parseFloat(String(calculateCoverage().distance || '0'))),
       progress: activeLevel
         ? `${activeLevel.freshPct}%${activeLevel.toGo > 0 ? ` · ${activeLevel.toGo} to go` : ' · complete!'}`
@@ -1756,6 +1776,12 @@ export default function MapScreen() {
           ).slice(0, 300),
         ),
         motion_log: JSON.stringify(MotionDetector.getSessionEvents()),
+        // Tester ground truth: walk-seconds of each LOG PICK tap on the watch,
+        // empty for everyone else. This is what makes a count scoreable —
+        // "39 counted for 20 real" is equally consistent with every pick being
+        // counted twice and with twelve double-counts plus fifteen false
+        // positives, and those need opposite fixes.
+        ground_truth: JSON.stringify(groundTruthRef.current),
       } as any);
 
       const updatedStats = await db.getCleanupStats();

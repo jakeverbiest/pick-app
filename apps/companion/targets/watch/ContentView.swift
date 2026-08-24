@@ -137,6 +137,27 @@ struct StatsPage: View {
             }
           }
         }
+        // Tester-only: log a real pick for ground truth. Hidden unless the
+        // phone sets `groundTruth`, so a normal user's screen is byte-for-byte
+        // what it was and there is no new target to catch a stray palm.
+        //
+        // On the wrist ON PURPOSE. The equivalent button on the phone would
+        // mean taking it out of your pocket to tap, which flips the carry-mode
+        // classifier from pocket to hand for the whole walk and adds a
+        // raise-and-tap motion 1-2s after every pick — the exact signature of
+        // the double-count being measured. The instrument would manufacture
+        // the artifact. Wrist motion never reaches a pocketed phone.
+        if link.groundTruthMode && link.state == .active {
+          Button(action: { link.logPick() }) {
+            Text("LOG PICK")
+              .font(.system(size: 15, weight: .bold, design: .rounded))
+              .frame(maxWidth: .infinity)
+              .padding(.vertical, 6)
+          }
+          .buttonStyle(.borderedProminent)
+          .tint(.orange)
+          .padding(.top, 4)
+        }
       }
       .frame(maxWidth: .infinity)
 

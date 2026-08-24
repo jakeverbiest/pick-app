@@ -34,6 +34,11 @@ final class PhoneLink: NSObject, ObservableObject, WCSessionDelegate {
   @Published var eventName: String = ""
   @Published var eventPct: String = "" // e.g. "64%"
   @Published var phoneReachable: Bool = false
+  /// Tester-only ground-truth logging. Driven entirely by the phone (`groundTruth`
+  /// in the stats payload), so the button below is invisible to normal users even
+  /// though every build contains it — and the gate itself stays in phone-side JS,
+  /// which means it can be turned on for a tester over the air without a rebuild.
+  @Published var groundTruthMode: Bool = false
   /// Set briefly when a command fails so the UI can say "Open PICK on your phone."
   @Published var lastError: String?
 
@@ -122,6 +127,34 @@ final class PhoneLink: NSObject, ObservableObject, WCSessionDelegate {
     eventPct = ""
     sessionId = ""
     startRequestedAt = 0
+    groundTruthMode = false
+  }
+
+  /// Log a real pick, for measuring the detector against ground truth.
+  ///
+  /// Two things here are deliberate and both were failure modes waiting to
+  /// happen (24 Aug 2026):
+  ///
+  /// 1. The timestamp is taken HERE, on the wrist, at the moment of the tap —
+  ///    not when the phone receives it. WatchConnectivity delivery is delayed
+  ///    and interleaved (the whole staleness guard above exists because of
+  ///    that), and a two-second delivery delay would become a two-second
+  ///    alignment error — the same magnitude as the double-counting this is
+  ///    meant to measure. A ground truth that drifts is worse than none.
+  ///
+  /// 2. `transferUserInfo`, not `sendMessage`. sendMessage requires
+  ///    `isReachable` and drops the payload otherwise — and a silently dropped
+  ///    tap reads downstream as a pick the detector missed, i.e. it would
+  ///    manufacture a recall failure out of a connectivity blip.
+  ///    transferUserInfo is queued, ordered and guaranteed.
+  func logPick() {
+    let session = WCSession.default
+    guard session.activationState == .activated else { return }
+    session.transferUserInfo([
+      "cmd": "logPick",
+      "atMs": Date().timeIntervalSince1970 * 1000,
+    ])
+    WKInterfaceDevice.current().play(.click)
   }
 
   private func send(command: String) {
@@ -235,6 +268,7 @@ final class PhoneLink: NSObject, ObservableObject, WCSessionDelegate {
 
       if sentAt > 0 { self.lastAppliedAt = sentAt }
       if let h = payload["haptics"] as? String { self.hapticsEnabled = (h == "1") }
+      if let g = payload["groundTruth"] as? String { self.groundTruthMode = (g == "1") }
 
       if let p = payload["pickups"] as? Int {
         // Subtle tick when the count goes up mid-walk.

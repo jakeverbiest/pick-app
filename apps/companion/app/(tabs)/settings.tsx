@@ -36,6 +36,7 @@ import { stopBackgroundSession } from '../../src/services/backgroundSession';
 import { TeamSection } from '../../src/pick/TeamSection';
 import { listMyAdoptions, removeAdoption, Adoption } from '../../src/services/adoptions';
 import { isSegmentHapticsEnabled, setSegmentHapticsEnabled, segmentCompleteHaptic } from '../../src/services/haptics';
+import { isGroundTruthMode, setGroundTruthMode } from '../../src/services/groundTruthMode';
 import { connectBluesky, disconnectBluesky, getBlueskyAccount, type BlueskyAccount } from '../../src/services/bluesky';
 
 // Beta invite (TestFlight public link) + the public community dashboard.
@@ -139,6 +140,7 @@ export default function SettingsScreen() {
   const [communitySharing, setCommunitySharing] = useState(true);
   const [communityAutoPost, setCommunityAutoPost] = useState(false);
   const [segmentHaptics, setSegmentHaptics] = useState(true);
+  const [groundTruth, setGroundTruth] = useState(false);
   const [blueskyAccount, setBlueskyAccount] = useState<BlueskyAccount | null>(null);
   const [blueskyAutoPost, setBlueskyAutoPost] = useState(false);
   const [blueskyModalOpen, setBlueskyModalOpen] = useState(false);
@@ -150,6 +152,7 @@ export default function SettingsScreen() {
     getWeeklyGoal().then(setWeeklyGoalState);
     getBlueskyAccount().then(setBlueskyAccount);
     isSegmentHapticsEnabled().then(setSegmentHaptics);
+    isGroundTruthMode().then(setGroundTruth);
     AsyncStorage.getItem(HEALTH_SYNC_KEY).then((v) => {
       if (v !== null) setHealthSync(v === 'true');
     });
@@ -227,6 +230,12 @@ export default function SettingsScreen() {
     const next = !segmentHaptics;
     setSegmentHaptics(next);
     await setSegmentHapticsEnabled(next);
+  };
+
+  const toggleGroundTruth = async () => {
+    const next = !groundTruth;
+    setGroundTruth(next);
+    await setGroundTruthMode(next);
     // Preview the buzz when turning it on, so the setting explains itself.
     if (next) segmentCompleteHaptic();
   };
@@ -805,6 +814,13 @@ export default function SettingsScreen() {
             sub="A short vibration the moment your route covers a whole street segment — so you feel progress with the phone in your pocket. Your watch buzzes too."
             value={segmentHaptics}
             onPress={toggleSegmentHaptics}
+          />
+          <View style={styles.divider} />
+          <Toggle
+            label="Log my picks on my watch (testing)"
+            sub="Adds a LOG PICK button to the watch during a walk. Tapping it records when you actually picked something up, so the automatic count can be checked against what really happened. It never changes your count. Leave this off unless you're helping test detection."
+            value={groundTruth}
+            onPress={toggleGroundTruth}
           />
           <View style={styles.divider} />
           <Toggle
