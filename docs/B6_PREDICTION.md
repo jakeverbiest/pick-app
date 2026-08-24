@@ -181,3 +181,45 @@ positive," and no amount of re-analysis separates them. The field card's counter
 now records walk-seconds per pick, which aligns directly against `motion_log.t`.
 Until a walk comes back with that list, recall and precision cannot be measured
 separately and any threshold change is guesswork.
+
+---
+
+# B6 RE-RUN — frozen before the walk
+
+Shipped 24 Aug 18:24 as update group `49ee67c1`, commit `6f2c6333`, branch
+production. Contains the median fix, the 1.0-1.3 band change, the
+walking-context refresh, and the sensor-attach reordering.
+
+**This run is a measurement, not a validation, and it is predicted to fail on
+count.** Saying so up front so a bad number is not read as new information.
+
+| # | claim | PASS | FAIL |
+|---|---|---|---|
+| 1 | Still overcounts — the median fix does not touch the stop case | 30-38 counted | < 28 or > 42 |
+| 2 | The overcount is double-counting, not false positives | >= 70% of counted events fall within 3s of a logged pick time | < 50% |
+| 3 | Recall is near-total once double-counts are merged | >= 18 of 20 logged picks have a counted event within 3s | <= 15 |
+
+Prediction 1 passing is the *boring* outcome and means the model of the bug is
+right. Prediction 1 failing LOW would be a genuine surprise worth chasing — it
+would mean the median fix reaches the stop case by some path not yet understood.
+
+**Predictions 2 and 3 are the reason for the walk.** They cannot be evaluated at
+all without per-pick timestamps, which is why the last round dead-ended: 39
+counted against a bare total of 20 is consistent with both "every pick counted
+twice" and "twelve picks counted twice plus fifteen false positives," and those
+two call for opposite fixes. The field card's counter now stamps each tap in
+walk-seconds, which aligns directly against `motion_log.t`.
+
+If 2 and 3 both pass, the segmentation rule is the only thing left to decide and
+the recall risk of a long merge window is measurably near zero. If 2 fails, the
+detector is firing on things that are not picks at all and the cooldown is the
+wrong place to be looking.
+
+## Protocol
+
+Unchanged from the first B6 — moderate pace, full stop per pick, 20 picks at
+~10s spacing, ~4 minutes, walk 10s past the last pick before stopping — plus:
+
+**Tap "Start walk clock" at the same moment the walk starts**, and send the
+"Copy times" list with the JSON. Without that list this walk answers nothing the
+last one didn't.
