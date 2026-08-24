@@ -690,8 +690,20 @@ export function trailingMedianSpeed(
   nowMs: number,
   windowMs: number = RELATIVE_PACE.windowMs
 ): number | null {
+  // Samples at or below the stop floor are STOPS, not pace, and must not enter
+  // the median (24 Aug 2026, walk B6). This filtered on `> 0`, so every
+  // 0.05-0.30 m/s reading taken while stopped counted as "your pace." On a
+  // stop-and-pick walk that is most of the walk: B6 ran at a normal 0.9-1.3 m/s
+  // between picks, but 20 stops in 4 minutes dragged the trailing median down
+  // to ~0.5, which set the gate's bar at 0.8 * 0.5 = 0.40 m/s. The gate
+  // degenerated into "count anything under 0.40" — and a real stop reads
+  // 0.00-0.35, so it stopped discriminating exactly where it was needed.
+  // The more you stop to pick, the more the gate disarms itself.
+  //
+  // Safe by construction: minStopMps still guarantees nothing below the floor
+  // is ever suppressed, so raising the median can never eat a genuine stop.
   const recent = samples
-    .filter((s) => s.speedMps > 0 && nowMs - s.atMs >= 0 && nowMs - s.atMs <= windowMs)
+    .filter((s) => s.speedMps > RELATIVE_PACE.minStopMps && nowMs - s.atMs >= 0 && nowMs - s.atMs <= windowMs)
     .map((s) => s.speedMps)
     .sort((a, b) => a - b);
   if (recent.length < RELATIVE_PACE.minSamples) return null;

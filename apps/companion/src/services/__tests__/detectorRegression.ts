@@ -575,5 +575,34 @@ console.log('\n=== Threshold sanity ===');
 check('confidence threshold unchanged at 30', THRESHOLDS.confidenceThreshold === 30, true);
 check('peak window is 0.9-3.5g', THRESHOLDS.peakAccelMin === 0.9 && THRESHOLDS.peakAccelMax === 3.5, true);
 
+
+// ---------------------------------------------------------------------------
+// Trailing median must measure PACE, not stops (24 Aug 2026, walk B6)
+// ---------------------------------------------------------------------------
+// B6 walked at a normal 0.9-1.3 m/s but stopped 20 times in 4 minutes. Under
+// the old `> 0` filter every stopped reading counted as pace and the median
+// collapsed to ~0.5, setting the gate's bar at 0.40 m/s -- below a real stop.
+{
+  const now = 100000;
+  const mk = (speeds: number[]) =>
+    speeds.map((speedMps, i) => ({ atMs: now - (speeds.length - i) * 1000, speedMps }));
+  // half the window walking at 1.2, half stopped at 0.05-0.30
+  const stopHeavy = mk([1.2, 1.25, 1.15, 1.2, 1.3, 1.2, 0.05, 0.2, 0.1, 0.3, 0.15, 0.08]);
+  const med = trailingMedianSpeed(stopHeavy, now);
+  check('stop-heavy walk: median reflects PACE, not the stops',
+    med !== null && med >= 1.0, true);
+  check('...so the gate bar sits above a real stop',
+    med !== null && RELATIVE_PACE.ratio * med > 0.6, true);
+  // and the walking segments are still suppressed
+  check('stop-heavy walk: a walking event is still suppressed',
+    isStillAtOwnPace(1.2, med, 200), true);
+  // while the stop itself is not -- the floor is what guarantees this
+  check('stop-heavy walk: the stop itself is NOT suppressed',
+    isStillAtOwnPace(0.15, med, 200), false);
+  // all-stopped window => too few pace samples => stand down rather than guess
+  check('a fully stopped window yields no median (stands down)',
+    trailingMedianSpeed(mk([0.1, 0.05, 0.2]), now), null);
+}
+
 console.log(`\n${failures === 0 ? '✅ ALL PASSED' : `❌ ${failures} FAILURE(S)`}`);
 process.exit(failures === 0 ? 0 : 1);

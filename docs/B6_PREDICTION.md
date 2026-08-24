@@ -98,3 +98,86 @@ ratio than 0.8 rather than a wider scope.
 Both fixes are committed but must not reach the tester cohort on an OTA before
 B6 and A8 run. The `TESTER_BRIEF_B_PROTOCOL.md` cohort is still on the previous
 detector.
+
+---
+
+# RESULT — both walks FAILED, and neither tested the fix
+
+Run 24 Aug 2026, 16:21 (B6) and 16:25 (A8).
+
+**Neither walk was on the fixed build.** `eas update:list` shows the newest
+published update was the watch commit from ~13:00; `1d671fc` and `cc920d8` were
+never pushed. Both walks ran the pre-fix detector. Everything below therefore
+describes the OLD code — which is still useful, because both problems it
+exposed are in code those commits never touched.
+
+| | predicted | actual | |
+|---|---|---|---|
+| B6 counted (20 real) | 17-23 | **39** (1.95x) | FAIL |
+| A8 false positives | <= 0.4/min | **3.19/min** (13 in 4.07 min) | FAIL |
+
+Pace was also off protocol: B6 ran at a normal pace but recorded a 0.60 median,
+A8 was walked deliberately slowly (0.58, confirmed by the walker). The 1.0-1.3
+band the commits target is therefore **still unmeasured.**
+
+## Finding 1 — the trailing median measures stops, not pace (FIXED)
+
+B6 walked at a normal 0.9-1.3 m/s between picks, yet `pace_median_mps` came out
+at 0.60 with a 0.97 slow share. That is not bad GPS. It is the twenty stops:
+decelerate, stop, bend, straighten, accelerate is ~6s per pick, so 120 of the
+walk's 244 seconds sit below walking speed.
+
+`trailingMedianSpeed` filtered on `speedMps > 0`, so every 0.05-0.30 reading
+taken while stopped counted as "your pace." The median collapsed to ~0.5 and set
+the gate's bar at 0.8 x 0.5 = 0.40 m/s — **below a real stop**, which reads
+0.00-0.35. 35 of B6's 39 counted events came in under the 0.35 floor, 14 at
+exactly 0.00. The gate degenerated into "count anything under 0.40" and stopped
+discriminating precisely where it was needed.
+
+The feedback loop is the bad part: **the more you stop to pick, the lower your
+median, the more the gate disarms itself.** It eats itself on the one protocol
+it exists to serve.
+
+Fixed by filtering the median to samples above `minStopMps`. Safe by
+construction — the floor still guarantees nothing below it is ever suppressed,
+so raising the median can never eat a genuine stop. Five regression checks added.
+
+## Finding 2 — one pick counts about twice, and cooldown cannot fix it (OPEN)
+
+39 counted for 20 real. Simulating every accepted event against a range of
+stationary-cooldown values:
+
+| cooldown | counted | ratio |
+|---|---|---|
+| 0.8s (current) | 55 | 2.75x |
+| 2.5s | 30 | 1.50x |
+| 4.0s | 29 | 1.45x |
+| 6.0s | 25 | 1.25x |
+
+Even six seconds — long enough to swallow genuine back-to-back picks — only
+reaches 1.25x. This is not a threshold that can be tuned. It needs a different
+segmentation rule, and that is a product decision (deliberate bend-and-
+straighten vs. rapid picking of a pile in one spot) rather than a constant.
+
+## Retracted
+
+An earlier reading of this data claimed GPS speed was under-reporting by ~3x,
+inferred from A8's 406m route polyline against its 0.58 median. The walker
+confirmed A8 was deliberately slow. Inference lost to direct observation, again.
+The loose end stands: 406m in 244s is 1.66 m/s even after `dropOutliers` (25m)
+and Douglas-Peucker (10m), so either the route pipeline inflates distance or the
+walk covered more ground than it felt like.
+
+A second claim — that 39 events cluster into exactly 20 groups, implying perfect
+recall — is also withdrawn. That count only appears at a 5s merge window (3s
+gives 26, 6s gives 17), and one of the "clusters" spans 25 seconds. A pattern
+visible at a single arbitrary threshold is not a finding.
+
+## Why the next run needs timestamps
+
+We know 20 picks happened. We do not know *when*. Every cluster is therefore
+ambiguous between "one pick counted twice" and "one real pick plus one false
+positive," and no amount of re-analysis separates them. The field card's counter
+now records walk-seconds per pick, which aligns directly against `motion_log.t`.
+Until a walk comes back with that list, recall and precision cannot be measured
+separately and any threshold change is guesswork.
