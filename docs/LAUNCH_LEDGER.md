@@ -1,8 +1,17 @@
 # Pick — Launch Ledger
 
 **Machine-maintained.** The Pick Chief of Staff agent reads and updates this file
-twice a day (07:00 and 18:00 ET). Edit it freely by hand — the agent reconciles
-rather than overwrites, and it never deletes a line you added.
+**once a day at 16:30 ET**, as a scheduled task bound to Jake's Mac (set up
+2026-08-24, replacing the cloud run that could not reach the repo). It lands 30
+minutes before the 17:00 Handoff block, which already assumed a 16:30 refresh.
+Edit it freely by hand — the agent reconciles rather than overwrites, and it
+never deletes a line you added.
+
+> The 09:00 "Clock in → Pick" calendar block still says its item is chosen
+> "by the Chief of Staff at 6:45". There is no 06:45 run: at that hour Jake is
+> out on the Movement block and the Mac is not reliably awake, and a
+> device-bound task needs the Mac. The morning pick therefore comes from the
+> previous afternoon's ledger. Jake's calendar text to change if he wants.
 
 - `SHIPPING_PLAN.md` = the narrative. `LAUNCH_BUGLIST.md` = the item-level record.
 - **This file = the live status of what is open, on whom, and for how long.**
@@ -31,10 +40,11 @@ doc in this repo already call it (`LAUNCH_BUGLIST.md` records builds 27, 28, 31)
 
 | Item | File | Open since | Status |
 |---|---|---|---|
-| **`PhoneLink.swift`** | `targets/watch/PhoneLink.swift` | 2026-08-17 | **Decided 2026-08-23 (Jake): split the response.** The earlier "removes the guard" summary was wrong — the 17 Aug diff *broadened* it, and reset the whole session on every stale payload. Now in tree: the staleness **check** covers both paths; the **response** splits — `resetToIdle()` on the activation snapshot or on an explicit `state: 'idle'`, drop-and-keep on an unverifiable stale *active* payload. Out-of-order check moved ahead of the staleness check. **Still uncommitted. ⚠️ NOT verified — no `xcodebuild` run; no Swift toolchain reachable from this session.**<br><br>**RE-CONFIRMED 2026-08-24 (Jake): restore the guard. Open 7 days (since 17 Aug).** New, and it is the first *field* evidence this thread has ever had: **the watch has been flashing old counts intermittently since the last update** — the resurrected-count mode, which the Watching row below recorded as never observed. Builds 28–31 carry the narrow activation-only guard, which does not cover the ongoing delivery path. **Correction to the 2026-08-24 briefing:** the fix is *implemented*, not merely decided — `git status` shows `PhoneLink.swift` modified, +43/−7 in the working tree. What is left is `xcodebuild` verification and a commit, not writing it. |
-| **`lastAppliedAt` on the stale-reject branch** | `targets/watch/PhoneLink.swift` | 2026-08-24 | **Written 2026-08-24, uncommitted.** Second defect found while reading the flash: `resetToIdle()` deliberately leaves `lastAppliedAt` alone, so at activation it is still `0` — and a re-delivery of the same queued context on the ongoing path passed the out-of-order check against that zero and repainted the old count over the 0 the cached guard had just painted. **That is the mechanism behind the flash Jake reported.** Now records the rejected payload's `sentAt`, so either check alone rejects a re-delivery. ⚠️ Unverified — no `xcodebuild`. |
-| Watch End confirm hardening | `targets/watch/ContentView.swift` | 2026-08-19 | Uncommitted. 6s auto-disarm + "Keep Going" promoted. Needs `xcodebuild` verification. |
+| **`PhoneLink.swift`** | `targets/watch/PhoneLink.swift` | 2026-08-17 | **Decided 2026-08-23 (Jake): split the response.** The earlier "removes the guard" summary was wrong — the 17 Aug diff *broadened* it, and reset the whole session on every stale payload. Now in tree: the staleness **check** covers both paths; the **response** splits — `resetToIdle()` on the activation snapshot or on an explicit `state: 'idle'`, drop-and-keep on an unverifiable stale *active* payload. Out-of-order check moved ahead of the staleness check. **Still uncommitted. ⚠️ NOT verified — no `xcodebuild` run; no Swift toolchain reachable from this session.**<br><br>**RE-CONFIRMED 2026-08-24 (Jake): restore the guard. Open 7 days (since 17 Aug).** New, and it is the first *field* evidence this thread has ever had: **the watch has been flashing old counts intermittently since the last update** — the resurrected-count mode, which the Watching row below recorded as never observed. Builds 28–31 carry the narrow activation-only guard, which does not cover the ongoing delivery path. **Correction to the 2026-08-24 briefing:** the fix is *implemented*, not merely decided — `git status` shows `PhoneLink.swift` modified, +43/−7 in the working tree. What is left is `xcodebuild` verification and a commit, not writing it. <br><br>**UPDATED 2026-08-24 (evening session).** **DONE — committed and compiled.** Committed as `7b19cd8`; `xcodebuild` (full workspace, Watch target included) **BUILD SUCCEEDED** at 13:50. Both remaining conditions on this row are met. Rides Build 32, uncut as of this edit. |
+| **`lastAppliedAt` on the stale-reject branch** | `targets/watch/PhoneLink.swift` | 2026-08-24 | **Written 2026-08-24, uncommitted.** Second defect found while reading the flash: `resetToIdle()` deliberately leaves `lastAppliedAt` alone, so at activation it is still `0` — and a re-delivery of the same queued context on the ongoing path passed the out-of-order check against that zero and repainted the old count over the 0 the cached guard had just painted. **That is the mechanism behind the flash Jake reported.** Now records the rejected payload's `sentAt`, so either check alone rejects a re-delivery. <br><br>**UPDATED 2026-08-24 (evening session).** **DONE — committed in `7b19cd8` alongside the guard, and compiled clean.** No longer unverified. |
+| Watch End confirm hardening | `targets/watch/ContentView.swift` | 2026-08-19 | 6s auto-disarm + "Keep Going" promoted. <br><br>**UPDATED 2026-08-24 (evening session).** **DONE — committed and compiled.** No longer uncommitted, no longer unverified. Rides Build 32. |
 | Splash transparency | `app.json` @ `4c64a0f` | 2026-08-17 | Committed, stranded — `app.json` cannot ship OTA. |
+| **Watch LOG PICK button (tester ground truth)** | `targets/watch/`, `modules/watch-session/` @ `70d0eba` | 2026-08-24 | **NEW, committed and compiled.** A watch-side button that timestamps each real pick, saved as `ground_truth` next to `motion_log`. Exists because B6 counted 39 for 20 real picks and that number is equally consistent with "every pick counted twice" and "twelve double-counts plus fifteen false positives" — opposite fixes, indistinguishable without per-pick times. On the **wrist** deliberately: a phone button would mean handling the phone mid-walk, which flips `classifyCarryMode` to `hand` for the whole walk and adds a raise-and-tap 1–2s after every pick, i.e. it would manufacture the very artefact being measured. Tester-only and **off by default**; visibility rides the stats payload as `groundTruth`, so the gate stays in JS and can be enabled per-tester over the air after Build 32 ships. Never feeds the count. |
 | EAS iOS build quota | Expo Free plan | 2026-08-13 | **Not a blocker — reclassified as a budget line, see Build budget below (2026-08-24).** **Warning, not a stop.** The 13 Aug Expo email is a courtesy notice: *"has used 80% of the iOS build limit included with your Free plan."* The subject line and preheader say "limit reached" — the body does not. Headroom remains this billing period; confirm the exact count at expo.dev/accounts/jakeverbiest/settings/billing before cutting. Corrected 2026-08-23 from the original email. |
 
 > **Conflict flagged 2026-08-24 — `SHIPPING_PLAN.md` §1 is stale.** It still says the
@@ -64,16 +74,22 @@ should have been.
    (14th of 15 this month.)
 2. **One build held in reserve** for an App Review rejection fix. (15th of 15.)
 
-> Dependency, stated without a recommendation: the batch in (1) includes keep-awake,
+> ~~Dependency, stated without a recommendation: the batch in (1) includes keep-awake,
 > which is still an open decision under Launch gates. Build 32 cannot be assembled as
-> planned until that call is made. Noted as a scheduling fact only — the call is Jake's.
+> planned until that call is made.~~
+>
+> **SUPERSEDED 2026-08-24.** Keep-awake was decided and shipped **OTA** (`afaed31`), so
+> it never needed a build slot and is no longer in the Build 32 batch. **Build 32 has no
+> remaining dependencies** — every native item on it is committed and `xcodebuild`-clean.
+> Its batch is: watch stale-snapshot guard + `lastAppliedAt`, End confirm hardening,
+> splash transparency, and the LOG PICK button.
 
 ## 🟡 Launch gates
 
 | Item | Type | Open since | Status |
 |---|---|---|---|
 | `MIN_CLEANUP_SECONDS` 20 → 120 | code | 2026-08-17 | Lowered for short test walks; comment says RESTORE BEFORE LAUNCH. Note it does not guard the pocket-stop case. |
-| Keep-awake while `sessionMode` is null | decision | 2026-08-19 | **STILL OPEN — 5 days as of 2026-08-24.** Root enabler of the pocket-stop bug. Needs a deliberate call, not a drive-by fix. **Jake's call. This ledger surfaces its age each run and does not propose a resolution.** Build 32 is batched to carry it — see Build budget. |
+| Keep-awake while `sessionMode` is null | decision | 2026-08-19 | **CLOSED 2026-08-24 (Jake): the screen must not be on during walks — battery is the constraint.** Shipped as `afaed31`, **OTA, no build needed** — so this is no longer a Build 32 dependency and the Build-budget note below is superseded.<br><br>Two things reframed it. First, the pocket-stop bug it was called the "root enabler" of already has a direct fix in the field — `stopCleanup` is a confirm dialog, so a lit screen is no longer dangerous; what remained was a battery question wearing a bug's clothes. Second, **`sessionMode` was never recorded anywhere**, so there was no evidence about how often the expensive path is taken — this was a missing measurement, not a judgment call, which is why it could not be resolved for five days.<br><br>Keep-awake now fires only on `'foreground'`, never on the unresolved `null` window. `'foreground'` has one realistic cause on a real build: "Always" location not granted — a fixable permission problem `startCleanup` already surfaces with a Settings pointer. The old behaviour paid battery to paper over a prompt already being shown. `session_mode` is now saved on every walk, so the field answers this rather than the ledger asking about it. |
 | Long-walk crash / map memory | field test | — | Fixed long ago, never confirmed on a real multi-hour walk. Needs one long walk. |
 | In-app rebrand to Pick Global | code | 2026-08-01 | Name and domain locked; rebrand reportedly hasn't reached all in-app screens. Audit pass. |
 | Bundle ID / LLC / developer name | business | — | **DEFERRED 2026-08-23 (Jake) — not a beta blocker.** A public TestFlight beta ships under the personal Apple Developer name, which is public the moment the link is. Reversible. Revisit before App Store release or EU distribution. |
@@ -82,7 +98,8 @@ should have been.
 
 | Item | Open since | Status |
 |---|---|---|
-| **Watch push throttled on `elapsedSeconds % 3`** | 2026-08-24 | **Fixed in tree 2026-08-24, not yet published.** The effect is driven by a 1Hz `setInterval` and iOS throttles JS timers while backgrounded — every real walk — so `elapsedSeconds` jumps rather than counts and `% 3 === 0` can miss for long stretches, starving the watch's clock. Now a wall-clock check; counts were never throttled and still are not. Live Activity heartbeat gets the same treatment on its own timer. **Ships OTA, no build needed — reaches builds 28–31 testers today.** |
+| **Test walk results not yet folded in** | 2026-08-24 | ~~Open, on Jake.~~ **FOLDED IN 2026-08-24 (evening).** Walks 1a/1b/2a/2b, A8 and B6 are all recorded in `docs/B6_PREDICTION.md`, including two frozen predictions and their results. Still **n=1 tester** — that has not changed, and the LOG PICK button on Build 32 is what makes multi-tester ground truth practical (a stopwatch-and-transcribe protocol will not survive four testers, and `cleanups` is owner-only so their walks cannot be read directly). |
+| **Watch push throttled on `elapsedSeconds % 3`** | 2026-08-24 | **Fixed in tree 2026-08-24, not yet published.** The effect is driven by a 1Hz `setInterval` and iOS throttles JS timers while backgrounded — every real walk — so `elapsedSeconds` jumps rather than counts and `% 3 === 0` can miss for long stretches, starving the watch's clock. Now a wall-clock check; counts were never throttled and still are not. Live Activity heartbeat gets the same treatment on its own timer. **Ships OTA, no build needed — reaches builds 28–31 testers today.** <br><br>**PUBLISHED 2026-08-24** in the update messaged "Watch: guard stale snapshots on both paths; wall-clock watch-push throttle". Live on builds 28–31. |
 | `exportCleanup()` omits the `pace_*` fields | 2026-08-19 | One line. Walk stores `pace_median_mps`, `pace_slow_share`, `pace_low_confidence`; export doesn't emit them. |
 
 > **Note (2026-08-23):** `SHIPPING_PLAN.md` §2 also lists `pickupCounterRef` and the
@@ -132,8 +149,12 @@ should have been.
 
 | Item | Opened | Closed | Notes |
 |---|---|---|---|
-| Apple Developer Program License Agreement — Attachment 14 | 2026-08-18 | 2026-08-23 | Accepted by Jake in App Store Connect. Releases no longer blocked by an unsigned agreement. **Signing detail added 2026-08-24: signed 2026-08-23 16:45 UTC, team `H77DJ6QPJC`. Was a hard blocker for 5 days.** |
+| Apple Developer Program License Agreement — Attachment 14 | 2026-08-18 | 2026-08-23 | Accepted by Jake in App Store Connect. Releases no longer blocked by an unsigned agreement. **Signing detail added 2026-08-24: signed 2026-08-23 16:45 UTC, team `H77DJ6QPJC`. Was a hard blocker for 5 days.** Evidence: Gmail message `1a02f83b25bbfe64`. |
 | “EAS build limit reached / Build 32 cannot be cut” | 2026-08-13 | 2026-08-23 | **Closed as misread, not as resolved.** The 13 Aug email body says 80% of the Free-plan iOS limit used. Build 32 was never quota-blocked. Live quota row moved to Build 32 above. **Note 2026-08-24:** the 8/24 briefing described the ledger as having carried this as a hard blocker for 11 days. It did not — this ledger opened 8/23 and reclassified it the same day, 10 days after the email. The genuinely new information on 8/24 is the hard count: **13 of 15 used, 2 left** — now in Build budget. |
+| Keep-awake while `sessionMode` is null | 2026-08-19 | 2026-08-24 | Decided by Jake — screen off during walks, battery is the constraint. Shipped OTA (`afaed31`). Resolved once it was reframed: the bug it was blamed for already had a direct fix in the field, and `sessionMode` had never been recorded, so it was a missing measurement rather than a judgment call. Full reasoning on the Launch-gates row. |
+| Detector: pace-gate dead zone at 1.0–1.3 m/s | 2026-08-24 | 2026-08-24 | Zero-pick walks showed false positives rising as pace fell (1.34 m/s: 0.16/min, 1.19: 1.11, 1.07: 1.33). The absolute gate only fires above 1.3 and the relative gate switched off at 1.0, so ordinary moderate walking pace was covered by neither. Ceiling removed (`1d671fc`). Costs ~40% recall for picking without stopping (measured on C6a) — acceptable only while walk→STOP→pick is the normal technique; the code says to restore the ceiling if that premise changes. |
+| Detector: trailing median measured stops, not pace | 2026-08-24 | 2026-08-24 | `trailingMedianSpeed` filtered on `speed > 0`, so readings taken *while stopped* counted as pace. On B6 that dragged the median to ~0.5 and set the gate's bar at 0.40 m/s — below a real stop. The gate disarmed itself in proportion to how often the user stopped to pick, i.e. it failed worst at exactly its intended job. Fixed in `fd05a95`. |
+| Walk 1b: silent total sensor failure | 2026-08-24 | 2026-08-24 | A normal-looking 6-minute walk saved with a completely empty `motion_log`. `startListening()` ran location setup between the events reset and the accelerometer subscribe inside one `try`; `watchPositionAsync` rejected, the catch swallowed it, and the accelerometer never attached — while the route still drew from map.tsx's own watch, so nothing looked wrong. Sensors now attach first, location is best-effort in its own try, and `sensorsAttached()` raises an alert instead of letting someone walk for nothing. `1d671fc`. |
 
 ---
 
@@ -145,10 +166,28 @@ should have been.
   every walk, so tester walks self-label by pace.
 - Field logs in `docs/fielddata/`: A7a, C6a, C7a, B4, B5B, B5.
 
+## 📨 Notification dedupe seed
+
+Carried over from `pick-state.json` (Drive) when it was retired on 2026-08-24. The
+scheduled run has no other memory of what it has already reported, so these Gmail
+message ids were already surfaced to Jake and must not be re-notified:
+
+`1a015d04ff471bff` · `19ffbfce53fed803` · `19ffc305705336fc` · `1a02f83b25bbfe64` (the DPLA acceptance)
+
+Gmail was scanned through **2026-08-24T00:00:00Z**. Append ids here as runs notify on them.
+
+> **Drive memory retired 2026-08-24.** `pick-state.json` and
+> `pick-state.NEXT-2026-08-24b.json` were the cloud run's memory, needed only because a
+> cloud session could not reach this Mac. The scheduled task is now device-bound, so this
+> ledger is the single record. Both files are in Drive's trash (recoverable ~30 days) —
+> everything in them that was still live was moved here first. A third,
+> `pick-state.NEXT-2026-08-24.json`, had already been trashed.
+
 ## Agent run log
 
 | Run | Moved | Notes |
 |---|---|---|
+| 2026-08-24 (local, retire Drive memory) | Drive `pick-state*.json` trashed; live content migrated here | Ledger is now the sole record. Migrated before trashing: the outstanding test-walk results (which existed nowhere else), the DPLA evidence message id, and the notification dedupe seed. Dead on arrival and not migrated: the "3s timer redrawing a local cache" caveat (that path does not exist — the watch has no polling timer), the `watch-live-updates` item (already shipped in `WatchSessionModule.swift`), and `routine-goes-local` (done — task `trig_01RvnozDsHJLd5wkQ9jHxFvG`, daily 16:30 ET). |
 | 2026-08-24 (local, watch changeset) | Flash mechanism identified; B + D written; `ship-watch.sh` added | Read the watch target end to end. **Jake's second suspect — a 3s timer redrawing a local cache — does not exist:** the watch has no polling timer at all (one 25s one-shot, one 6s disarm) and is already `@Published`-driven. The 3s lives on the *phone*, as a throttle on the clock tick that counts already bypass. **Item 3 (event-driven WatchConnectivity) is already shipped** — `updateApplicationContext` + `sendMessage` are both in `WatchSessionModule.swift`, `transferUserInfo` appears nowhere; dropped as no-op work. Real stale-render path found instead, and fixed by A+B. `tsc --noEmit` clean; lint shows no new findings. **Still no Swift toolchain — A/B/C remain uncompiled, which is now the only gate.** |
 | 2026-08-24 (local, reconcile) | EAS → budget line with real counts; PhoneLink re-decided with first field evidence; two-build plan recorded; build naming settled | Cloud run 2026-08-24 could not reach this Mac; reconciled from Jake's briefing. Two briefing items were already true here — EAS reclassified 8/23, DPLA closed 8/23 — so the new detail was added rather than a second correction. One briefing item corrected: `PhoneLink.swift` is implemented in tree, not merely decided. `SHIPPING_PLAN.md` §1 flagged stale alongside §2. Repo hygiene: `main` now matches `origin/main`. |
 | 2026-08-23 (local, 4th) | Public link confirmed live; docs committed | Beta is already public — reframes go/no-go as "tighten what's running". Site copy corrected on disk (4 pages) and index trimmed 1168→920 words; **not yet deployed**. Ledger + docs committed in `9c0b778`. **Push still pending — no GitHub credentials reachable from the agent session.** |
