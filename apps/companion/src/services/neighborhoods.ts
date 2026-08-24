@@ -128,6 +128,43 @@ const CITY_SOURCES: CitySource[] = [
     nameKeys: ['NAME', 'name'],
     basemapLabels: false, // CARTO doesn't label Atlanta hoods — we draw them
   },
+  {
+    id: 'sf',
+    // San Francisco proper. Held tight to the data's own extent (37.708-37.832,
+    // -122.515 to -122.357) so the box doesn't claim Daly City or Brisbane —
+    // down there we'd have no polygon AND, because hasNeighborhoods() would be
+    // true, no OSM fallback either, so the map would draw nothing at all.
+    inBox: (lat, lon) => lat >= 37.7 && lat <= 37.84 && lon >= -122.52 && lon <= -122.35,
+    // DataSF "SF Find Neighborhoods" — 117 fine hoods (Cole Valley != Haight
+    // Ashbury, Inner != Outer Richmond, Duboce Triangle and Dogpatch as their
+    // own shapes): the true analog of NYC's Pediacities set. NOT the 41
+    // "Analysis Neighborhoods" (p5b7-5n3h), which are as coarse as the merged
+    // NTAs already rejected for NYC.
+    //
+    // The resource id is gfpk-269f. The id you will find first — pty2-tcw4,
+    // linked from the dataset's own landing page and every search result — is
+    // a dead husk left by the Nov 2023 reformat: it returns the right NUMBER
+    // of features with "geometry":null and empty properties, so it fails
+    // silently and reads like a network fault. That trap is almost certainly
+    // what "Socrata .geojson returns empty" meant during the NYC work too.
+    //
+    // No server-side simplification here, unlike Atlanta. Measured 24 Aug 2026:
+    // the full-resolution payload is 287KB for all 117 hoods (~55 vertices
+    // each — these are generalized shapes to begin with), comfortably inside
+    // decimate()'s 160-point drawing budget and a fifth of NYC's ~1.5MB. If
+    // that ever stops being true, SoQL's
+    // simplify_preserve_topology(the_geom, 0.0003) works on this endpoint and
+    // takes it to 81KB, but it costs real corner detail at this vertex count.
+    url: 'https://data.sfgov.org/resource/gfpk-269f.geojson?$limit=500',
+    file: FileSystem.documentDirectory + 'sf-hoods.json',
+    nameKeys: ['name'],
+    // Measured against real CARTO light_all tiles, not assumed: at z13-z15 over
+    // central SF the basemap prints "SAN FRANCISCO" and "MISSION DISTRICT" and
+    // nothing else — no Castro, Haight Ashbury, Noe Valley, Hayes Valley. SF
+    // hoods are effectively unlabeled by the tiles, so we draw our own the way
+    // Atlanta does. (This is the opposite of NYC — do not copy NYC's `true`.)
+    basemapLabels: false,
+  },
 ];
 
 /** True when we should draw our own neighborhood name labels because the
