@@ -178,18 +178,35 @@ struct ControlsPage: View {
       if confirmingEnd {
         Text("End this walk?")
           .font(.system(.body, design: .rounded).weight(.semibold))
-        Button(role: .destructive, action: { link.endWalk() }) {
-          Text("End Walk")
-            .frame(maxWidth: .infinity)
-        }
-        .buttonStyle(.borderedProminent)
+        // "Keep Going" is deliberately FIRST and prominent; "End Walk" sits
+        // below and unstyled. On a watch face the top button is the easy
+        // target, and the easy target should not be the destructive one.
         Button(action: { confirmingEnd = false }) {
           Text("Keep Going")
             .frame(maxWidth: .infinity)
         }
+        .buttonStyle(.borderedProminent)
         .tint(pickNavy)
+        Button(role: .destructive, action: { link.endWalk() }) {
+          Text("End Walk")
+            .frame(maxWidth: .infinity)
+        }
       } else {
-        Button(action: { confirmingEnd = true }) {
+        // Arming the confirm DISARMS ITSELF after a few seconds.
+        //
+        // WHY (19 Aug 2026): three walks ended by themselves in a pocket while
+        // a paired watch was worn. `confirmingEnd` was @State with no timeout,
+        // so one stray tap on this full-width button armed the confirm for the
+        // ENTIRE REST OF THE WALK — and any later stray tap on the (then
+        // top-positioned, prominent) "End Walk" button finished the job. The
+        // two taps did not have to be anywhere near each other in time, which
+        // is what made this so easy to hit on a moving wrist.
+        Button(action: {
+          confirmingEnd = true
+          DispatchQueue.main.asyncAfter(deadline: .now() + 6) {
+            confirmingEnd = false
+          }
+        }) {
           VStack(spacing: 4) {
             Image(systemName: "xmark")
               .font(.system(size: 22, weight: .semibold))

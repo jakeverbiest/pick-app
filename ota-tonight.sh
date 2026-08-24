@@ -16,7 +16,10 @@ set -uo pipefail
 REPO=~/Desktop/pick-app
 APP="$REPO/apps/companion"
 LOG="$REPO/ota-run.log"
-MESSAGE="Relative pause gate + stop floor + confirm before ending a walk"
+# Publish message. Pass it as $1; the default is only a fallback so an
+# argument-less run still works. It used to be hardcoded, which meant every
+# later run published under the 18 Aug message.
+MESSAGE="${1:-Pick OTA update}"
 
 exec > >(tee "$LOG") 2>&1
 
@@ -75,10 +78,12 @@ echo "--- 4/4  Publish -----------------------------"
 echo "    Message: $MESSAGE"
 echo
 echo "    Reminder: eas update ships the WORKING TREE."
-echo "    Two files are uncommitted, both safe to ship:"
-echo "      PhoneLink.swift  — native, cannot enter an OTA bundle at all"
-echo "      package.json     — scripts-only fix, inert at runtime"
-echo "    Answering 'y' to the warning is correct."
+echo "    Uncommitted right now (these ship too — read the list, do not assume):"
+git -C "$REPO" status --short || true
+echo
+echo "    Swift files in that list are harmless: native code cannot enter an"
+echo "    OTA bundle at all. Anything under apps/companion that is JS/TS WILL"
+echo "    ship. Do not stash to exclude it — see publish-detector.sh."
 echo
 "$REPO/publish-detector.sh" "$MESSAGE"
 STATUS=$?
@@ -88,9 +93,9 @@ if [ "$STATUS" -eq 0 ]; then
   echo "=============================================="
   echo " PUBLISHED. Now verify on the phone:"
   echo "   1. Force-quit PICK, reopen, wait ~10s"
-  echo "   2. Force-quit and reopen AGAIN"
-  echo "   3. Open a saved walk -> look for 'Adjust details'"
-  echo "      with editable piece count + bag size/qty/fullness"
+  echo "   2. Force-quit and reopen AGAIN  (fetch-then-apply is a two-launch"
+  echo "      cycle — a 19 Aug 'failure' was void because of exactly this)"
+  echo "   3. Exercise whatever this update changed, and confirm it functionally"
   echo
   echo " Check it functionally, not by the build-stamp hex —"
   echo " consecutive EAS update IDs share long prefixes."

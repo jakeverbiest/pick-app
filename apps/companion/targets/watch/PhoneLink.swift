@@ -147,20 +147,75 @@ final class PhoneLink: NSObject, ObservableObject, WCSessionDelegate {
 
   /// - Parameter cached: true when this came from `receivedApplicationContext`
   ///   at activation, i.e. it may be a snapshot from a previous launch.
+  ///   It selects the RESPONSE to a stale payload, not whether we check.
   private func apply(_ payload: [String: Any], cached: Bool = false) {
     guard !payload.isEmpty else { return }
     DispatchQueue.main.async {
       let sentAt = payload["sentAt"] as? TimeInterval ?? 0
 
-      // A snapshot the phone left behind before we were launched is history, not
-      // truth. Applying it is what made the watch flash the *previous* walk's
-      // pickup count before snapping back to 0.
-      if cached, sentAt > 0, Date().timeIntervalSince1970 - sentAt > self.staleContextSeconds {
-        self.resetToIdle()
+      // Out-of-order delivery: applicationContext and sendMessage race.
+      // Runs FIRST (it used to sit below the staleness check): anything older
+      // than what we've already applied is not evidence about now, whatever
+      // its age says. Deciding that up front keeps a late payload from a
+      // FINISHED walk out of the staleness branch while a newer walk is
+      // running. Inert at activation, where lastAppliedAt is still 0.
+      if sentAt > 0, sentAt < self.lastAppliedAt { return }
+
+      // A payload much older than staleContextSeconds isn't live truth —
+      // whether it's the one-time cached snapshot read at session activation,
+      // or a late delivery on the ONGOING didReceiveApplicationContext path
+      // (watchOS queues and can deliver application-context updates after a
+      // delay when the watch app was suspended, e.g. under memory pressure or
+      // while backgrounded).
+      //
+      // The CHECK covers both paths. The RESPONSE differs, because age means
+      // different things on each and the cost of being wrong isn't symmetric:
+      //
+      //   cached (activation) — we may already be SHOWING a leftover from a
+      //   previous launch, so idle has to be asserted. resetToIdle().
+      //
+      //   explicit idle — the phone reports no walk. Stale or not, it is the
+      //   newest thing we have and nothing contradicts it. Honour it, or the
+      //   watch strands on a walk that already ended. resetToIdle().
+      //
+      //   ongoing + claims ACTIVE — ambiguous, and this is the dangerous one.
+      //   The phone may simply have gone quiet: the push is driven by a JS
+      //   effect and iOS throttles timers in the background, which is every
+      //   real walk. Our own state was built from live payloads and is the
+      //   better estimate, so drop the payload and keep it. Do NOT
+      //   resetToIdle() here — that ends the WorkoutSession keeping this app
+      //   alive, making suspension (and the next delayed delivery) MORE
+      //   likely, and puts the watch back on the Start screen mid-walk: the
+      //   exact symptom the phone-side walkIntent fix removed.
+      //
+      // The phone still asserts the end of a walk explicitly — walkIntent
+      // false pushes state 'idle' with zeroed counters and an empty sessionId.
+      // That is the primary signal; this is only the backstop for when that
+      // push is itself what arrives late.
+      if sentAt > 0, Date().timeIntervalSince1970 - sentAt > self.staleContextSeconds {
+        let saysIdle = (payload["state"] as? String) == "idle"
+        if cached || saysIdle { self.resetToIdle() }
+        // Record how new the payload we just REJECTED was, so the out-of-order
+        // check above can reject a re-delivery of the same context on the other
+        // path without re-deriving staleness from wall-clock age.
+        //
+        // WHY (24 Aug 2026): resetToIdle() deliberately does not touch
+        // lastAppliedAt — it clears walk state, and lastAppliedAt is delivery
+        // bookkeeping, not walk state. That left a real window: at activation
+        // lastAppliedAt is 0, the cached guard fires and paints 0, and then
+        // watchOS re-delivers the SAME queued context on the ongoing
+        // didReceiveApplicationContext path. Against a zeroed lastAppliedAt the
+        // out-of-order check passed, and the old count painted back over the 0
+        // — the intermittent "flashing an old count" symptom. The staleness
+        // check now covers both paths, so this is belt-and-braces: after it,
+        // either check alone is enough to reject the re-delivery.
+        //
+        // Safe by construction: we only get here when the payload is already
+        // older than staleContextSeconds, so anything older still is more
+        // stale, and any genuinely live payload carries a newer sentAt.
+        self.lastAppliedAt = max(self.lastAppliedAt, sentAt)
         return
       }
-      // Out-of-order delivery: applicationContext and sendMessage race.
-      if sentAt > 0, sentAt < self.lastAppliedAt { return }
 
       let incoming = (payload["state"] as? String).flatMap(WalkState.init(rawValue:))
 

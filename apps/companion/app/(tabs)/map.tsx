@@ -959,7 +959,7 @@ export default function MapScreen() {
       presenceRef.current = setInterval(() => { void pingPresence(); }, 45000);
 
       // Live Activity — the "cleanup in progress" lock-screen / Dynamic Island
-      // card. Heartbeat updates ride the existing %3s watch-stats block below.
+      // card. Heartbeat updates ride the ~3s watch-stats block below.
       startCleanupActivity({
         timeText: formatTime(elapsedSeconds),
         pickups: pickupCount,
@@ -1480,6 +1480,10 @@ export default function MapScreen() {
   isListeningRef.current = isListening;
   // Last snapshot actually pushed, so a pickup can jump the 3s throttle queue.
   const lastWatchPushRef = useRef<{ pickups: number; segments: number }>({ pickups: -1, segments: -1 });
+  // Wall-clock timestamps of the last watch push / Live Activity update. These
+  // replace an `elapsedSeconds % 3` test — see the throttle below for why.
+  const lastWatchPushAtRef = useRef(0);
+  const lastActivityPushAtRef = useRef(0);
 
   // Live team event (challenge): find my active pickup challenge when a walk
   // starts, stream my session count in, subscribe to everyone's total.
@@ -1546,6 +1550,8 @@ export default function MapScreen() {
     // count and then fall back to the Start screen.
     if (!walkIntent) {
       lastWatchPushRef.current = { pickups: -1, segments: -1 };
+      lastWatchPushAtRef.current = 0;
+      lastActivityPushAtRef.current = 0;
       // Zeroes, so a cached applicationContext can never resurrect an old count.
       sendStatsToWatch(0, 0, 'idle', { sessionId: '' });
       return;
@@ -1555,7 +1561,23 @@ export default function MapScreen() {
     const countsChanged =
       pickupCount !== lastWatchPushRef.current.pickups ||
       segmentsCompleted !== lastWatchPushRef.current.segments;
-    if (!countsChanged && elapsedSeconds % 3 !== 0) return;
+    // Throttle on WALL CLOCK, not `elapsedSeconds % 3`.
+    //
+    // WHY (24 Aug 2026): this effect is driven by the 1Hz setInterval that
+    // updates elapsedSeconds, and iOS throttles JS timers while backgrounded —
+    // which is every real walk. elapsedSeconds is recomputed from
+    // sessionStartRef on each tick, so when ticks are dropped it JUMPS rather
+    // than counting, and the `% 3 === 0` test can miss for long stretches. The
+    // watch's clock then starves for as long as the phone stays quiet, and a
+    // quiet phone on a live walk is exactly the ambiguity PhoneLink.swift's
+    // staleness branch has to guess about. A wall-clock check fires on the
+    // first tick after 3s of real time however the ticks land.
+    //
+    // Counts are unaffected either way: countsChanged bypasses the throttle
+    // entirely, so a pickup still pushes on the same tick it happens.
+    const nowMs = Date.now();
+    if (!countsChanged && nowMs - lastWatchPushAtRef.current < 3000) return;
+    lastWatchPushAtRef.current = nowMs;
     lastWatchPushRef.current = { pickups: pickupCount, segments: segmentsCompleted };
 
     sendStatsToWatch(pickupCount, elapsedSeconds, 'active', {
@@ -1571,7 +1593,11 @@ export default function MapScreen() {
       eventName: liveEvent?.name ?? '',
       eventPct: liveEvent && activeLevel ? `${activeLevel.freshPct}%` : '',
     });
-    if (elapsedSeconds % 3 === 0) {
+    // Same wall-clock reasoning as the watch push above. Kept on its own timer
+    // so the Live Activity's update cadence stays ~3s and does not inherit the
+    // watch's push-on-every-pickup behaviour — ActivityKit budgets updates.
+    if (nowMs - lastActivityPushAtRef.current >= 3000) {
+      lastActivityPushAtRef.current = nowMs;
       updateCleanupActivity({
         timeText: formatTime(elapsedSeconds),
         pickups: pickupCount,
