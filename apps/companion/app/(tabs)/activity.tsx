@@ -199,6 +199,7 @@ export default function ActivityScreen() {
         motion_log: cleanup.motion_log ? JSON.parse(cleanup.motion_log) : 'not recorded',
         // Present only on tester walks with ground-truth mode on.
         ground_truth: cleanup.ground_truth ? JSON.parse(cleanup.ground_truth) : [],
+        session_mode: cleanup.session_mode ?? 'not recorded',
         notes: cleanup.notes || 'N/A',
       };
       await Clipboard.setStringAsync(JSON.stringify(exportData, null, 2));

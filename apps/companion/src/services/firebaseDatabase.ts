@@ -85,6 +85,11 @@ export interface Cleanup {
    *  Absent on ordinary walks. The labelled truth that makes items_detected
    *  scoreable rather than just a total. */
   ground_truth?: string;
+  /** 'background' | 'foreground' | 'unresolved' — which power path the walk took.
+   *  'foreground' means the screen had to be held on because "Always" location
+   *  was missing. The field evidence for whether keep-awake costs real users
+   *  anything. */
+  session_mode?: string;
   synced?: boolean;
 }
 

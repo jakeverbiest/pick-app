@@ -269,13 +269,26 @@ export default function MapScreen() {
     if (!appActive && isListening) setMapReady(false);
   }, [appActive, isListening]);
 
-  // Keep the screen awake ONLY when we can't run in the background. When a real
-  // background-location session is active ('background'), let the screen lock in
-  // the pocket — the walk survives via the OS and there's nothing to touch.
-  // Until the mode resolves (null) we keep it awake to be safe, so we never
-  // silently drop a foreground-only session.
+  // Keep-awake is a LAST RESORT, not the default (24 Aug 2026, Jake's call:
+  // the screen must not be on during walks — battery is the constraint).
+  //
+  // Only 'foreground' forces it now. That state has exactly one realistic cause
+  // on a real build: the user never granted "Always" location, so
+  // startLocationUpdatesAsync was never reached. It is a fixable permission
+  // problem, not an unavoidable technical state — and startCleanup already
+  // tells the user so and points at Settings. Burning their battery silently
+  // was paying for a prompt nobody had shown them.
+  //
+  // The unresolved window (mode still null) NO LONGER forces it. That was the
+  // expensive default: "unknown" meant "keep the screen lit", and for anyone
+  // whose mode never resolved that meant the entire walk. The window itself is
+  // seconds long and spans a permission sheet the user is looking at, so the
+  // screen cannot auto-lock inside it — iOS's shortest Auto-Lock is 30s and it
+  // restarts on the tap that began the walk. And if the mode does resolve to
+  // 'foreground', this effect re-runs on that change and lights the screen back
+  // up before anything is lost.
   useEffect(() => {
-    if (isListening && sessionMode !== 'background') {
+    if (isListening && sessionMode === 'foreground') {
       activateKeepAwakeAsync('cleanup');
     } else {
       deactivateKeepAwake('cleanup');
@@ -1782,6 +1795,12 @@ export default function MapScreen() {
         // counted twice and with twelve double-counts plus fifteen false
         // positives, and those need opposite fixes.
         ground_truth: JSON.stringify(groundTruthRef.current),
+        // Which power path this walk actually took: 'background' = screen was
+        // free to sleep, 'foreground' = we had to hold it on because "Always"
+        // location was missing. Never recorded before, so there has never been
+        // any evidence about how often the expensive path is taken — which is
+        // exactly what made the keep-awake question feel like a judgment call.
+        session_mode: sessionMode ?? 'unresolved',
       } as any);
 
       const updatedStats = await db.getCleanupStats();
