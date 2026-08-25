@@ -169,6 +169,12 @@ export default function MapScreen() {
   /** Tester ground truth: walk-seconds of each LOG PICK tap on the watch.
    *  Never feeds the count — it is the measuring stick, not a measurement. */
   const groundTruthRef = useRef<number[]>([]);
+  /** The walk's power path, kept in a ref because the state version is reset to
+   *  null the moment `isListening` goes false — which happens in finishCleanup,
+   *  BEFORE the summary sheet's Save reads it. The first version of this logged
+   *  "unresolved" on every walk (A9, 25 Aug) for exactly that reason. Set once
+   *  when the mode resolves, cleared only at the START of the next walk. */
+  const sessionModeRef = useRef<'background' | 'foreground' | null>(null);
   const currentLocationRef = useRef<{ lat: number; lon: number } | null>(null); // latest fix — pickup-pin fallback
   const [gpsInterval, setGpsInterval] = useState(20000); // 20s base interval
   const lastPickupTimeRef = useRef(0);
@@ -1309,6 +1315,7 @@ export default function MapScreen() {
     // heartbeat, so the 2nd+ walk in one app lifetime over-reported both.
     pickupCounterRef.current = 0;
     groundTruthRef.current = [];
+    sessionModeRef.current = null;
     setSegmentsCompleted(0);
     setElapsedSeconds(0);
     setSessionRoute([]);
@@ -1395,6 +1402,7 @@ export default function MapScreen() {
     // screen-off. Expo Go: falls back to foreground (keep screen on).
     startBackgroundSession().then((mode) => {
       setSessionMode(mode);
+      sessionModeRef.current = mode;
       if (mode === 'foreground') {
         console.log('💡 Foreground-only (Expo Go or "Always" location not granted) — keeping screen on for this walk.');
         // Tell the user why locking the screen will pause their walk, and how to
@@ -1800,7 +1808,7 @@ export default function MapScreen() {
         // location was missing. Never recorded before, so there has never been
         // any evidence about how often the expensive path is taken — which is
         // exactly what made the keep-awake question feel like a judgment call.
-        session_mode: sessionMode ?? 'unresolved',
+        session_mode: sessionModeRef.current ?? 'unresolved',
       } as any);
 
       const updatedStats = await db.getCleanupStats();
