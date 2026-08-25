@@ -84,6 +84,54 @@ should have been.
 > Its batch is: watch stale-snapshot guard + `lastAppliedAt`, End confirm hardening,
 > splash transparency, and the LOG PICK button.
 
+## 🎯 Detector: what "good enough" means (Jake, 2026-08-25)
+
+**No per-carry modes.** Not cross-body mode vs pocket mode vs purse mode. One
+detector, close enough that people can semi-trust the number, with an easy way
+to correct it when they care.
+
+**The asymmetry that follows.** Over- and under-counting are not equally bad.
+An inflated count feeds leaderboards, team totals and any published aggregate,
+so it is a credibility problem people notice and resent. A shy count reads as
+conservative, the user tops it up, and nobody feels lied to. So the constraint
+is **never systematically over** — a detector that runs slightly under and is
+easy to correct upward is trustworthy; one that runs hot is not, whatever its
+average.
+
+This reframes the week: B6's **1.95x overcount is the failure that threatens the
+product**. B7's 2-of-10 is too far, but it fails in the safe direction.
+
+**Target, replacing "1.00x on a controlled walk":** land at or just under truth
+— roughly 8-11 counted per 10 real picks — with no walk coming in high.
+
+**Measured carry-position confound (25 Aug), recorded so it is not rediscovered.**
+Cross-body bag vs front pocket is not a small difference:
+
+| | median gyro | classifyCarryMode | peak accel spread |
+|---|---|---|---|
+| 2b, pocket | 6.21 | `pocket` | 1.50–4.60g (3.10) |
+| A9, cross-body | 1.65 | `hand` | 1.43–2.02g (0.59) |
+| B7, cross-body | 1.36 | `hand` | same shape |
+
+Rotation is **4.6x weaker** in a bag and the acceleration range collapses to 23%
+of the detection band. In a pocket a bend swings the phone hard against the
+thigh and separates from a stride; in a bag both read ~1.7g at ~1.4 gyro and the
+contrast the detector runs on is gone. `classifyCarryMode` does correctly call a
+bag `hand`, which disables the pocket-only low-rotation filter — without that,
+65% of B7's events would also have been cut as "low rotation (handling?)".
+
+**Consequence for field data: A9 and B7 are not comparable to the pocket series**
+(B5, B6, 2a, 2b, A7a, C6a). A9's 0.00 false positives per minute is partly a bag
+not producing stride bounces; B7's 2-of-10 is partly a bag pick being a weak
+event. Run the comparable series in a **front pocket**. Cross-body is a real
+carry position and deserves its own baseline later — as a separate question, not
+a mode.
+
+**Open, not yet acted on:** the correction path is behind an "Adjust details"
+disclosure, collapsed by default. If approximation is the design, the summary
+screen should invite correction rather than hide it. The safety valve this whole
+approach leans on is currently tucked away.
+
 ## 🟡 Launch gates
 
 | Item | Type | Open since | Status |
