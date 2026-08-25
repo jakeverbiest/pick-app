@@ -104,6 +104,16 @@ product**. B7's 2-of-10 is too far, but it fails in the safe direction.
 **Target, replacing "1.00x on a controlled walk":** land at or just under truth
 — roughly 8-11 counted per 10 real picks — with no walk coming in high.
 
+> **MET on the first walk after the fix (B7, 25 Aug pm, front pocket): 12 real
+> picks -> 10 counted, 0.83x, under truth, zero false positives.** Same protocol
+> and carry position that produced 39-for-20 (1.95x over) the day before. Every
+> counted event maps to a real pick within 6s with none left over; the two misses
+> were a pace-gate rejection at 1.20 m/s (GPS had not caught the stop) and a
+> likely `trimRecentPickups(6000)` casualty on the final pick, which would make
+> true recall 10 of 11. Caveat: pick times were reconstructed from the protocol,
+> not logged — Build 32's LOG PICK button turns this into measurement. Still n=1
+> tester.
+
 **Measured carry-position confound (25 Aug), recorded so it is not rediscovered.**
 Cross-body bag vs front pocket is not a small difference:
 
