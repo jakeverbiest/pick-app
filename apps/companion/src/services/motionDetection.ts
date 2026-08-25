@@ -552,23 +552,20 @@ class MotionDetector {
               // Still mid-stride — almost certainly a walking bounce, not a
               // pause-and-bend pickup. Suppress (logged, not counted).
               suppressed = true;
-              // Walk 2b (24 Aug 2026): this branch used to suppress WITHOUT
-              // refreshing lastRhythmicTime, so the 2.5s window only ever ran
-              // from the last *rhythmic* window. At a moderate pace rhythmic
-              // windows land every 2-3s, and every time two of them happened to
-              // fall more than 2.5s apart, whichever stride sat in the gap was
-              // counted. All three of 2b's false positives are that exact
-              // pattern — rhythmic, then a suppressed stride, then a counted
-              // one 2-3s later. Nothing distinguished the counted events from
-              // the 14 suppressed ones; they just landed in the hole.
+              // NOT refreshed here, deliberately (reverted 25 Aug 2026).
+              // A refresh was added 24 Aug to close a false-positive leak seen on
+              // walk 2b, where the 2.5s window expired between rhythmic windows and
+              // whatever stride landed in the gap was counted. It was guarded on
+              // !notStriding — but isNotStriding was blind to a pick-pause at the
+              // time, so the guard never fired and the window chained straight
+              // through real picks. B7 counted 2 of 10, with 8 picks suppressed
+              // here as "stride bounce", three of them at a dead stop.
               //
-              // A suppressed stride is evidence of walking too, so it extends
-              // the window — but ONLY while the phone agrees we're striding.
-              // Without the veto this could chain forward through a
-              // deceleration and swallow the first pick after a stop; with it,
-              // slowing to a stop stops refreshing and the window expires on
-              // its own. Same veto the cadence and monotony branches use.
-              if (!notStriding) this.lastRhythmicTime = now;
+              // Not reinstated even now that isNotStriding works, because the leak
+              // it was aimed at is gone: A9 (25 Aug, 1.26 m/s, zero picks) produced
+              // 0.00 false positives per minute with no candidate events at all.
+              // There is no longer a cost on the other side of the scale to weigh
+              // against the recall this took.
             } else if (strideSuspect && !notStriding) {
               // Separate short windows landing at a metronomic stride interval —
               // the steady-walk case the old within-window filter couldn't see.

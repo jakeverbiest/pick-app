@@ -604,5 +604,35 @@ check('peak window is 0.9-3.5g', THRESHOLDS.peakAccelMin === 0.9 && THRESHOLDS.p
     trailingMedianSpeed(mk([0.1, 0.05, 0.2]), now) === null, true);
 }
 
+
+// ---------------------------------------------------------------------------
+// isNotStriding must see a PICK-PAUSE, not just a long stop (25 Aug 2026, B7)
+// ---------------------------------------------------------------------------
+// B7: 10 real picks, 2 counted. speedMps/speedAgeMs were in the signature and
+// never read, so the only questions the function could answer were "did the
+// pedometer see a step in the last 2.5s" and "have you moved 5m in the last
+// 10s" -- both of which say STRIDING throughout a ~2s pick-pause. Every guard
+// built on it silently did nothing, and picks were suppressed as walking.
+{
+  const FRESH = 200;
+  // mid-pick: stopped dead, but a step 1s ago and 8m of walking in the window
+  check('B7 pick-pause: fresh 0.03 m/s beats a 1s-old step',
+    isNotStriding({ msSinceLastFixMs: FRESH, displacementM: 8, pedometerActive: true,
+      msSinceLastStep: 1000, speedMps: 0.03, speedAgeMs: FRESH }), true);
+  check('B7 pick-pause: fresh 0.27 m/s beats recent displacement',
+    isNotStriding({ msSinceLastFixMs: FRESH, displacementM: 8, pedometerActive: false,
+      msSinceLastStep: null, speedMps: 0.268, speedAgeMs: FRESH }), true);
+  // walking is still walking -- the override must not swallow the normal case
+  check('walking at 1.1 m/s is still striding',
+    isNotStriding({ msSinceLastFixMs: FRESH, displacementM: 8, pedometerActive: true,
+      msSinceLastStep: 500, speedMps: 1.1, speedAgeMs: FRESH }), false);
+  // a stale fix must not be trusted -- same discipline as the pause gate
+  check('a stale 0.03 m/s reading does NOT override the pedometer',
+    isNotStriding({ msSinceLastFixMs: FRESH, displacementM: 8, pedometerActive: true,
+      msSinceLastStep: 500, speedMps: 0.03, speedAgeMs: 9000 }), false);
+  // the floor is the same one the pause gate uses
+  check('stop floor shared with the pause gate', RELATIVE_PACE.minStopMps === 0.35, true);
+}
+
 console.log(`\n${failures === 0 ? '✅ ALL PASSED' : `❌ ${failures} FAILURE(S)`}`);
 process.exit(failures === 0 ? 0 : 1);

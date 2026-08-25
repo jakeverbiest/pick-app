@@ -428,7 +428,37 @@ export function isNotStriding(args: {
   speedMps?: number | null;
   speedAgeMs?: number | null;
 }): boolean {
-  const { msSinceLastFixMs, displacementM, pedometerActive, msSinceLastStep } = args;
+  const { msSinceLastFixMs, displacementM, pedometerActive, msSinceLastStep, speedMps, speedAgeMs } = args;
+
+  // 0. A FRESH FIX SAYING YOU ARE STOPPED IS DECISIVE, and outranks everything
+  //    below (25 Aug 2026, walk B7: 10 real picks, 2 counted).
+  //
+  //    speedMps and speedAgeMs were in this signature and NEVER READ. That was
+  //    the whole bug. Without them the function could only answer "have you been
+  //    still for ~10 seconds", because:
+  //      - rule 1 calls any step inside quietMs (2500ms) striding, and a normal
+  //        pick is a ~2s pause, so your last step is always inside that window;
+  //      - rule 2 measures displacement over windowMs (10000ms), and a 2s stop
+  //        at the end of 8s of walking still shows metres of movement.
+  //    A pick-pause is ~2s. It could never be seen, so isNotStriding returned
+  //    false throughout every real pick — and every guard built on it silently
+  //    did nothing: the cadence veto, the monotony veto (whose comment claims it
+  //    "protects rapid picking in one spot"), and the walking-context refresh.
+  //    On B7 that cost 8 picks to "walking context" and 3 more to "rhythmic
+  //    motion", including events at 0.03 and 0.00 m/s — a stationary phone being
+  //    classified as walking.
+  //
+  //    The fix is to read the argument that was already being passed. If a fresh
+  //    fix puts you under the stop floor, you are not striding, whatever the
+  //    pedometer's last step or the last ten seconds of displacement suggest.
+  if (
+    isSpeedFresh(speedAgeMs ?? null) &&
+    typeof speedMps === 'number' &&
+    speedMps >= 0 &&
+    speedMps < RELATIVE_PACE.minStopMps
+  ) {
+    return true;
+  }
 
   // 1. The pedometer saw a step just now — you are walking. Overrides GPS.
   if (pedometerActive && msSinceLastStep !== null && msSinceLastStep <= STRIDE.quietMs) return false;
