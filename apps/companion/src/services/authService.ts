@@ -229,8 +229,9 @@ class AuthService {
       if (error?.code === 'ERR_REQUEST_CANCELED') {
         throw new Error('__CANCELED__');
       }
-      console.error('❌ Sign in with Apple failed:', error.code || error.message);
-      throw new Error('Sign in with Apple failed. Please try again, or use email instead.');
+      const reason = error?.code || error?.message || 'unknown error';
+      console.error('❌ Sign in with Apple failed:', reason);
+      throw new Error(`Sign in with Apple failed (${reason}). Please try again, or use email instead.`);
     }
   }
 
