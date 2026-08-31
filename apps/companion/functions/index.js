@@ -82,6 +82,7 @@ async function rebuildTeam(team) {
   let totalCleanups = 0;
   let totalPickups = 0;
   let totalWeight = 0;
+  let totalBags = 0;
   let lastCleanup = 0;
   const days = new Set();
   const members = new Set();
@@ -91,6 +92,7 @@ async function rebuildTeam(team) {
     totalCleanups += 1;
     totalPickups += num(d.items_count);
     totalWeight += num(d.weight_lb);
+    totalBags += bagsFor(d);
     if (d.userId) members.add(d.userId);
     const ms = toMillis(d.timestamp);
     if (ms) {
@@ -104,6 +106,7 @@ async function rebuildTeam(team) {
     total_cleanups: totalCleanups,
     total_pickups: totalPickups,
     total_weight: round1(totalWeight),
+    total_bags: Math.round(totalBags),
     total_days: days.size,
     member_count: members.size,
     last_cleanup: lastCleanup,
