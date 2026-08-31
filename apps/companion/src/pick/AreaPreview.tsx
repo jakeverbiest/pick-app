@@ -32,7 +32,7 @@ export function AreaPreview({
     dragging: false, touchZoom: false, scrollWheelZoom: false,
     doubleClickZoom: false, boxZoom: false, keyboard: false, tap: false
   });
-  L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png', {
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png?key=${process.env.EXPO_PUBLIC_CARTO_API_KEY}', {
     subdomains: 'abcd', maxZoom: 19
   }).addTo(map);
   var poly = L.polygon(${JSON.stringify(ring)}, {
