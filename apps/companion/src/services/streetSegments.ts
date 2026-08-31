@@ -55,7 +55,7 @@ export const SNAP_DISTANCE_M = 11;
 // pieces of a walk and any dropped fix fell just under, so streets you clearly
 // cleaned didn't turn green. 60% of a 50m piece (~30m walked) still needs a real
 // pass, not a drive-by. Tunable — watch for over-crediting on the next walk.
-const COVERAGE_THRESHOLD = 0.6;
+export const COVERAGE_THRESHOLD = 0.6;
 const SEGMENT_SAMPLE_STEP_M = 5; // sample the segment every ~5m to measure coverage
 const FETCH_RADIUS_M = 600;
 // When we can't get real per-side sidewalks and fall back to a road CENTERLINE,
@@ -221,6 +221,55 @@ export function routeCoverageFraction(
     if (near) covered++;
   }
   return covered / samples.length;
+}
+
+/**
+ * Assign each route point to the single nearest candidate segment it's within
+ * snap distance of, instead of crediting every segment the point happens to
+ * fall within snap distance of. This is the fix for the both-sides-cleaned
+ * bug that COVERAGE_THRESHOLD/SNAP_DISTANCE_M alone couldn't close: two
+ * independently-mapped real OSM sidewalk ways (not the synthetic
+ * offsetCoords() fallback) can sit closer together than 2×SNAP_DISTANCE_M in
+ * places, so a route walked along one side can still land within snap
+ * distance of the other. Comparing against every other nearby candidate
+ * (already fetched by getSegmentsAround/getSegmentsForRing — no extra query)
+ * and keeping only the closest match resolves that overlap locally, per
+ * point, without having to retune the absolute threshold.
+ *
+ * Returns one route-point bucket per input candidate (same order/length as
+ * `candidates`); a point that isn't within snapM of ANY candidate is simply
+ * dropped, matching the old behavior where it wouldn't have counted either.
+ */
+export function assignRoutePointsToNearestSegment<T extends { coords: [number, number][] }>(
+  routePoints: Array<{ lat: number; lon: number }>,
+  candidates: T[],
+  snapM: number
+): Array<{ lat: number; lon: number }>[] {
+  const buckets: Array<{ lat: number; lon: number }>[] = candidates.map(() => []);
+  for (const p of routePoints) {
+    let bestIdx = -1;
+    let bestD = Infinity;
+    for (let i = 0; i < candidates.length; i++) {
+      const coords = candidates[i].coords;
+      if (coords.length === 0) continue;
+      let d: number;
+      if (coords.length === 1) {
+        d = distM(p.lat, p.lon, coords[0][0], coords[0][1]);
+      } else {
+        d = Infinity;
+        for (let j = 1; j < coords.length; j++) {
+          const e = pointToEdgeM([p.lat, p.lon], coords[j - 1], coords[j]);
+          if (e < d) d = e;
+        }
+      }
+      if (d < bestD) {
+        bestD = d;
+        bestIdx = i;
+      }
+    }
+    if (bestIdx >= 0 && bestD <= snapM) buckets[bestIdx].push(p);
+  }
+  return buckets;
 }
 
 export function gridKey(lat: number, lon: number): string {
@@ -503,11 +552,16 @@ export async function markRouteCleaned(
     return 0;
   }
 
-  // A segment is cleaned only if the route ran alongside ≥80% of its length —
-  // not just clipped one end. This is what stops a single pass from marking
-  // whole blocks (and the opposite sidewalk) as clean.
+  // First, resolve which segment each route point actually belongs to when
+  // multiple candidates are within snap distance (e.g. two independently-
+  // mapped sidewalk ways on a narrow street) — see
+  // assignRoutePointsToNearestSegment(). Then, same as before, a segment is
+  // cleaned only if the route ran alongside ≥COVERAGE_THRESHOLD of its
+  // length — not just clipped one end — but now measured against only the
+  // route points that were actually closest to it.
+  const buckets = assignRoutePointsToNearestSegment(routePoints, segments, SNAP_DISTANCE_M);
   const cleaned = segments.filter(
-    (seg) => routeCoverageFraction(seg.coords, routePoints, SNAP_DISTANCE_M) >= COVERAGE_THRESHOLD
+    (seg, i) => routeCoverageFraction(seg.coords, buckets[i], SNAP_DISTANCE_M) >= COVERAGE_THRESHOLD
   );
 
   if (cleaned.length === 0) {

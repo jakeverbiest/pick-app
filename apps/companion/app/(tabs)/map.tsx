@@ -10,7 +10,7 @@ import MotionDetector from '../../src/services/motionDetection';
 import PickupAggregator from '../../src/services/pickupAggregator';
 import { itemsToBags, reportedBags, formatBags, formatKitchenBags, BAG_SIZE_OPTIONS, BAG_SIZE_FACTORS } from '../../src/services/impactMetrics';
 import { BagDetails } from '../../src/pick/BagDetails';
-import { getCoverage, markRouteCleaned, getParkCoverage, markParksCleaned, getTileStats, tileId, getCoverageForRing, routeCoverageFraction, nearestStreetSegment, type RenderSegment } from '../../src/services/streetSegments';
+import { getCoverage, markRouteCleaned, getParkCoverage, markParksCleaned, getTileStats, tileId, getCoverageForRing, routeCoverageFraction, nearestStreetSegment, assignRoutePointsToNearestSegment, SNAP_DISTANCE_M, COVERAGE_THRESHOLD, type RenderSegment } from '../../src/services/streetSegments';
 import { saveAdoptedBlock, listMyAdoptions } from '../../src/services/adoptions';
 import { osmNeighborhood, getHoodsInBounds, getOsmHoodsInBounds, hoodLabelsNeeded, hasNeighborhoods, polygonStats, HoodShape } from '../../src/services/neighborhoods';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -681,20 +681,32 @@ export default function MapScreen() {
     const segs = inLevel ? levelSegmentsRef.current : coverageSegmentsRef.current;
     if (!segs.length) return;
     const last = pts[pts.length - 1];
-    const newlyClean: string[] = [];
-    for (const s of segs) {
-      if (s.cleaned) continue;
+    // Only segments within ~90m of you are candidates at all (perf) — this
+    // same nearby set doubles as the comparison pool for nearest-segment
+    // classification below, so parallel/opposite sidewalks in range compete
+    // for each route point instead of both being credited independently.
+    const nearby = segs.filter((s) => {
+      if (s.cleaned) return false;
       const m = s.coords[Math.floor(s.coords.length / 2)];
       const dx = (m[1] - last.lon) * 111320 * Math.cos((last.lat * Math.PI) / 180);
       const dy = (m[0] - last.lat) * 110540;
-      if (dx * dx + dy * dy > 90 * 90) continue; // only segments within ~90m of you
-      if (routeCoverageFraction(s.coords, pts, 15) >= 0.8) {
-        s.cleaned = true;
-        // Age it to day 0 too, so a WebView remount mid-walk repaints it green
-        // rather than reverting to its pre-walk color.
-        s.daysOld = 0;
-        newlyClean.push(s.id);
-      }
+      return dx * dx + dy * dy <= 90 * 90;
+    });
+    const newlyClean: string[] = [];
+    if (nearby.length) {
+      // Same nearest-segment classification used by markRouteCleaned(), so
+      // what's shown live while walking matches what gets persisted at the
+      // end of the walk (see streetSegments.ts's both-sides-cleaned fix).
+      const buckets = assignRoutePointsToNearestSegment(pts, nearby, SNAP_DISTANCE_M);
+      nearby.forEach((s, i) => {
+        if (routeCoverageFraction(s.coords, buckets[i], SNAP_DISTANCE_M) >= COVERAGE_THRESHOLD) {
+          s.cleaned = true;
+          // Age it to day 0 too, so a WebView remount mid-walk repaints it green
+          // rather than reverting to its pre-walk color.
+          s.daysOld = 0;
+          newlyClean.push(s.id);
+        }
+      });
     }
     if (newlyClean.length) {
       if (inLevel) {
