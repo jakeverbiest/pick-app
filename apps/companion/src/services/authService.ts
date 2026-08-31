@@ -31,6 +31,7 @@ import {
 } from 'firebase/auth';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as AppleAuthentication from 'expo-apple-authentication';
+import * as Crypto from 'expo-crypto';
 import { auth } from './firebaseConfig';
 import { getDatabase } from './database';
 
@@ -174,11 +175,23 @@ class AuthService {
   async loginWithApple(): Promise<AuthUser> {
     try {
       console.log('🍎 Starting Sign in with Apple');
+
+      // Firebase's Apple credential verification requires a nonce round-trip:
+      // generate a random raw value, send its SHA256 hash to Apple (which
+      // signs it into the identity token), then hand Firebase the ORIGINAL
+      // raw value to verify against that signed hash. Skipping this produces
+      // auth/invalid-credential — Apple's own auth succeeds either way, only
+      // Firebase's verification fails, which is exactly what was seen in the
+      // field (confirmed 2026-08-31, real device, 4 repros before the fix).
+      const rawNonce = Crypto.randomUUID();
+      const hashedNonce = await Crypto.digestStringAsync(Crypto.CryptoDigestAlgorithm.SHA256, rawNonce);
+
       const appleCredential = await AppleAuthentication.signInAsync({
         requestedScopes: [
           AppleAuthentication.AppleAuthenticationScope.FULL_NAME,
           AppleAuthentication.AppleAuthenticationScope.EMAIL,
         ],
+        nonce: hashedNonce,
       });
 
       if (!appleCredential.identityToken) {
@@ -188,9 +201,7 @@ class AuthService {
       const provider = new OAuthProvider('apple.com');
       const firebaseCredential = provider.credential({
         idToken: appleCredential.identityToken,
-        // Firebase's Apple provider wants the raw nonce Apple signed, not
-        // one we generate ourselves — signInAsync() doesn't take a nonce
-        // input in the default (no-PKCE) flow, so there isn't one to pass.
+        rawNonce,
       });
 
       const cred = await signInWithCredential(auth, firebaseCredential);
