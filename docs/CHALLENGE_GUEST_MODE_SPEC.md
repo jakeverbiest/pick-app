@@ -1,7 +1,20 @@
 # Challenge Guest Mode — technical scope
 
-Status: draft, scoped 2026-08-04. Not yet implemented.
-Related: `docs/CHALLENGE_RECAP_SPEC.md`, `src/services/challenges.ts` (existing challenges backend).
+> **RECONSIDERED 2026-08-31 — parked, not building this.** Full scope below is preserved (all 6
+> open questions were resolved 2026-08-31 and it's real, buildable work) in case this gets
+> revisited, but Jake's call is to not build it. Reasoning: guest mode gives up the product's core
+> differentiator — a guest can't get real automatic tracking in a browser, so it hands the most
+> casual, first-touch users the exact manual-estimation experience Pick exists to replace (bags,
+> weight, streets, all self-reported after the fact). The friction math doesn't clearly favor it
+> either — a real download is a one-time cost paid at a captive, socially-primed moment (an
+> organized event), versus guest self-reporting friction that recurs every time for anyone who
+> never converts. Redirecting the same underlying goal (maximize walk-up-event participation
+> counted) into making the real signup/download/join flow as fast as possible instead — that
+> helps every new user, not just event guests, and protects the "it just works automatically"
+> story instead of undermining it.
+
+Status: draft, scoped 2026-08-04, all open questions resolved 2026-08-31. Not building — see
+above. Related: `docs/CHALLENGE_RECAP_SPEC.md`, `src/services/challenges.ts` (existing challenges backend).
 
 ## Problem
 
@@ -107,9 +120,13 @@ Self-reported bag counts are easier to game than sensor data, but this isn't a n
 
 ## Open questions
 
-1. Does the public impact dashboard's stats rollup (the Cloud Function that aggregates `cleanups` docs today) need to be extended to include guest `contrib` docs? If the goal is genuinely to grow the public-facing numbers, guest participation needs to feed that same rollup, not just the challenge's internal counter.
-2. Does the organizer's live view need real names, or is the auto-generated guest label sufficient for v1?
+1. ~~Does the public impact dashboard's stats rollup need to be extended to include guest `contrib` docs?~~ — **resolved 2026-08-31 (Jake): yes, extend it — but this is a build-time requirement for whenever Guest Mode itself gets built, not standalone work to do now**, since Guest Mode hasn't shipped yet. Mechanical note for whoever builds it: the hourly rollup (`rebuildPublicStats()`) currently counts each authenticated user's saved walk exactly once via their `cleanups` doc. Naively also summing every `contrib` doc would double-count regular in-app participants (already counted via their own `cleanups` doc). The rollup needs a way to distinguish guest-origin `contrib` docs from regular-participant `contrib` docs and only add the guest ones — e.g. a flag written at guest-submit time (guests are anonymous-auth; regular participants aren't, which may already be enough to distinguish them without a new field — worth checking at build time).
+2. ~~Does the organizer's live view need real names, or is the auto-generated guest label sufficient for v1?~~ — **resolved 2026-08-31 (Jake): real names.**
 3. ~~Should there be any nudge toward downloading Pick Prime after a guest submits~~ — resolved: yes, a low-emphasis link on the confirmation screen only. See App download CTA above.
-6. Worth a "claim my guest contribution" flow for converts (re-enter the challenge code inside the app post-signup to merge guest data into the new account), or is that scope creep for v1?
-4. Which map-matching option to use (see Snap-to-road) — needs a vendor/cost decision before implementation, since it's the one part of this feature that isn't free at scale.
-5. The wastebasket/kitchen/yard-to-gallons mapping above is a general default from typical retail sizing, not a measurement — worth confirming against real bag sizes if organizers hand out specific bags at events, and deciding whether the mapping needs to vary by region or stays fixed for v1.
+4. ~~Which map-matching option to use — needs a vendor/cost decision.~~ — **resolved 2026-08-31 (Jake): no map-matching in v1 — no new recurring cost is acceptable right now.** This doesn't degrade the feature to a broken state: line 57's fallback design ("if matching fails... the raw path is still a usable fallback") is promoted from failure-fallback to the actual v1 behavior — guest paths ship as the raw tapped line, un-snapped, permanently, until revisited. Real street-snapping is deferred, not cancelled — see the new business-model note directly below.
+
+### Future: bundling Guest Mode into a paid org tier
+
+Jake's idea, 2026-08-31, worth keeping visible rather than buried in a resolved question: map-matching (and Guest Mode generally) could become part of a paid "Pick for Organizations" tier — the same audience and pricing motion as `CIVIC_ORG_DASHBOARD_SPEC.md`'s BID/civic-org dashboard. Individual app use stays free; an organization running a volunteer event pays for org-facing tools (guest participation + the impact dashboard), and that revenue funds the map-matching vendor cost instead of Pick absorbing it for free on every guest submission. Not scoped — this is a strategic note for whenever pricing for the org tier gets designed, not a v1 requirement.
+5. ~~The wastebasket/kitchen/yard-to-gallons mapping above is a general default from typical retail sizing, not a measurement — worth confirming against real bag sizes if organizers hand out specific bags at events, and deciding whether the mapping needs to vary by region or stays fixed for v1.~~ — **Jake's response 2026-08-31: agreed, and flags this as a good candidate for a "challenge intake" / event-setup form** — an organizer setting up a guest-joinable challenge could specify the actual bag size/type being handed out at their event, overriding the generic default for that specific challenge rather than needing a global regional mapping. Not scoped in detail yet — worth its own pass whenever challenge-creation UX for organizers gets designed.
+6. ~~Worth a "claim my guest contribution" flow for converts (re-enter the challenge code inside the app post-signup to merge guest data into the new account), or is that scope creep for v1?~~ — **resolved 2026-08-31 (Jake): parked, not v1.** Matches what the App Download CTA section above already stated as the v1 behavior — this question and that section had drifted slightly out of sync; now consistent.

@@ -53,6 +53,7 @@
     "plugins": [
       "@bacons/apple-targets",
       "expo-router",
+      "expo-apple-authentication",
       [
         "expo-splash-screen",
         {

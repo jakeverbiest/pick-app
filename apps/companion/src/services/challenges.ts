@@ -377,9 +377,23 @@ export async function listMyInvites(): Promise<Challenge[]> {
 }
 
 /**
- * A link that opens the challenge in the app. Uses the custom scheme, which
- * expo-router already resolves to `app/challenge/[id]` — no extra config.
- * People without the app installed get the TestFlight link as a fallback.
+ * A link that opens the challenge in the app.
+ *
+ * Two links, one covering each case, since we can't tell from a message
+ * which situation the recipient is in:
+ *   - Already has Pick: the `pickapp://` custom scheme, which expo-router
+ *     already resolves to `app/challenge/[id]` with no extra config.
+ *   - Doesn't have it yet: `pickglobal.org/join?challenge={id}` — the web
+ *     landing page (`~/pick-app/web/join.html`) that carries the challenge
+ *     id across the App Store detour via a clipboard handoff, so it's still
+ *     there when they open the app for the first time post-signup. See
+ *     `src/services/pendingChallenge.ts` for how the app picks it back up.
+ *
+ * The landing page itself also tries the custom scheme first (in case the
+ * recipient tapped a share-sheet "copy link" version of this message rather
+ * than the raw pickapp:// line below), so it's a safe universal fallback
+ * either way — but keeping both lines means someone who already has the app
+ * never has to leave it to get there.
  */
 export function challengeInviteMessage(c: Challenge, inviterName?: string): string {
   const who = inviterName ? `${inviterName} invited you` : "You're invited";
@@ -387,7 +401,7 @@ export function challengeInviteMessage(c: Challenge, inviterName?: string): stri
     `${who} to "${c.name}" on Pick — ${challengeSubtitle(c)}.\n` +
     `We're going for ${c.goal_value.toLocaleString()} ${GOAL_LABEL[c.goal_type]} together.\n\n` +
     `Open in Pick: pickapp://challenge/${c.id}\n` +
-    `Don't have it yet? https://testflight.apple.com/join/6753UhuM`
+    `Don't have it yet? https://pickglobal.org/join?challenge=${c.id}`
   );
 }
 

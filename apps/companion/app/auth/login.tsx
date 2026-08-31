@@ -1,17 +1,54 @@
-import { useState } from 'react';
-import { ActivityIndicator, Alert, Image, Pressable, StyleSheet, Text, TextInput, View, KeyboardAvoidingView, Platform } from 'react-native';
+import { useEffect, useState } from 'react';
+import { ActivityIndicator, Alert, Image, Platform, Pressable, StyleSheet, Text, TextInput, View, KeyboardAvoidingView } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter } from 'expo-router';
+import * as AppleAuthentication from 'expo-apple-authentication';
 import { getAuthService } from '../../src/services/authService';
 import { C, Fonts } from '../../src/pick/theme';
 
 export default function LoginScreen() {
   const router = useRouter();
+  // Carried over from signup.tsx (see its comment) so someone who already
+  // has an account and hits "Login" from a challenge invite still lands on
+  // the challenge rather than the generic map tab.
+  const { pendingChallenge } = useLocalSearchParams<{ pendingChallenge?: string }>();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [focus, setFocus] = useState<'email' | 'password' | null>(null);
+  // Apple's own guidance: only show the button where it's actually usable —
+  // iOS 13+ on a build that carries the applesignin entitlement. On a build
+  // cut before that entitlement lands (see authService.loginWithApple's
+  // doc comment), isAvailableAsync() reports false rather than throwing, so
+  // this degrades to email/password only rather than a broken button.
+  const [appleAvailable, setAppleAvailable] = useState(false);
+
+  useEffect(() => {
+    if (Platform.OS !== 'ios') return;
+    AppleAuthentication.isAvailableAsync().then(setAppleAvailable).catch(() => setAppleAvailable(false));
+  }, []);
+
+  const goToPendingChallengeOrMap = () => {
+    if (pendingChallenge) {
+      router.replace({ pathname: '/challenge/[id]', params: { id: pendingChallenge, autoJoin: '1' } });
+    } else {
+      router.replace('/(tabs)/map');
+    }
+  };
+
+  const handleAppleLogin = async () => {
+    try {
+      setLoading(true);
+      await getAuthService().loginWithApple();
+      goToPendingChallengeOrMap();
+    } catch (error: any) {
+      if (error?.message === '__CANCELED__') return; // user backed out — no alert
+      Alert.alert('Sign in with Apple failed', error.message);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const handleLogin = async () => {
     if (!email.trim() || !password.trim()) {
@@ -21,7 +58,7 @@ export default function LoginScreen() {
     try {
       setLoading(true);
       await getAuthService().login(email.trim(), password);
-      router.replace('/(tabs)/map');
+      goToPendingChallengeOrMap();
     } catch (error: any) {
       Alert.alert('Login failed', error.message);
     } finally {
@@ -107,11 +144,38 @@ export default function LoginScreen() {
           <Pressable onPress={handleForgotPassword} disabled={loading} style={styles.forgot}>
             <Text style={styles.forgotText}>Forgot password?</Text>
           </Pressable>
+
+          {appleAvailable && (
+            <>
+              <View style={styles.dividerRow}>
+                <View style={styles.dividerLine} />
+                <Text style={styles.dividerText}>or</Text>
+                <View style={styles.dividerLine} />
+              </View>
+              <AppleAuthentication.AppleAuthenticationButton
+                buttonType={AppleAuthentication.AppleAuthenticationButtonType.SIGN_IN}
+                buttonStyle={AppleAuthentication.AppleAuthenticationButtonStyle.BLACK}
+                cornerRadius={8}
+                style={styles.appleBtn}
+                onPress={handleAppleLogin}
+              />
+            </>
+          )}
         </View>
 
         <Text style={styles.footer}>
           New here?{' '}
-          <Text style={styles.create} onPress={() => !loading && router.push('/auth/signup')}>
+          <Text
+            style={styles.create}
+            onPress={() =>
+              !loading &&
+              router.push(
+                pendingChallenge
+                  ? { pathname: '/auth/signup', params: { pendingChallenge } }
+                  : '/auth/signup'
+              )
+            }
+          >
             Create account
           </Text>
         </Text>
@@ -152,6 +216,10 @@ const styles = StyleSheet.create({
   disabled: { opacity: 0.6 },
   forgot: { alignItems: 'center', paddingVertical: 10 },
   forgotText: { fontFamily: Fonts.bodyMedium, color: C.muted, fontSize: 13 },
+  dividerRow: { flexDirection: 'row', alignItems: 'center', marginTop: 6, marginBottom: 4, gap: 10 },
+  dividerLine: { flex: 1, height: 1, backgroundColor: C.border },
+  dividerText: { fontFamily: Fonts.body, color: C.muted, fontSize: 12 },
+  appleBtn: { height: 50, width: '100%' },
   footer: { fontFamily: Fonts.body, textAlign: 'center', marginTop: 18, fontSize: 14, color: C.text3 },
   create: { fontFamily: Fonts.bodyBold, color: C.rust },
 });

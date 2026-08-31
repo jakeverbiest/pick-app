@@ -1,17 +1,68 @@
 import { View, Text, StyleSheet, TouchableOpacity, TextInput, Alert, ActivityIndicator, ScrollView, KeyboardAvoidingView, Platform, Image } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useState } from 'react';
-import { useRouter } from 'expo-router';
+import { useEffect, useState } from 'react';
+import { useLocalSearchParams, useRouter } from 'expo-router';
+import * as AppleAuthentication from 'expo-apple-authentication';
 import { getAuthService } from '../../src/services/authService';
 import { C, Fonts, radius } from '../../src/pick/theme';
+import { readPendingChallengeFromClipboard, consumePendingChallengeMarker } from '../../src/services/pendingChallenge';
 
 export default function SignupScreen() {
   const router = useRouter();
+  // `pendingChallenge`: set when this screen was reached via
+  // `app/challenge/[id].tsx`'s auth guard (the person already has the app
+  // and followed pickapp://challenge/{id} or a landing-page redirect while
+  // signed out). The clipboard marker below is the OTHER arrival path — a
+  // first-ever install via the TestFlight detour — see pendingChallenge.ts.
+  const { pendingChallenge } = useLocalSearchParams<{ pendingChallenge?: string }>();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [displayName, setDisplayName] = useState('');
   const [loading, setLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
+  // See login.tsx's identical check — degrades to email/password only on a
+  // build that predates the applesignin entitlement (or on non-iOS).
+  const [appleAvailable, setAppleAvailable] = useState(false);
+
+  useEffect(() => {
+    if (Platform.OS !== 'ios') return;
+    AppleAuthentication.isAvailableAsync().then(setAppleAvailable).catch(() => setAppleAvailable(false));
+  }, []);
+
+  /** Shared post-auth routing for both email/password signup and Apple. */
+  const routeAfterAuth = async () => {
+    // Explicit route param (came from challenge/[id].tsx's auth guard) wins
+    // over the clipboard fallback (came from a fresh TestFlight install)
+    // since it's a direct signal, not a best-effort one.
+    let targetChallengeId = pendingChallenge || null;
+    if (!targetChallengeId) {
+      targetChallengeId = await readPendingChallengeFromClipboard();
+      if (targetChallengeId) await consumePendingChallengeMarker();
+    }
+    if (targetChallengeId) {
+      // autoJoin: arriving via an invite link is treated as consent to
+      // join, not just a browse — challenge/[id].tsx reads this to skip
+      // the explicit "Join challenge" tap. See its comment for the leave
+      // affordance that makes that safe to do silently.
+      router.replace({ pathname: '/challenge/[id]', params: { id: targetChallengeId, autoJoin: '1' } });
+    } else {
+      router.replace('/(tabs)/map');
+    }
+  };
+
+  const handleAppleSignup = async () => {
+    try {
+      setLoading(true);
+      await getAuthService().loginWithApple();
+      console.log('✅ Sign in with Apple successful, navigating to home');
+      await routeAfterAuth();
+    } catch (error: any) {
+      if (error?.message === '__CANCELED__') return; // user backed out — no alert
+      Alert.alert('Sign in with Apple failed', error.message);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const validateForm = () => {
     if (!email.trim() || !password.trim() || !displayName.trim()) {
@@ -39,7 +90,7 @@ export default function SignupScreen() {
       await authService.signup(email.trim(), password, displayName.trim());
 
       console.log('✅ Signup successful, navigating to home');
-      router.replace('/(tabs)/map');
+      await routeAfterAuth();
     } catch (error: any) {
       Alert.alert('❌ Signup Failed', error.message);
     } finally {
@@ -126,13 +177,36 @@ export default function SignupScreen() {
               <Text style={styles.signupButtonText}>Create Account</Text>
             )}
           </TouchableOpacity>
+
+          {appleAvailable && (
+            <>
+              <View style={styles.dividerRow}>
+                <View style={styles.dividerLine} />
+                <Text style={styles.dividerText}>or</Text>
+                <View style={styles.dividerLine} />
+              </View>
+              <AppleAuthentication.AppleAuthenticationButton
+                buttonType={AppleAuthentication.AppleAuthenticationButtonType.SIGN_UP}
+                buttonStyle={AppleAuthentication.AppleAuthenticationButtonStyle.BLACK}
+                cornerRadius={radius.button}
+                style={styles.appleBtn}
+                onPress={handleAppleSignup}
+              />
+            </>
+          )}
         </View>
 
         {/* Login Link */}
         <View style={styles.footer}>
           <Text style={styles.footerText}>Already have an account? </Text>
           <TouchableOpacity
-            onPress={() => router.push('/auth/login')}
+            onPress={() =>
+              router.push(
+                pendingChallenge
+                  ? { pathname: '/auth/login', params: { pendingChallenge } }
+                  : '/auth/login'
+              )
+            }
             disabled={loading}
           >
             <Text style={styles.loginLink}>Login</Text>
@@ -245,6 +319,10 @@ const styles = StyleSheet.create({
   buttonDisabled: {
     opacity: 0.6,
   },
+  dividerRow: { flexDirection: 'row', alignItems: 'center', marginTop: 6, gap: 10 },
+  dividerLine: { flex: 1, height: 1, backgroundColor: C.border },
+  dividerText: { fontFamily: Fonts.body, color: C.muted, fontSize: 12 },
+  appleBtn: { height: 50, width: '100%' },
   footer: {
     flexDirection: 'row',
     justifyContent: 'center',

@@ -19,6 +19,8 @@
 import {
   createUserWithEmailAndPassword,
   signInWithEmailAndPassword,
+  signInWithCredential,
+  OAuthProvider,
   signOut,
   sendPasswordResetEmail,
   sendEmailVerification,
@@ -28,6 +30,7 @@ import {
   reload,
 } from 'firebase/auth';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as AppleAuthentication from 'expo-apple-authentication';
 import { auth } from './firebaseConfig';
 import { getDatabase } from './database';
 
@@ -146,6 +149,88 @@ class AuthService {
       const message = this.getErrorMessage(error.code);
       console.error('❌ Login failed:', error.code || error.message);
       throw new Error(message);
+    }
+  }
+
+  /**
+   * Sign in (or, on first use, silently create an account) with Apple.
+   *
+   * NATIVE BUILD REQUIRED — not OTA-shippable. `expo-apple-authentication`'s
+   * config plugin (added to app.json's `plugins`) writes the
+   * `com.apple.developer.applesignin` entitlement into the native
+   * entitlements file at prebuild time; that only takes effect in a fresh
+   * `eas build`, never via `eas update`. Calling this on a build that
+   * predates that entitlement will reject with `AppleAuthenticationError` /
+   * a missing-capability error from Apple, not throw here — this method
+   * itself is plain JS and could ship OTA once a build already carries the
+   * entitlement, but it can't be the thing that adds the capability.
+   *
+   * Apple only ever hands back `fullName` on the FIRST authorization for a
+   * given user+app pair — a returning user (or a re-install) gets `null`
+   * there even though it's the same Apple ID, so `displayName` is only set
+   * from it when present; otherwise it's left for the user to set later
+   * (Settings), same as the deferred-neighborhood pattern signup.tsx uses.
+   */
+  async loginWithApple(): Promise<AuthUser> {
+    try {
+      console.log('🍎 Starting Sign in with Apple');
+      const appleCredential = await AppleAuthentication.signInAsync({
+        requestedScopes: [
+          AppleAuthentication.AppleAuthenticationScope.FULL_NAME,
+          AppleAuthentication.AppleAuthenticationScope.EMAIL,
+        ],
+      });
+
+      if (!appleCredential.identityToken) {
+        throw new Error('Apple did not return an identity token.');
+      }
+
+      const provider = new OAuthProvider('apple.com');
+      const firebaseCredential = provider.credential({
+        idToken: appleCredential.identityToken,
+        // Firebase's Apple provider wants the raw nonce Apple signed, not
+        // one we generate ourselves — signInAsync() doesn't take a nonce
+        // input in the default (no-PKCE) flow, so there isn't one to pass.
+      });
+
+      const cred = await signInWithCredential(auth, firebaseCredential);
+      const isNewUser = cred.user.metadata.creationTime === cred.user.metadata.lastSignInTime;
+
+      const fullName = appleCredential.fullName;
+      const derivedName = fullName
+        ? [fullName.givenName, fullName.familyName].filter(Boolean).join(' ').trim()
+        : '';
+      if (derivedName && !cred.user.displayName) {
+        await updateProfile(cred.user, { displayName: derivedName });
+      }
+
+      const db = await getDatabase();
+      await db.initialize(cred.user.uid);
+      if (isNewUser) {
+        // Mirrors signup(): neighborhood deferred, same as email signup.
+        await db.initializeUserSettings(cred.user.uid, derivedName, '');
+      }
+      const neighborhood = await this.loadNeighborhood(cred.user.uid);
+
+      this.currentUser = {
+        uid: cred.user.uid,
+        email: cred.user.email ?? appleCredential.email ?? '',
+        displayName: cred.user.displayName ?? derivedName,
+        neighborhood,
+        emailVerified: cred.user.emailVerified,
+      };
+      await this.migrateLegacyAccount(cred.user.uid);
+      this.notifyListeners();
+      console.log(`✅ Sign in with Apple successful (${isNewUser ? 'new' : 'returning'} user)`);
+      return this.currentUser;
+    } catch (error: any) {
+      // ERR_REQUEST_CANCELED is the user backing out of the Apple sheet —
+      // not a failure worth an error alert.
+      if (error?.code === 'ERR_REQUEST_CANCELED') {
+        throw new Error('__CANCELED__');
+      }
+      console.error('❌ Sign in with Apple failed:', error.code || error.message);
+      throw new Error('Sign in with Apple failed. Please try again, or use email instead.');
     }
   }
 

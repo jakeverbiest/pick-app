@@ -9,7 +9,7 @@
  * Opening this screen republishes MY contribution first, so the number a
  * participant sees always includes their own latest walks.
  */
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
@@ -46,7 +46,7 @@ function fmt(goal: string, n: number): string {
 }
 
 export default function ChallengeScreen() {
-  const { id } = useLocalSearchParams<{ id: string }>();
+  const { id, autoJoin } = useLocalSearchParams<{ id: string; autoJoin?: string }>();
   const router = useRouter();
   const me = getAuthService().getCurrentUser()?.uid || '';
 
@@ -56,6 +56,9 @@ export default function ChallengeScreen() {
   const [busy, setBusy] = useState(false);
   const [inviting, setInviting] = useState(false);
   const [recapOpen, setRecapOpen] = useState(false);
+  // Guards the auto-join effect below so it fires once per screen mount,
+  // not once per `load()` (load() re-runs on every focus).
+  const autoJoinedRef = useRef(false);
 
   const load = useCallback(async () => {
     if (!id) return;
@@ -92,8 +95,50 @@ export default function ChallengeScreen() {
     }
   }, [id, me]);
 
+  // Unauthenticated visitor — e.g. someone who scanned a challenge QR/deep
+  // link before ever signing up, so this screen mounted directly with no
+  // logged-in user. Previously `toggleJoin` just silently no-opped on `!me`
+  // (a tap that visibly did nothing); route to signup instead, carrying the
+  // challenge id so it can auto-join once the account exists (see
+  // pendingChallenge.ts and app/auth/signup.tsx).
+  useEffect(() => {
+    if (!id) return;
+    if (!getAuthService().getCurrentUser()) {
+      router.replace({ pathname: '/auth/signup', params: { pendingChallenge: id } });
+    }
+  }, [id, router]);
+
   useEffect(() => { load(); }, [load]);
   useFocusEffect(useCallback(() => { load(); }, [load]));
+
+  // Arrived via an invite link (autoJoin='1', set by signup.tsx/login.tsx
+  // right after auth) — treat that arrival itself as consent to join,
+  // rather than making the person tap "Join challenge" a second time right
+  // after they already acted on the invite once. Only fires once per screen
+  // mount, only once the challenge has actually loaded, and only if they
+  // aren't already in it (e.g. re-following their own invite link).
+  useEffect(() => {
+    if (autoJoin !== '1' || autoJoinedRef.current) return;
+    if (!challenge || !me) return;
+    if (challenge.participants.includes(me)) return;
+    if (challenge.status === 'completed') return;
+    autoJoinedRef.current = true;
+    (async () => {
+      try {
+        await joinChallenge(challenge.id, me);
+        await load();
+        // Auto-join removes the explicit confirmation step, so say so —
+        // and surface the easy way out, since silently opting someone in
+        // needs an equally obvious way to opt back out.
+        Alert.alert(
+          "You're in",
+          `You've joined "${challenge.name}". Leave any time with the button below.`,
+        );
+      } catch (e: any) {
+        console.warn('Auto-join failed:', e?.message || e);
+      }
+    })();
+  }, [autoJoin, challenge, me, load]);
 
   const toggleJoin = async () => {
     if (!challenge || !me) return;

@@ -1,11 +1,19 @@
 # Pick — Launch Ledger
 
-**Machine-maintained.** The Pick Chief of Staff agent reads and updates this file
-**once a day at 16:30 ET**, as a scheduled task bound to Jake's Mac (set up
-2026-08-24, replacing the cloud run that could not reach the repo). It lands 30
-minutes before the 17:00 Handoff block, which already assumed a 16:30 refresh.
-Edit it freely by hand — the agent reconciles rather than overwrites, and it
-never deletes a line you added.
+**Machine-maintained.** Reconciled daily at ~16:30 ET by a scheduled task, currently
+two in parallel during a verification period: the original Cowork-based task (bound
+to Jake's Mac, set up 2026-08-24) and a Claude Code–native replacement
+(`pick-ledger-reconciliation`, added 2026-08-26, local-time cron so it handles DST
+without a manual bump). Once the Claude Code version is verified, the Cowork task
+gets cancelled and this note updated. It lands 30 minutes before the 17:00 Handoff
+block, which already assumed a 16:30 refresh.
+
+**Jake:** edit freely by hand — the agent reconciles rather than overwrites, and
+never deletes a line you added. **Interactive Claude Code sessions (the `code`/`qa`
+subagents):** don't edit this file directly anymore — append findings to
+`docs/LEDGER_INBOX.md` instead, and the scheduled task folds them in. This removes
+the collision risk between a live session and the scheduled run editing the same
+file at once.
 
 > The 09:00 "Clock in → Pick" calendar block still says its item is chosen
 > "by the Chief of Staff at 6:45". There is no 06:45 run: at that hour Jake is
@@ -16,7 +24,7 @@ never deletes a line you added.
 - `SHIPPING_PLAN.md` = the narrative. `LAUNCH_BUGLIST.md` = the item-level record.
 - **This file = the live status of what is open, on whom, and for how long.**
 
-Last agent run: `2026-08-24` (local run on Jake's Mac; the 2026-08-24 cloud run also could not reach this machine — reconciled from Jake's briefing)
+Last agent run: `2026-08-31` (see run log — five days elapsed since the last recorded run; substantial engineering activity in between, most of it same-day)
 Ledger opened: 2026-08-23
 
 ### Build naming convention (settled 2026-08-24)
@@ -130,6 +138,25 @@ contrast the detector runs on is gone. `classifyCarryMode` does correctly call a
 bag `hand`, which disables the pocket-only low-rotation filter — without that,
 65% of B7's events would also have been cut as "low rotation (handling?)".
 
+**Reconciled 2026-08-26 — what actually produced the 0.83x result.** The pocket
+B7 walk above was the *second* B7 run that day; a first, cross-body B7 (10 real
+picks -> 2 counted, 0.20x) is what's in the confound table above. Root cause
+found between the two runs (`70afe88`): `isNotStriding` accepted `speedMps` and
+`speedAgeMs` as arguments and never read them, so it could only recognise a
+stop that had already lasted ~10s — five times longer than a real 2s pick-pause
+— and every guard built on it (cadence veto, monotony veto, the walking-context
+refresh added the day before) silently did nothing throughout every real pick.
+Fixed by reading the argument that was already being passed. That fix, not a
+protocol change, is why the pocket re-run landed at 10/12 instead of repeating
+B6's 1.95x or B7-morning's 0.20x. Separately, `ae3f028` fixed the `session_mode`
+field itself — it had read `"unresolved"` on every walk since it was added
+(`finishCleanup` cleared it before the summary sheet's Save could read it), so
+the keep-awake closed-item's claim that "session_mode is now saved on every
+walk" was true in code but not yet in data. The B7 pocket walk is the first
+walk where `session_mode` actually recorded a value (`"background"`), which is
+the first field confirmation that the screen-off change is doing what it was
+meant to.
+
 **Consequence for field data: A9 and B7 are not comparable to the pocket series**
 (B5, B6, 2a, 2b, A7a, C6a). A9's 0.00 false positives per minute is partly a bag
 not producing stride bounces; B7's 2-of-10 is partly a bag pick being a weak
@@ -159,6 +186,7 @@ approach leans on is currently tucked away.
 | **Test walk results not yet folded in** | 2026-08-24 | ~~Open, on Jake.~~ **FOLDED IN 2026-08-24 (evening).** Walks 1a/1b/2a/2b, A8 and B6 are all recorded in `docs/B6_PREDICTION.md`, including two frozen predictions and their results. Still **n=1 tester** — that has not changed, and the LOG PICK button on Build 32 is what makes multi-tester ground truth practical (a stopwatch-and-transcribe protocol will not survive four testers, and `cleanups` is owner-only so their walks cannot be read directly). |
 | **Watch push throttled on `elapsedSeconds % 3`** | 2026-08-24 | **Fixed in tree 2026-08-24, not yet published.** The effect is driven by a 1Hz `setInterval` and iOS throttles JS timers while backgrounded — every real walk — so `elapsedSeconds` jumps rather than counts and `% 3 === 0` can miss for long stretches, starving the watch's clock. Now a wall-clock check; counts were never throttled and still are not. Live Activity heartbeat gets the same treatment on its own timer. **Ships OTA, no build needed — reaches builds 28–31 testers today.** <br><br>**PUBLISHED 2026-08-24** in the update messaged "Watch: guard stale snapshots on both paths; wall-clock watch-push throttle". Live on builds 28–31. |
 | `exportCleanup()` omits the `pace_*` fields | 2026-08-19 | One line. Walk stores `pace_median_mps`, `pace_slow_share`, `pace_low_confidence`; export doesn't emit them. |
+| ~~Adoption/nudge email — needs field verify~~ | 2026-08-12 | **Field-verified 2026-08-26, per a Gmail scan run by the separate cloud-scheduled task (not independently confirmed by this session — no Gmail access this run).** Reported: a PICK nudge email fired 2026-08-20 and the path is live end to end. `LAUNCH_BUGLIST.md`'s "Fixed, needs field verify" row for the redesigned adoption/nudge/signup emails (`emailShell()`, deployed 2026-08-12) had been open on exactly this question — does a real nudge land in a real inbox — for two weeks. Worth a direct look next run rather than taking this secondhand. |
 
 > **Note (2026-08-23):** `SHIPPING_PLAN.md` §2 also lists `pickupCounterRef` and the
 > motion-window reset as outstanding. `LAUNCH_BUGLIST.md` — written three hours
@@ -194,12 +222,27 @@ approach leans on is currently tucked away.
 |---|---|---|
 | **Watch stale-payload handling** | 2026-08-23 | Neither failure mode has ever been observed in the field — not the resurrected count (narrow guard, builds 28–31), not the mid-walk drop-out (broad guard, never shipped). The in-tree fix is reasoned from code, not measured. **Watch for, once build 32 is in testers' hands:** (a) watch showing "Start cleanup" or 0 during a walk the phone is still tracking; (b) watch stuck showing an active walk after the phone finished one; (c) a wrist-raise mid-walk landing on the clock face instead of the walk screen — that would mean the WorkoutSession ended. Any of the three is this code.<br><br>**UPDATED 2026-08-24 — no longer purely hypothetical.** Jake reports **the watch flashing old counts intermittently since the last update**. That is the resurrected-count mode named at the top of this row (narrow guard, builds 28–31), not one of (a)/(b)/(c). It is the first field observation in this thread, and it is consistent with the shipped code: the committed guard only runs on the activation snapshot, so a delayed *ongoing* `didReceiveApplicationContext` delivery lands unchecked. (a), (b) and (c) remain unobserved and stay on watch for build 32. |
 
+## 🚧 In progress, uncommitted (2026-08-31 snapshot)
+
+Working tree was actively changing during this reconciliation run — a live session
+appears to be mid-task. Recorded here as a snapshot, not a completed item; re-check
+next run rather than trusting this list to still match the tree.
+
+| Item | Files | Status |
+|---|---|---|
+| "Prioritize my city" — city-requests feature | `firestore.rules`, `functions/index.js` (`requestCity` callable, weekly digest), `map.tsx`, `neighborhoods.ts`, `polygonStats.test.ts` | Uncommitted. A dedup'd per-user tally on the map's fallback-city card (OSM gave only a city outline, no real subdivision) feeding an admin weekly digest of which cities are asking for real neighborhood coverage. |
+| Challenge Recap v2 spec | `docs/CHALLENGE_RECAP_SPEC.md` §11 (appended; v1 §1–10 already shipped 2026-08-05) | Drafted 2026-08-31, **not approved to build.** Map-as-centerpiece redesign + Tier-1 photo integration from already-public Community posts; Tier 2 (private cleanup photos) documented as an open decision only. |
+| Civic-Org Dashboard spec (new) | `docs/CIVIC_ORG_DASHBOARD_SPEC.md` (untracked) | Drafted 2026-08-31, **not approved to build.** Sponsor/BID-facing dashboard over real `teams`/`team_stats` — Jake's stated top priority per `PROJECT_TIMELINE.md`. Open decisions block build start: district-scoping of team impact, and access control for an org's private view. |
+| `CHALLENGE_GUEST_MODE_SPEC.md` edits | `docs/CHALLENGE_GUEST_MODE_SPEC.md` | Small uncommitted diff, untriaged this run. |
+| A deleted screenshot | `Screenshot 2026-06-11 at 11.48.19 AM.png` | Marked deleted in the working tree — appears to be repo-hygiene cleanup, not investigated further. |
+
 ## 🔵 Repo hygiene
 
 | Item | As of | Status |
 |---|---|---|
-| ~~29 commits unpushed on `main`~~ | 2026-08-24 | **Appears resolved.** `main` and `origin/main` are both at `bfd91f6`, 0 ahead / 0 behind as of 2026-08-24. The 19 Aug detector evidence is no longer single-machine. Caveat: no `git fetch` has run from this session, so this reads the local remote-tracking ref — a push updates it, so the push evidently went through. |
-| 3 untracked helper scripts | 2026-08-23 | `ship-cleanup.sh`, `ship-fixes.sh`, `ship-gate.sh`. `ota-tonight.sh` was flagged as worth committing. |
+| ~~29 commits unpushed on `main`~~ | 2026-08-24 | **Appears resolved as of 2026-08-24** (`main`/`origin/main` both `bfd91f6`). **Reopened 2026-08-26, still open 2026-08-31: `main` is now 6 commits ahead of `origin/main`** — the 3 from 8/26 (`3cdf8ca`, `3301751`, `32e1f90`) plus three new same-day commits from 2026-08-31 (`8800f68` CARTO API key, `b6a0e57` both-sides-cleaned coverage fix, `3f6661d` `rebuildTeam()` total_bags fix). Same caveat as before: reads the local remote-tracking ref, no `git fetch` run this session, and this is a read-only reconciliation job so no push was attempted here. |
+| **Stale `.git/index.lock`** | 2026-08-26 | **FOUND AND CLEARED 2026-08-26.** An empty, orphaned `.git/index.lock` (mtime 2026-08-25 10:36, no process holding it per `lsof`) was sitting in the repo — the same failure mode `_to_delete/` already has a dozen prior examples of (a plain `git status`/`git diff` without `--no-optional-locks` stranding a lock). Left in place it would have silently blocked Jake's next `git commit`. Moved to `_to_delete/stale-git-index.lock-2026-08-25-1036`, matching the existing convention in that folder — not deleted. |
+| ~~3 untracked helper scripts~~ | 2026-08-23 | **RESOLVED 2026-08-25** (`bf947ed`, "track ship scripts; ignore `_to_delete`"). `ship-cleanup.sh`, `ship-fixes.sh`, `ship-gate.sh` are now tracked, alongside a not-previously-listed `ship-watch.sh`. `ota-tonight.sh` was already tracked. `.gitignore` also gained a `_to_delete` entry — see the note added 2026-08-26 below. |
 | `test:hoods` unrunnable | since 2026-07-14 | Flow syntax under tsx. `polygonStats()` covered only by the typechecker. |
 | `aggregationFlow.test.ts` wired to no npm script | — | Never part of `npm test`. Unknown whether it passes. |
 
@@ -213,6 +256,10 @@ approach leans on is currently tucked away.
 | Detector: pace-gate dead zone at 1.0–1.3 m/s | 2026-08-24 | 2026-08-24 | Zero-pick walks showed false positives rising as pace fell (1.34 m/s: 0.16/min, 1.19: 1.11, 1.07: 1.33). The absolute gate only fires above 1.3 and the relative gate switched off at 1.0, so ordinary moderate walking pace was covered by neither. Ceiling removed (`1d671fc`). Costs ~40% recall for picking without stopping (measured on C6a) — acceptable only while walk→STOP→pick is the normal technique; the code says to restore the ceiling if that premise changes. |
 | Detector: trailing median measured stops, not pace | 2026-08-24 | 2026-08-24 | `trailingMedianSpeed` filtered on `speed > 0`, so readings taken *while stopped* counted as pace. On B6 that dragged the median to ~0.5 and set the gate's bar at 0.40 m/s — below a real stop. The gate disarmed itself in proportion to how often the user stopped to pick, i.e. it failed worst at exactly its intended job. Fixed in `fd05a95`. |
 | Walk 1b: silent total sensor failure | 2026-08-24 | 2026-08-24 | A normal-looking 6-minute walk saved with a completely empty `motion_log`. `startListening()` ran location setup between the events reset and the accelerometer subscribe inside one `try`; `watchPositionAsync` rejected, the catch swallowed it, and the accelerometer never attached — while the route still drew from map.tsx's own watch, so nothing looked wrong. Sensors now attach first, location is best-effort in its own try, and `sensorsAttached()` raises an alert instead of letting someone walk for nothing. `1d671fc`. |
+| CARTO basemap tiles required an API key | 2026-08-31 (inbox) | 2026-08-31 | CARTO added a fair-use gate to the `light_all` raster tile endpoint; requests without a key showed an "API KEY REQUIRED" watermark. Fixed in all 4 app call sites plus both website copies (`~/pick-app/web/map.html`, `web/city.html`). Reported via `LEDGER_INBOX.md` as shipped-but-uncommitted; **now committed as `8800f68`.** **Correction folded in same run: the first OTA publish (update group `e4de5103…`) actually shipped `?key=undefined` on all 4 URLs** — a stale Metro transform cache serving a cached `undefined` from before the env var existed. Jake confirmed the watermark persisted through two force-quit/reopen cycles. Re-published after `rm -rf .expo/metro-cache` (update group `64c042f5…`), this time verified by grepping the compiled bundle for the real key string, not just a clean CLI exit — that's now the standing lesson for any OTA touching an `EXPO_PUBLIC_` var. Status ladder: fixed + shipped (OTA, corrected + website deploy), field verify inside a running app instance still open. **Unrelated finding surfaced during that publish, not yet triaged:** the build log printed `RN persistence unavailable (wrong firebase bundle?) — auth will NOT survive app restarts`, consistently on the web-bundle build step only — likely web-target noise (`metro.config.js` exists to fix this for iOS/Android) but not independently confirmed on a real device. Worth a qa look. |
+| Challenge Recap discovered to be fully built, not a pending spec | 2026-08-31 (inbox) | — (discovery, not a fix) | `docs/CHALLENGE_RECAP_SPEC.md` (drafted 3 Aug) is live in code — confirmed by reading it directly, not the docs. Shipped in `e5436c6`/`6e4f164`: `app/challenge/[id].tsx` shows "Share recap" on a completed challenge, `GroupRecapModal`/`GroupRecapCard.tsx`/`challengeRecap.ts` all match the spec. Two things shipped beyond spec'd v1 scope: a real Leaflet/CARTO street map on `AreaPreview` (spec text still says "SVG shape"), and Community cross-posting (`createChallengeRecapPost`) that the spec's own §6/9 deferred to v1.1. **None of this was previously mentioned anywhere in this ledger, `LAUNCH_BUGLIST.md`, or `PROJECT_TIMELINE.md`** — zero prior grep hits. **Not yet field-verified**: spec Phase 4 (a real 3+-person challenge run to completion) appears to have never happened — nothing in `docs/fielddata/` is a multi-person walk. `neighborhood`/`anywhere` challenges still get the un-upgraded plain-trophy empty state (no map) — likely the common case. This is the v1 that `CHALLENGE_RECAP_SPEC.md §11` (see In-progress table above) now proposes a v2 redesign on top of. |
+| Both-sides-cleaned bug: route points crediting the wrong side of the street | 2026-08-31 | 2026-08-31 | `markRouteCleaned()`/`getCoverage()` tested each candidate segment independently against a flat 11m snap distance, so a real (non-synthetic) OSM sidewalk pair close enough together let a route point on one side also credit the opposite side. Fixed by bucketing each route point to its nearest segment first. Committed `b6a0e57`, new regression test added. Also brought the live in-walk map recolor effect onto the same constants the persisted-coverage path uses (was 15m/0.8 hardcoded separately) so what's shown while walking now matches what gets saved. |
+| `team_stats` never wrote `total_bags` | 2026-08-31 | 2026-08-31 | `rebuildTeam()` wrote `total_weight` but not `total_bags`, so `getTeamsWithStats()` silently fell back to a client-side estimate instead of a real count, unlike the per-city public dashboard which already computes real bags via `bagsFor()`. Fixed to reuse that helper. Committed `3f6661d`; already deployed (`onCleanupWrite`, `rebuildTeamStats`) and backfilled for all 3 existing teams, verified directly against Firestore. Found while grounding the new Civic-Org Dashboard spec (see below) against real data. |
 
 ---
 
@@ -245,6 +292,9 @@ Gmail was scanned through **2026-08-24T00:00:00Z**. Append ids here as runs noti
 
 | Run | Moved | Notes |
 |---|---|---|
+| 2026-08-31 (Claude Code) | CARTO inbox entry folded in and marked committed (`8800f68`); two new committed fixes recorded (`b6a0e57` coverage bug, `3f6661d` team_stats bug); unpushed-commits row updated 3→6 ahead; new "In progress, uncommitted" section added as a snapshot of a live session's in-flight work (city-requests feature, two new specs); `LEDGER_INBOX.md` cleared back to template. Part 2: `OPS_STATUS.md` corrected — its stale-timeline banner on `PROJECT_TIMELINE.md` was itself stale (that file has a real 2026-08-31 entry; not stale since Aug 18), and its "Last updated" date bumped. **Five-day gap since the last run (2026-08-26 → 2026-08-31) — this task did not fire daily as designed; worth checking why with Jake** (see summary). Did not attempt `eas build`/`git push`/`git commit`/Gmail check per the job's read-only mandate; the working tree was changing between reads in this same run (a live session appears to be active), so the "in progress" table above is a snapshot, not a guarantee. |
+| 2026-08-26 (Claude Code, manual re-run) | Nothing — clean pass | Re-ran on request, second local pass today. `HEAD` unchanged at `32e1f90` since the prior pass this morning (no new commits, `main` still 3 ahead of `origin/main`), no new files in `docs/fielddata/`, `LAUNCH_BUGLIST.md`/`SHIPPING_PLAN.md` mtimes unchanged. Checked the new `docs/LEDGER_INBOX.md` per the single-writer process that was set up between the two runs — empty, nothing to fold. Also traced down the routine that sent this morning's "ledger did not update" push notification: it's the cloud-hosted `trig_01RvnozDsHJLd5wkQ9jHxFvG` ("Pick — launch ledger refresh"), a second, separately-created cloud routine that fails the same way the original `trig_01AkTNjzshGa6MTbXifjGQvD` ("Pick — Chief of Staff") does — confirmed via its run log, and confirmed the older routine is also still firing twice daily and has resumed writing a `pick-state.json` fallback to Drive, undoing the 2026-08-24 Drive-memory retirement above. Jake was told to delete both at claude.ai/code/routines; neither is deleted as of this run. |
+| 2026-08-26 (Claude Code, parallel-verification run) | Repo hygiene: helper scripts confirmed tracked, unpushed-commits row reopened, stale index.lock cleared; detector section given the isNotStriding/session_mode mechanism it was missing | This is a Claude Code session running the same job the local Cowork task runs daily at 16:30 ET, in parallel for a verification period per the task brief — not a replacement yet. Working tree was clean; no uncommitted changes to reconcile. Read `docs/LAUNCH_BUGLIST.md` and `docs/SHIPPING_PLAN.md` for cross-check only, per house rule preferring the ledger/buglist over the shipping plan and newest-mtime-wins on conflicts — did not edit either (out of scope for this job). Did not check Gmail (not part of this job's steps, unlike the retired Drive-memory-era task) — the notification dedupe seed below is unchanged and unverified this run. Did not attempt `eas build`/`git push`/`git commit` per the job's read-only mandate. |
 | 2026-08-24 (local, retire Drive memory) | Drive `pick-state*.json` trashed; live content migrated here | Ledger is now the sole record. Migrated before trashing: the outstanding test-walk results (which existed nowhere else), the DPLA evidence message id, and the notification dedupe seed. Dead on arrival and not migrated: the "3s timer redrawing a local cache" caveat (that path does not exist — the watch has no polling timer), the `watch-live-updates` item (already shipped in `WatchSessionModule.swift`), and `routine-goes-local` (done — task `trig_01RvnozDsHJLd5wkQ9jHxFvG`, daily 16:30 ET). |
 | 2026-08-24 (local, watch changeset) | Flash mechanism identified; B + D written; `ship-watch.sh` added | Read the watch target end to end. **Jake's second suspect — a 3s timer redrawing a local cache — does not exist:** the watch has no polling timer at all (one 25s one-shot, one 6s disarm) and is already `@Published`-driven. The 3s lives on the *phone*, as a throttle on the clock tick that counts already bypass. **Item 3 (event-driven WatchConnectivity) is already shipped** — `updateApplicationContext` + `sendMessage` are both in `WatchSessionModule.swift`, `transferUserInfo` appears nowhere; dropped as no-op work. Real stale-render path found instead, and fixed by A+B. `tsc --noEmit` clean; lint shows no new findings. **Still no Swift toolchain — A/B/C remain uncompiled, which is now the only gate.** |
 | 2026-08-24 (local, reconcile) | EAS → budget line with real counts; PhoneLink re-decided with first field evidence; two-build plan recorded; build naming settled | Cloud run 2026-08-24 could not reach this Mac; reconciled from Jake's briefing. Two briefing items were already true here — EAS reclassified 8/23, DPLA closed 8/23 — so the new detail was added rather than a second correction. One briefing item corrected: `PhoneLink.swift` is implemented in tree, not merely decided. `SHIPPING_PLAN.md` §1 flagged stale alongside §2. Repo hygiene: `main` now matches `origin/main`. |

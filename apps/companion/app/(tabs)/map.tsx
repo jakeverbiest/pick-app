@@ -46,6 +46,7 @@ import { TESTFLIGHT_URL } from '../../src/services/recap';
 import { postToBluesky } from '../../src/services/bluesky';
 
 const LAST_BAG_SIZE_KEY = '@pick_last_bag_size';
+const LOCATION_EXPLAINER_SHOWN_KEY = '@pick_location_explainer_shown';
 
 export default function MapScreen() {
   const router = useRouter();
@@ -1089,6 +1090,32 @@ export default function MapScreen() {
     };
   }, []);
 
+  // One-line explainer before the OS location prompt fires, first "Start
+  // cleanup" tap only. iOS's system dialog is cold — just our Info.plist
+  // usage string, no room for us to add anything to it — so this is the one
+  // chance to say why before that sheet appears. Skipped entirely once the
+  // OS has already recorded a decision (granted or denied) so we're never
+  // showing our own dialog with nothing behind it.
+  const explainLocationPermissionIfNeeded = async () => {
+    try {
+      const { status } = await Location.getForegroundPermissionsAsync();
+      if (status !== Location.PermissionStatus.UNDETERMINED) return;
+      const shown = await AsyncStorage.getItem(LOCATION_EXPLAINER_SHOWN_KEY);
+      if (shown) return;
+      await AsyncStorage.setItem(LOCATION_EXPLAINER_SHOWN_KEY, '1');
+      await new Promise<void>((resolve) => {
+        Alert.alert(
+          'One quick thing',
+          'PICK uses your location to map the streets you clean. The next prompt is the standard iOS location request — allow it to start tracking.',
+          [{ text: 'Continue', onPress: () => resolve() }],
+        );
+      });
+    } catch {
+      // A failed permission-status check shouldn't block the walk — just
+      // skip the explainer and let the OS prompt happen (or not) as normal.
+    }
+  };
+
   const requestLocationPermission = async () => {
     try {
       const { status } = await Location.requestForegroundPermissionsAsync();
@@ -1381,6 +1408,10 @@ export default function MapScreen() {
     watchSessionRef.current = `w${Date.now()}`;
     setWalkIntent(true);
     try {
+    // One-line context before the cold OS location dialog — first tap only.
+    // trackLocation() below is what actually triggers the system prompt (via
+    // getCurrentPositionAsync), so this has to run before it, not inside it.
+    await explainLocationPermissionIfNeeded();
     setPickupCount(0);
     // Per-SESSION counter. Was never reset (found 19 Aug 2026): it feeds
     // commitSessionPickups() for the challenge live counter and the crash
@@ -1741,7 +1772,7 @@ export default function MapScreen() {
   // were being rejected, which forced padding the clock with standing-still
   // minutes — and that padding contaminated the very false-positive counts the
   // walks existed to measure. RESTORE TO 120 BEFORE LAUNCH.
-  const MIN_CLEANUP_SECONDS = 20;
+  const MIN_CLEANUP_SECONDS = 60;
 
   const saveSummary = async () => {
     if (elapsedSeconds < MIN_CLEANUP_SECONDS && pickupCount === 0) {

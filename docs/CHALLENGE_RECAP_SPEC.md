@@ -1,6 +1,12 @@
 # Spec — Challenge Recap (group impact statement)
 
-Status: proposal for review. Extends the Challenges backend (`src/services/challenges.ts`) and reuses the "My Path" personal recap card (`src/services/recap.ts`, `RecapCard.tsx`, `RecapModal.tsx`) rather than building a new renderer.
+Status: **§1–10 below (v1) shipped Aug 5, 2026** — see `PROJECT_TIMELINE.md`. `GroupRecapCard.tsx`,
+`GroupRecapModal.tsx`, `src/services/challengeRecap.ts` are real and live in `app/challenge/[id].tsx`.
+**§11 (v2 — map-as-centerpiece redesign) is a new proposal for review, added Aug 31, 2026** — nothing
+in §11 is built yet. Everything below §11 is the original v1 spec, left as-is for history; where v2
+supersedes a v1 decision, §11 says so explicitly rather than editing the v1 text in place.
+
+Extends the Challenges backend (`src/services/challenges.ts`) and reuses the "My Path" personal recap card (`src/services/recap.ts`, `RecapCard.tsx`, `RecapModal.tsx`) rather than building a new renderer.
 
 ## 1. The gap
 
@@ -90,3 +96,153 @@ Cross-posting to the Community feed as a `kind:'impact'` post (like individual i
 ## 10. A caveat worth remembering (ties to the multi-person concurrency test)
 
 Contribution totals are only as fresh as each participant's last app-open (see [[pick-app-challenges]] — eventually consistent by design). A recap generated the moment a challenge's `end_date` passes may under-count anyone who did their last cleanup and didn't reopen the app afterward. Worth deciding alongside the planned multi-person live test: either nudge participants once at `end_date` to open the app (a push notification, reusing the existing Expo push plumbing), or hold the "recap ready" prompt for a short grace window (a few hours) after completion so totals have a chance to settle before the card gets shared externally.
+
+---
+
+## 11. v2 — Map as the centerpiece, photo integration, and the neighborhood/anywhere empty state
+
+**Status: proposal for review, not yet built.** Written Aug 31, 2026 against the app as it exists
+today (v1 above, live since Aug 5). This section is additive to v1's data model and sharing pipeline
+— it changes `GroupRecapCard`'s layout and adds new inputs, it does not replace `buildChallengeRecap`,
+`GroupRecapModal`'s share/post actions, or the `challenge_recap` post kind.
+
+### 11.1 What prompted this
+
+Jake's explicit direction: the challenge's completed street map should be **the visual centerpiece of
+the card** — "the star of the show." Today (`GroupRecapCard.tsx` §5, lines ~52–60) the map is a fixed
+150px `mapWrap` sitting above the hero number, the same visual weight as a header image, not the point
+of the card. Two more findings feed into the same redesign:
+
+- **The "no persistent recap entry point" gap assumed at kickoff is not accurate — verify before
+  building on it.** `app/challenge/[id].tsx` already has a footer button that reads "Share recap" and
+  stays that way permanently once `challenge.status === 'completed'` (line ~317, `onPress={... ()
+  => setRecapOpen(true) : toggleJoin}`), *in addition to* the original v1 auto-surface-once behavior
+  (`getUnseenChallengeRecap`, still fires the first time). **Revisiting a recap already works today** —
+  this redesign is about what the card looks like and what it can show, not about adding a missing
+  entry point. Drop this from scope.
+- **The empty state is real and worth fixing here.** `GroupRecapCard.tsx`'s `mapEmpty` branch (no
+  `hasArea`, i.e. `area.type !== 'custom'`) renders a bare trophy icon on a flat tint background —
+  no map at all. Per `challenges.ts`, `ChallengeAreaType` is `'anywhere' | 'neighborhood' | 'custom'`;
+  only `'custom'` has a stored `ring`. That means **two of the three challenge area types get the weak,
+  map-less card today.** Since this redesign is explicitly about making the map the star, it should
+  also close (or at least visibly improve) the case where there's no map to star.
+
+### 11.2 Map as centerpiece — redesign direction
+
+- Promote the map from a capped 150px strip to the card's dominant visual element — full card width,
+  most of the card's vertical space, hero number and stat tiles becoming an overlay/footer treatment
+  on top of or below the map rather than the map being one component among equals. Exact layout
+  (map-behind-stats overlay vs. map-on-top-full-bleed vs. map-as-hero-then-stats-below) is a design
+  pass, not dictated here — but the map should read first, not third.
+- For `area.type === 'custom'`: still `AreaPreview` (the ring is already stored flat on the challenge
+  doc, per v1 §4) — just re-laid-out and enlarged, not re-sourced.
+- For `area.type === 'neighborhood'`: **new work.** No polygon is stored on the challenge doc today —
+  only a label (v1 §4 explicitly deferred this: "fetching/caching the real polygon is a reasonable
+  v1.1 if the placeholder feels thin"). That v1.1 is now in scope: fetch the neighborhood's OSM
+  boundary the same way the map tab already does for city/neighborhood shapes, cache it, and render it
+  the same way `AreaPreview` renders a custom ring. This is the highest-value part of closing the
+  empty-state gap, since `neighborhood` is a common challenge type.
+- For `area.type === 'anywhere'`: there is still no shape to draw and manufacturing one (e.g. a
+  synthetic heatmap of contributors' walk locations) was explicitly ruled out of scope in v1 §8 and
+  stays out of scope here — compositing contributor geometry without consent is the same privacy
+  question as §4/§8 and Tier 2 below. For `anywhere`, keep an ornamental placeholder, but make it a
+  better one than a bare trophy on flat tint — e.g. a full-bleed decorative treatment (gradient, icon
+  pattern) sized and positioned the same as the real-map cards, so the card family still reads as one
+  design even when the centerpiece isn't a real map.
+
+### 11.3 Photo integration — Tier 1 (approved to spec and build)
+
+**Source: Community posts people already chose to share during the challenge window.** This is the
+cheap tier because it needs no new privacy boundary — `posts` are already readable by any signed-in
+user (`firestore.rules`, posts collection — not owner-only like `cleanups`), unlike raw cleanup/route
+data. The work is entirely about making those existing posts *queryable per challenge* and then laying
+them into the card.
+
+**Data model change.** `Post.challenge_id` already exists on the `Post` interface
+(`firebaseDatabase.ts` line ~194) and is already written by `createChallengeRecapPost` — but that's
+the recap card's own auto-generated post, not a tag on a person's own photo post. The gap is in
+**`createPost`** (`firebaseDatabase.ts` line ~1267), which today takes
+`{ caption, neighborhood, photoUri }` — no challenge linkage at all, so a photo shared while a
+challenge is live has no way to be found later by that challenge's recap. Add an optional
+`challengeId?: string` to `createPost`'s input, stamp it onto the post doc when present. The composer
+UI that calls `createPost` (wherever "share a photo" is triggered from the cleanup-finish flow) needs
+to know it's inside an active challenge — likely by passing the joined-and-live challenge's id down
+from wherever that context is already known (the challenge screen, or the cleanup-finish flow if it
+already tracks "you're in an active challenge" for other purposes — needs a source check, not assumed
+here).
+
+**Query.** A new `getPostsForChallenge(challengeId, limit)` (sibling to `getPosts`/`getPostsByUsers`)
+— `where('challenge_id', '==', challengeId)`, ordered newest-first, capped (e.g. 12–20) since this is
+for card thumbnails, not a full gallery. No rules change needed: posts are already signed-in-readable.
+
+**UI.** New thumbnail layout in `GroupRecapCard` alongside/around the now-centerpiece map — e.g. a
+strip or grid of 3–6 photo thumbnails below or beside the map, with a "+N more" affordance if a
+challenge produced more shared photos than fit. Needs a real empty state too: most challenges will
+have zero tagged photos at launch (nobody could tag them retroactively, and community_auto_post
+defaults off per the timeline's own positioning notes), so the layout must look intentional with zero
+photos, not like a broken slot.
+
+**Retroactivity.** Only posts created *after* this ships will carry `challenge_id`. No backfill —
+existing/in-flight challenges' posts have no way to be tagged after the fact (no reliable way to infer
+which challenge a past post belonged to from `created_at` + `neighborhood` alone). Same "no
+retroactive backfill" posture v1 §8 already took for challenges completed before that shipped.
+
+### 11.4 Photo integration — Tier 2 (NOT approved — open decision only, do not build)
+
+**Source: photos captured during a cleanup but never shared to Community** — the common case, since
+`community_auto_post` defaults off (per the Aug 17 positioning note in `PROJECT_TIMELINE.md`), meaning
+most cleanup photos that exist on a device never become a `posts` doc at all.
+
+This is explicitly **not being spec'd for implementation.** Surfacing these photos reopens the exact
+privacy-model question this same spec already closed for routes in **§4 and §8**: cleanup data
+(including any photo captured during one) is owner-only by design, for the same reason routes are —
+it can reveal home addresses and personal movement patterns, and a group recap compositing everyone's
+private cleanup photos without their explicit choice to share is a materially different privacy
+posture than Tier 1's "already public, just needs a tag."
+
+**The tradeoff, stated plainly, for Jake to decide:**
+
+- **Option A — Cloud Function reads owner-only cleanup photos for challenge participants.** Works
+  without changing the end-user experience of capturing a photo, but means a server-side process reads
+  data users were told (per the audited privacy policy — `PROJECT_TIMELINE.md`, Aug 12) stays theirs
+  unless *they* choose to share it. Even scoped narrowly (only within a joined challenge's window),
+  this is a real privacy-model change, not a formatting tweak, and would need its own audit pass the
+  way blocking/deletion did for App Store 1.2/5.1.1.
+- **Option B — new opt-in consent UX at capture time.** E.g. a checkbox at the end-of-walk sheet:
+  "also share this photo to the challenge recap" — genuinely consensual, but a new UI surface on an
+  already-dense end-of-walk sheet (which just went through its own crowding/scroll fix Aug 17), and it
+  only helps recaps generated after the opt-in ships — no help for challenges already in flight.
+- **Doing nothing** (Tier 1 only) is a legitimate answer, not a placeholder — Tier 1 photos are the
+  ones people already wanted to make public, which may be sufficient for "the map is the star, photos
+  are a supporting accent" rather than "every photo from the challenge."
+
+No further design work on Tier 2 belongs in this doc until Jake picks a direction (or explicitly
+declines to build it).
+
+### 11.5 Build order (v2, Tier 1 scope only)
+
+| Phase | Work | Notes |
+|---|---|---|
+| 1 | `createPost` gains optional `challengeId`; composer passes it when a challenge is live | needs a source check for how "active challenge" is known at the photo-composer call site |
+| 2 | `getPostsForChallenge()` | straightforward, mirrors `getPosts`/`getPostsByUsers` |
+| 3 | Neighborhood polygon fetch/cache for `area.type === 'neighborhood'` recap maps | reuses existing OSM boundary fetch used by the map tab, not new infrastructure |
+| 4 | `GroupRecapCard` layout redesign — map as centerpiece, thumbnail strip, improved `anywhere` placeholder | the actual design pass; no estimate without a design direction picked |
+| 5 | Field test on a real challenge with tagged photos and at least one `neighborhood`-type area | |
+
+Not estimated in days here (unlike v1 §7) — phase 4 is a real design decision, not a known quantity,
+and should be sized after a layout direction is picked.
+
+### 11.6 What Jake needs to decide before v2 building starts
+
+1. **Layout direction for "map as centerpiece"** — full-bleed map with stats overlaid, map-on-top/stats-below,
+   or another treatment. Affects phase 4's estimate directly.
+2. **Tier 2 photos (§11.4): Option A (Cloud Function reads owner-only data), Option B (new opt-in
+   consent UX), or explicitly not now.** This is the one open item that changes the app's privacy
+   posture if answered yes — everything else in this section is UI/query work inside boundaries
+   already established.
+3. **Where does the composer learn "a challenge is live" to tag a photo at share time?** Needs a
+   one-time source check of the cleanup-finish/photo-share flow before phase 1 is scoped for real —
+   flagged here as a build-time unknown, not a product decision.
+4. **Does the `anywhere` placeholder redesign (§11.2) ship in the same pass as the real-map cases, or
+   can it lag?** Lower stakes than 1–3; included for completeness since it's part of "what the redesign
+   touches."
