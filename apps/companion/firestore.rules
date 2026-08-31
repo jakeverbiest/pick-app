@@ -204,6 +204,21 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    // --- City requests: "prioritize my city" tally from the map's fallback-
+    //     city card. Same shape as city_stats — a public-read aggregate,
+    //     written only by the requestCity callable (Admin SDK, bypasses these
+    //     rules). The requesters marker subcollection (dedup per uid) is not
+    //     client-readable or writable either — the callable is the only path
+    //     in, and these rules exist purely to block direct client tampering. ---
+    match /city_requests/{slug} {
+      allow read: if true;
+      allow write: if false;
+
+      match /requesters/{uid} {
+        allow read, write: if false;
+      }
+    }
+
     // --- Adopt-a-street: each picker's adopted spots, private to the owner.
     //     The scheduled Cloud Function (admin SDK) reads them all and stamps
     //     lastNotified; clients only touch their own. ---

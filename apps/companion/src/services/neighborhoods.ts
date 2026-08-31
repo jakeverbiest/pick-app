@@ -605,17 +605,45 @@ async function loadOsmHoodsForCell(lat: number, lon: number): Promise<OsmCellRes
  *  the circle only when this returns genuinely empty (OSM has nothing at
  *  all for the area), not as a "this doesn't look fine-grained enough"
  *  judgment call. */
+/** Firestore-safe, readable id per city name — mirrors functions/index.js's
+ *  citySlug() so the client-side AsyncStorage ack key and the callable's
+ *  city_requests/{slug} doc id agree on the same slug for the same city. */
+export function citySlug(city: string): string {
+  return (
+    String(city).trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'unknown'
+  );
+}
+
+/** Gate for the "request my city" card: true only for the genuine "OSM gave
+ *  us one shape — the city itself, no real subdivision" case. False when
+ *  nothing came back at all (empty hoods — a different, "we have nothing"
+ *  case that isn't what this card is for) and false when real fine
+ *  districts came back (hasFineSubdivision true — nothing to request). */
+export function isFallbackCityWithNoSubdivision(hoodCount: number, hasFineSubdivision: boolean): boolean {
+  return hoodCount > 0 && !hasFineSubdivision;
+}
+
+export interface OsmHoodsInBoundsResult {
+  hoods: HoodShape[];
+  // Surfaced from OsmCellResult so callers (map.tsx) can tell "this cell is
+  // genuinely one shape — the city itself, no real subdivision" apart from
+  // "real fine districts exist here" or "nothing came back at all" (the
+  // latter is just an empty `hoods` array). Computed once per ~20km cell —
+  // see the note above OsmCellResult.
+  hasFineSubdivision: boolean;
+}
+
 export async function getOsmHoodsInBounds(
   minLat: number, minLon: number, maxLat: number, maxLon: number
-): Promise<HoodShape[]> {
-  const { features } = await loadOsmHoodsForCell((minLat + maxLat) / 2, (minLon + maxLon) / 2);
-  const out: HoodShape[] = [];
+): Promise<OsmHoodsInBoundsResult> {
+  const { features, hasFineSubdivision } = await loadOsmHoodsForCell((minLat + maxLat) / 2, (minLon + maxLon) / 2);
+  const hoods: HoodShape[] = [];
   for (const f of features) {
     const [a, b, c, d] = ringBBox(f.ring);
     if (c < minLat || a > maxLat || d < minLon || b > maxLon) continue; // no bbox overlap with current view
-    out.push({ name: f.name, ring: decimate(f.ring) });
+    hoods.push({ name: f.name, ring: decimate(f.ring) });
   }
-  return out;
+  return { hoods, hasFineSubdivision };
 }
 
 // ---------- neighborhood OUTLINES layer (tap to focus) ----------

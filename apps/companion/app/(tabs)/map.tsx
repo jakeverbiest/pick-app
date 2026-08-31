@@ -12,7 +12,9 @@ import { itemsToBags, reportedBags, formatBags, formatKitchenBags, BAG_SIZE_OPTI
 import { BagDetails } from '../../src/pick/BagDetails';
 import { getCoverage, markRouteCleaned, getParkCoverage, markParksCleaned, getTileStats, tileId, getCoverageForRing, routeCoverageFraction, nearestStreetSegment, assignRoutePointsToNearestSegment, SNAP_DISTANCE_M, COVERAGE_THRESHOLD, type RenderSegment } from '../../src/services/streetSegments';
 import { saveAdoptedBlock, listMyAdoptions } from '../../src/services/adoptions';
-import { osmNeighborhood, getHoodsInBounds, getOsmHoodsInBounds, hoodLabelsNeeded, hasNeighborhoods, polygonStats, HoodShape } from '../../src/services/neighborhoods';
+import { osmNeighborhood, getHoodsInBounds, getOsmHoodsInBounds, hoodLabelsNeeded, hasNeighborhoods, polygonStats, HoodShape, citySlug, isFallbackCityWithNoSubdivision } from '../../src/services/neighborhoods';
+import { getFunctions, httpsCallable } from 'firebase/functions';
+import { app } from '../../src/services/firebaseConfig';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import Constants from 'expo-constants';
@@ -213,6 +215,15 @@ export default function MapScreen() {
   // loading in the background, but we've stopped blocking on it. Dismissible;
   // cleared automatically once the deferred fetch actually resolves.
   const [slowLoadBanner, setSlowLoadBanner] = useState<string | null>(null);
+  // "Request my city" card — shown once per session per fallback city, the
+  // first time loadHoodsInView resolves the OSM fallback to a single shape
+  // (the city itself, no real subdivision). { city, slug } while visible.
+  const [cityRequestCard, setCityRequestCard] = useState<{ city: string; slug: string } | null>(null);
+  const [cityRequestSent, setCityRequestSent] = useState(false);
+  // Cities already offered THIS session (in-memory), so a re-pan over the
+  // same fallback city doesn't re-show the card after an in-session dismiss
+  // before the AsyncStorage write has had a chance to matter.
+  const cityRequestOfferedRef = useRef<Set<string>>(new Set());
   const activeLevelRef = useRef<boolean>(false);
   const activationTokenRef = useRef<number>(0); // invalidates stale in-flight activations
   // Live recolor: the active level's segments + a throttle clock.
@@ -526,6 +537,54 @@ export default function MapScreen() {
     geocodeArea(lat, lon).then(applyArea);
   };
 
+  // "Request my city": offered once per session per fallback city, the first
+  // time the OSM fallback resolves to the "one shape, no real subdivision"
+  // case (never for "nothing came back" and never for real fine districts —
+  // see isFallbackCityWithNoSubdivision). Persists the ack per city slug
+  // (AsyncStorage), reusing the pattern from safety.tsx's SAFETY_ACK_KEY, so
+  // dismissing in one fallback city doesn't suppress a different one later.
+  const maybeOfferCityRequest = async (hoods: HoodShape[], hasFineSubdivision: boolean, cLat: number, cLon: number) => {
+    if (!isFallbackCityWithNoSubdivision(hoods.length, hasFineSubdivision)) return;
+    const city = currentArea.city || hoods[0]?.name || '';
+    if (!city) return;
+    const slug = citySlug(city);
+    if (cityRequestOfferedRef.current.has(slug)) return; // already offered this session
+    cityRequestOfferedRef.current.add(slug);
+    try {
+      const seen = await AsyncStorage.getItem(`pick_city_request_seen_${slug}`);
+      if (seen) return; // acknowledged (prioritized or dismissed) in a prior session
+    } catch {}
+    setCityRequestSent(false);
+    setCityRequestCard({ city, slug });
+  };
+
+  const dismissCityRequestCard = async () => {
+    const slug = cityRequestCard?.slug;
+    setCityRequestCard(null);
+    if (!slug) return;
+    try {
+      await AsyncStorage.setItem(`pick_city_request_seen_${slug}`, String(Date.now()));
+    } catch {}
+  };
+
+  const requestCityPrioritization = async () => {
+    if (!cityRequestCard) return;
+    const { city, slug } = cityRequestCard;
+    try {
+      await AsyncStorage.setItem(`pick_city_request_seen_${slug}`, String(Date.now()));
+    } catch {}
+    setCityRequestSent(true);
+    try {
+      const fn = httpsCallable(getFunctions(app), 'requestCity');
+      await fn({ city, citySlug: slug });
+    } catch {
+      // Best-effort — the local ack already stands regardless, so a failed
+      // network call just means this request doesn't reach the tally; it
+      // doesn't re-prompt the user or block the UI.
+    }
+    setTimeout(() => setCityRequestCard(null), 1400);
+  };
+
   // Draw all neighborhood outlines intersecting the current view as a tappable
   // layer. Rings are stashed so a tap can score that hood from coverage.
   const loadHoodsInView = (b: [number, number, number, number]) => {
@@ -547,7 +606,7 @@ export default function MapScreen() {
     if (!hasNeighborhoods(cLat, cLon)) {
       if (neighborhoodMode) setNeighborhoodMode(false);
       getOsmHoodsInBounds(b[0], b[1], b[2], b[3])
-        .then((hoods: HoodShape[]) => {
+        .then(({ hoods, hasFineSubdivision }: { hoods: HoodShape[]; hasFineSubdivision: boolean }) => {
           if (!hoods.length) return;
           if (!neighborhoodMode) setNeighborhoodMode(true);
           hoods.forEach((h) => { hoodRingsRef.current[h.name] = h.ring; });
@@ -557,6 +616,7 @@ export default function MapScreen() {
             ${selectedHood ? `if (window.highlightNeighborhood) { window.highlightNeighborhood(${JSON.stringify(selectedHood.name)}); }` : ''}
             true;
           `);
+          maybeOfferCityRequest(hoods, hasFineSubdivision, cLat, cLon);
         })
         .catch(() => {});
       return;
@@ -2264,6 +2324,35 @@ Generated by Pick App - Share this with the development team
         </TouchableOpacity>
       )}
 
+      {/* "Request my city" — shown once per fallback city (see
+          maybeOfferCityRequest) when OSM only gave us the city's own outline,
+          no real neighborhood subdivision. Same banner pattern as
+          slowLoadBanner, stacked below it via top offset. */}
+      {cityRequestCard && !activating && (
+        <View style={[styles.cityRequestCard, { top: insets.top + (slowLoadBanner ? 56 : 8) }]}>
+          <Text style={styles.cityRequestText}>
+            We don't have detailed neighborhoods mapped here yet — for now you'll see all of{' '}
+            {cityRequestCard.city} as one area. Want us to prioritize adding real neighborhoods for
+            your city?
+          </Text>
+          <View style={styles.cityRequestRow}>
+            <TouchableOpacity
+              style={styles.cityRequestCta}
+              onPress={requestCityPrioritization}
+              disabled={cityRequestSent}
+              accessibilityLabel="Yes, prioritize my city"
+            >
+              <Text style={styles.cityRequestCtaText}>
+                {cityRequestSent ? 'Thanks — noted!' : 'Yes, prioritize my city'}
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity onPress={dismissCityRequestCard} hitSlop={10} accessibilityLabel="Dismiss">
+              <Text style={styles.slowLoadBannerDismiss}>✕</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      )}
+
       {/* Level header — the active neighborhood's stats + exit */}
       {!isListening && activeLevel && !activating && (
         <View style={[styles.header, { paddingTop: insets.top + 8 }]}>
@@ -3611,6 +3700,20 @@ const styles = StyleSheet.create({
   },
   slowLoadBannerText: { flex: 1, fontSize: 13, fontFamily: Fonts.bodySemibold, color: C.dark },
   slowLoadBannerDismiss: { fontSize: 13, color: C.muted, paddingHorizontal: 4 },
+  cityRequestCard: {
+    position: 'absolute', left: 12, right: 12, zIndex: 59,
+    backgroundColor: C.white, borderRadius: radius.field,
+    paddingVertical: 12, paddingHorizontal: 14, gap: 10,
+    borderWidth: 1.5, borderColor: C.border,
+    shadowColor: '#000', shadowOpacity: 0.12, shadowRadius: 8, shadowOffset: { width: 0, height: 2 },
+  },
+  cityRequestText: { fontSize: 13, fontFamily: Fonts.body, color: C.dark, lineHeight: 18 },
+  cityRequestRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
+  cityRequestCta: {
+    flex: 1, backgroundColor: C.primary, borderRadius: radius.field,
+    paddingVertical: 9, alignItems: 'center',
+  },
+  cityRequestCtaText: { fontFamily: Fonts.bodySemibold, fontSize: 13, color: C.creamText },
   levelBack: {
     width: 34, height: 34, borderRadius: 17, backgroundColor: C.white,
     alignItems: 'center', justifyContent: 'center', marginRight: 8,

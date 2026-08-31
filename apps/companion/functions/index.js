@@ -341,6 +341,110 @@ exports.rebuildPublicStats = onCall(async (request) => {
 });
 
 // ==========================================================================
+// CITY REQUESTS — "prioritize my city". Fires from the map's fallback-city
+// card (src/services/neighborhoods.ts's OSM fallback + isFallbackCityWithNoSubdivision
+// gate in app/(tabs)/map.tsx): OSM gave us only the city's own outline, no
+// real neighborhood subdivision, and the user tapped "Yes, prioritize my
+// city." Dedups per user via a marker doc at
+// city_requests/{slug}/requesters/{uid} so re-opening the app (or the map
+// re-offering the card in a later session before this ships) doesn't
+// double-count the same person. The aggregate itself, city_requests/{slug},
+// is public-read/admin-write only — same shape as city_stats/global_stats.
+// ==========================================================================
+
+exports.requestCity = onCall(async (request) => {
+  if (!request.auth) {
+    throw new HttpsError('unauthenticated', 'Sign in to request a city.');
+  }
+  const uid = request.auth.uid;
+  const city = String((request.data && request.data.city) || '').trim();
+  if (!city) {
+    throw new HttpsError('invalid-argument', 'city is required.');
+  }
+  // The client's `citySlug` is accepted per the callable's contract but not
+  // trusted as-is: the slug is always recomputed here from `city` with the
+  // same citySlug() used everywhere else, so a mismatched/garbled client
+  // value can never fork the aggregate away from the canonical slug for
+  // this city name — it can only ever land on city_requests/{citySlug(city)}.
+  const slug = citySlug(city);
+
+  const docRef = db.collection('city_requests').doc(slug);
+  const requesterRef = docRef.collection('requesters').doc(uid);
+
+  // Single transaction: read both docs, then decide. Keeps "does this uid
+  // already have a marker" and "increment the count" atomic, so two rapid
+  // calls from the same uid (e.g. a double-tap) can't both pass the dedup
+  // check and double-increment.
+  const alreadyRequested = await db.runTransaction(async (tx) => {
+    const [docSnap, requesterSnap] = await Promise.all([tx.get(docRef), tx.get(requesterRef)]);
+    if (requesterSnap.exists) return true;
+
+    const now = Date.now();
+    tx.set(requesterRef, { uid, requestedAt: now });
+    if (!docSnap.exists) {
+      tx.set(docRef, { city, slug, count: 1, firstRequestedAt: now, lastRequestedAt: now });
+    } else {
+      tx.update(docRef, { city, slug, count: FieldValue.increment(1), lastRequestedAt: now });
+    }
+    return false;
+  });
+
+  return { ok: true, alreadyRequested };
+});
+
+/** Rank every city_requests doc by count desc and write a rollup doc — the
+ *  weekly "which cities are asking for real neighborhoods" summary. */
+async function buildCityRequestsDigest() {
+  const snap = await db.collection('city_requests').get();
+  const cities = [];
+  snap.forEach((doc) => {
+    const d = doc.data() || {};
+    cities.push({
+      slug: doc.id,
+      city: d.city || doc.id,
+      count: num(d.count),
+      firstRequestedAt: num(d.firstRequestedAt) || null,
+      lastRequestedAt: num(d.lastRequestedAt) || null,
+    });
+  });
+  cities.sort((a, b) => b.count - a.count);
+
+  const digest = {
+    generatedAt: Date.now(),
+    totalCities: cities.length,
+    totalRequests: cities.reduce((s, c) => s + c.count, 0),
+    cities,
+  };
+  await db.collection('admin_rollups').doc('city_requests_digest').set(digest);
+  return digest;
+}
+
+/** Weekly rollup — cadence matches the ask ("weekly digest"), not the hourly/
+ *  daily jobs above. */
+exports.scheduledCityRequestsDigest = onSchedule('every monday 09:00', async () => {
+  await buildCityRequestsDigest();
+});
+
+// Secret gate for the manual/external digest trigger, same convention as
+// ADOPTION_TRIGGER_KEY above (a hardcoded shared secret checked as a query
+// param — not an actual process.env var; nothing in this file reads from
+// process.env for its gates, so this follows the existing pattern rather
+// than inventing a differently-shaped one). Change this value if it's ever
+// shared. Read-only — it only reports the current tally, never writes.
+const CITY_REQUESTS_DIGEST_KEY = 'pick-city-digest-9k3p';
+
+/** External weekly job hits this (e.g. `curl`) to pull the ranked digest as
+ *  JSON, gated by CITY_REQUESTS_DIGEST_KEY exactly like runAdoptionCheck. */
+exports.runCityRequestsDigest = onRequest(async (req, res) => {
+  if (req.query.key !== CITY_REQUESTS_DIGEST_KEY) { res.status(403).send('forbidden'); return; }
+  try {
+    res.json({ ok: true, ...(await buildCityRequestsDigest()) });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: String((e && e.message) || e) });
+  }
+});
+
+// ==========================================================================
 // ADOPT A STREET — daily check: if an adopted spot has had no cleanup within
 // `radiusM` in the last `thresholdDays`, email the picker a nudge. Emails are
 // sent by the Firebase "Trigger Email" extension, which watches the `mail`

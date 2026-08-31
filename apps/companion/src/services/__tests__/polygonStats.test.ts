@@ -4,7 +4,7 @@
  *  - fresh = cleaned within 5 days; freshPct / toGo math against that set
  * Run: npx -y tsx src/services/__tests__/polygonStats.test.ts
  */
-import { polygonStats } from '../neighborhoods';
+import { polygonStats, isFallbackCityWithNoSubdivision } from '../neighborhoods';
 
 let pass = 0;
 let fail = 0;
@@ -47,6 +47,26 @@ check('empty → 0% / 0 toGo, no NaN', empty.freshPct === 0 && empty.toGo === 0 
 
 const allFresh = polygonStats(ring, [seg(40.680, -73.995, 1), seg(40.681, -73.996, 2)]);
 check('all fresh → 100% / 0 toGo (completed hood)', allFresh.freshPct === 100 && allFresh.toGo === 0);
+
+console.log('\n=== "request my city" gating (isFallbackCityWithNoSubdivision) ===');
+// The three OSM-fallback outcomes for loadHoodsInView — only the middle one
+// should ever offer the card (see the "request my city" scoping).
+check(
+  'nothing came back at all → no card',
+  isFallbackCityWithNoSubdivision(0, false) === false
+);
+check(
+  'one shape, no real subdivision → card',
+  isFallbackCityWithNoSubdivision(1, false) === true
+);
+check(
+  'real fine districts (hasFineSubdivision true) → no card',
+  isFallbackCityWithNoSubdivision(6, true) === false
+);
+check(
+  'edge: hasFineSubdivision true with zero hoods (shouldn\'t occur, but no card either way)',
+  isFallbackCityWithNoSubdivision(0, true) === false
+);
 
 console.log(`\n${fail === 0 ? '✅ ALL PASSED' : '❌ FAILED'} (${pass}/${pass + fail})`);
 process.exit(fail === 0 ? 0 : 1);
