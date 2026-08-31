@@ -452,8 +452,20 @@ function normalizeSponsorArea(input) {
     throw new HttpsError('invalid-argument', 'area is required.');
   }
   const type = input.type;
+  // "anywhere" is a valid Challenge area (no geographic restriction on a
+  // participant), but it has no meaning for a district-scoped sponsor
+  // dashboard - it would silently expose the platform's ENTIRE total
+  // activity as if it were one sponsor's district. Caught during manual
+  // testing 2026-08-31 (an "anywhere" test team returned ~all-time platform
+  // totals). Sponsor teams require an actual boundary.
+  if (type === 'anywhere') {
+    throw new HttpsError(
+      'invalid-argument',
+      'A sponsor dashboard needs an actual area — "anywhere" would show the whole platform\'s activity, not a district. Use "neighborhood" or "custom".'
+    );
+  }
   if (!TEAM_AREA_TYPES.has(type)) {
-    throw new HttpsError('invalid-argument', 'area.type must be "anywhere", "neighborhood", or "custom".');
+    throw new HttpsError('invalid-argument', 'area.type must be "neighborhood" or "custom" for a sponsor team.');
   }
   const label = String(input.label || '').trim().slice(0, 80);
   const area = { type, label: label || 'Anywhere' };
