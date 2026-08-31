@@ -53,7 +53,15 @@ service cloud.firestore {
     // --- Teams: the shared team directory. Anyone signed-in can browse and
     //     create a team (to join or start one); team docs are immutable once
     //     created. Membership itself lives in each user's private settings;
-    //     member/activity counts come from team_stats (Cloud Function). ---
+    //     member/activity counts come from team_stats (Cloud Function).
+    //
+    //     Sponsor/civic-org teams additionally carry `area` and `goal`
+    //     (CIVIC_ORG_DASHBOARD_SPEC.md) — set only via the createSponsorTeam
+    //     Cloud Function (Admin SDK, bypasses this rule entirely), never by a
+    //     direct client write. This rule doesn't need to change for that: it
+    //     never restricted extra fields on create, and update/delete already
+    //     stay `if false` either way, so a sponsor team is exactly as
+    //     immutable post-creation as a casual one. ---
     match /teams/{teamId} {
       allow read: if signedIn();
       allow create: if signedIn()
@@ -62,6 +70,30 @@ service cloud.firestore {
         && request.resource.data.name.size() > 0
         && request.resource.data.name.size() <= 60;
       allow update, delete: if false;
+    }
+
+    // --- Team tokens: sponsor-dashboard access tokens for the civic-org
+    //     impact dashboard (CIVIC_ORG_DASHBOARD_SPEC.md). Forward map
+    //     (team_tokens, teamId -> token) and reverse index (team_token_index,
+    //     token -> teamId), mirroring the email_index pattern below —
+    //     "someone who already knows one side can look the other up,
+    //     nobody can browse the collection." Written only by
+    //     createSponsorTeam (Admin SDK); read only via the getTeamToken
+    //     callable (creator-only) and the orgDashboard HTTPS endpoint —
+    //     both also Admin SDK, so clients never read these directly. ---
+    match /team_tokens/{teamId} {
+      allow read, write: if false;
+    }
+    match /team_token_index/{token} {
+      allow read, write: if false;
+    }
+
+    // --- Team snapshots: weekly district-totals history for the civic-org
+    //     dashboard's time-series view. Written only by
+    //     scheduledOrgSnapshots (Admin SDK); read only via the orgDashboard
+    //     HTTPS endpoint (Admin SDK) — no client access. ---
+    match /team_snapshots/{teamId}/history/{snapshotId} {
+      allow read, write: if false;
     }
 
     // --- Team stats: the privacy-safe leaderboard aggregate. Written only by

@@ -341,6 +341,348 @@ exports.rebuildPublicStats = onCall(async (request) => {
 });
 
 // ==========================================================================
+// CIVIC-ORG / SPONSOR IMPACT DASHBOARD — per CIVIC_ORG_DASHBOARD_SPEC.md,
+// decisions resolved 2026-08-31 (§6). District-scoped, not members'-total: a
+// pure geographic filter over ALL cleanups within a sponsor team's area,
+// regardless of who did them or what team they're on. Access is a per-team,
+// unguessable token (not team membership, not a new admin-role system),
+// consumed by a new public page on pickglobal.org (web/org.html) — not an
+// in-app screen. Time-series is periodic snapshots via a scheduled function,
+// mirroring the onSchedule pattern already used elsewhere in this file.
+//
+// `TeamDir.area` reuses ChallengeArea's shape/flat-ring encoding verbatim
+// (challenges.ts) rather than inventing new geometry, and `TeamDir.goal`
+// mirrors Challenge's goal_type/goal_value as { type, value }. Both are only
+// ever set at team-creation time via createSponsorTeam below — existing
+// teams stay unmodified and the immutable `allow update, delete: if false`
+// rule on teams/{teamId} is untouched (spec decision #5). Plain casual teams
+// still go through the client-side joinOrCreateTeam() path in
+// firebaseDatabase.ts, which this doesn't change.
+// ==========================================================================
+
+const crypto = require('crypto');
+
+const TEAM_AREA_TYPES = new Set(['anywhere', 'neighborhood', 'custom']);
+const TEAM_GOAL_TYPES = new Set(['pickups', 'bags', 'cleanups']);
+
+/**
+ * Geometry — ported from src/services/challenges.ts's ChallengeArea helpers
+ * (unflattenRing/ringBbox/pointInRing/cleanupInArea). Duplicated rather than
+ * imported: this is a separate CommonJS/Node runtime with no build step for
+ * the app's TypeScript, the same reason bagsFor() above duplicates
+ * PICKUPS_PER_BAG from impactMetrics.ts instead of importing it. Keep in
+ * sync by hand if the geometry in challenges.ts ever changes.
+ */
+function unflattenRing(flat) {
+  if (!Array.isArray(flat) || flat.length < 6) return []; // a ring needs 3+ points
+  const out = [];
+  for (let i = 0; i + 1 < flat.length; i += 2) {
+    const lat = Number(flat[i]);
+    const lon = Number(flat[i + 1]);
+    if (Number.isFinite(lat) && Number.isFinite(lon)) out.push([lat, lon]);
+  }
+  return out;
+}
+
+function ringBbox(ring) {
+  let minLat = Infinity, minLon = Infinity, maxLat = -Infinity, maxLon = -Infinity;
+  for (const [lat, lon] of ring) {
+    if (lat < minLat) minLat = lat;
+    if (lat > maxLat) maxLat = lat;
+    if (lon < minLon) minLon = lon;
+    if (lon > maxLon) maxLon = lon;
+  }
+  return [minLat, minLon, maxLat, maxLon];
+}
+
+function pointInRing(lat, lon, ring) {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const [yi, xi] = ring[i];
+    const [yj, xj] = ring[j];
+    const intersects = (yi > lat) !== (yj > lat) && lon < ((xj - xi) * (lat - yi)) / (yj - yi) + xi;
+    if (intersects) inside = !inside;
+  }
+  return inside;
+}
+
+/** Does this cleanup fall inside the team's sponsored area? Mirrors
+ *  challenges.ts's cleanupInArea() exactly. */
+function cleanupInArea(c, area) {
+  if (!area || area.type === 'anywhere') return true;
+
+  if (area.type === 'neighborhood') {
+    const want = String(area.label || '').trim().toLowerCase();
+    const got = String(c.neighborhood || '').trim().toLowerCase();
+    return !!want && want === got;
+  }
+
+  const lat = Number(c.location_lat);
+  const lon = Number(c.location_lon);
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return false;
+
+  const bb = area.bbox;
+  if (Array.isArray(bb) && bb.length === 4 && (lat < bb[0] || lat > bb[2] || lon < bb[1] || lon > bb[3])) return false;
+
+  const ring = unflattenRing(area.ring);
+  if (ring.length < 3) return false;
+  return pointInRing(lat, lon, ring);
+}
+
+/** Same slugging rule as firebaseDatabase.ts's private teamSlug() — kept in
+ *  sync by hand for the same reason as the geometry helpers above. */
+function teamSlug(name) {
+  return (
+    String(name).trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60) || 'team'
+  );
+}
+
+/** Unguessable per-team dashboard token. crypto.randomBytes rather than
+ *  Math.random: this stands in for auth on a page anyone with the link can
+ *  open, so it needs to be cryptographically hard to guess, not just unique. */
+function randomToken() {
+  return crypto.randomBytes(24).toString('hex'); // 48 hex chars
+}
+
+/** Validate + normalize a submitted ChallengeArea-shaped area. Throws
+ *  HttpsError on anything malformed — this is the only path that can ever
+ *  attach an area to a team, so it's the one place that needs to be strict. */
+function normalizeSponsorArea(input) {
+  if (!input || typeof input !== 'object') {
+    throw new HttpsError('invalid-argument', 'area is required.');
+  }
+  const type = input.type;
+  if (!TEAM_AREA_TYPES.has(type)) {
+    throw new HttpsError('invalid-argument', 'area.type must be "anywhere", "neighborhood", or "custom".');
+  }
+  const label = String(input.label || '').trim().slice(0, 80);
+  const area = { type, label: label || 'Anywhere' };
+
+  if (type === 'neighborhood') {
+    if (!label) throw new HttpsError('invalid-argument', 'area.label is required for a neighborhood area.');
+  }
+  if (type === 'custom') {
+    const ring = Array.isArray(input.ring) ? input.ring.map(Number) : [];
+    if (ring.length < 6 || ring.some((n) => !Number.isFinite(n))) {
+      throw new HttpsError('invalid-argument', 'area.ring needs at least 3 points, flat as [lat, lon, lat, lon, …].');
+    }
+    area.ring = ring;
+    area.bbox = ringBbox(unflattenRing(ring));
+  }
+  return area;
+}
+
+/** Validate + normalize an optional { type, value } goal, Challenge-shaped. */
+function normalizeSponsorGoal(input) {
+  if (input == null) return null;
+  if (typeof input !== 'object') throw new HttpsError('invalid-argument', 'goal must be an object.');
+  const type = input.type;
+  const value = Number(input.value);
+  if (!TEAM_GOAL_TYPES.has(type)) {
+    throw new HttpsError('invalid-argument', 'goal.type must be "pickups", "bags", or "cleanups".');
+  }
+  if (!Number.isFinite(value) || value <= 0 || value > 1_000_000) {
+    throw new HttpsError('invalid-argument', 'goal.value must be a positive number (up to 1,000,000).');
+  }
+  return { type, value: Math.round(value) };
+}
+
+/**
+ * Create an area-scoped ("sponsor" / civic-org) team. A callable rather than
+ * the plain client-side joinOrCreateTeam() write for one reason: the access
+ * token has to be generated server-side (crypto.randomBytes) and must never
+ * round-trip through a client-writable field. Fails if a team with the same
+ * slug already exists — teams/{teamId} is immutable post-create (spec
+ * decision #5), so a sponsor area can only ever be attached at creation.
+ */
+exports.createSponsorTeam = onCall(async (request) => {
+  if (!request.auth) {
+    throw new HttpsError('unauthenticated', 'Sign in to create a sponsor team.');
+  }
+  const uid = request.auth.uid;
+  const data = request.data || {};
+  const name = String(data.name || '').trim();
+  if (!name || name.length > 60) {
+    throw new HttpsError('invalid-argument', 'Give the team a name (1–60 characters).');
+  }
+  const area = normalizeSponsorArea(data.area);
+  const goal = normalizeSponsorGoal(data.goal);
+
+  const id = teamSlug(name);
+  const teamRef = db.collection('teams').doc(id);
+  const existing = await teamRef.get();
+  if (existing.exists) {
+    throw new HttpsError(
+      'already-exists',
+      `A team named "${name}" already exists — sponsor teams need a name not already in the directory.`
+    );
+  }
+
+  const now = Date.now();
+  const token = randomToken();
+
+  // Forward map (team -> token) and reverse index (token -> team), mirroring
+  // the email_index pattern already used elsewhere in these rules/functions
+  // for "someone who already knows X can look up Y, nobody else can browse
+  // the collection." Both are admin-only; see firestore.rules.
+  await db.runTransaction(async (tx) => {
+    tx.set(teamRef, {
+      name,
+      created_by: uid,
+      created_at: now,
+      area,
+      ...(goal ? { goal } : {}),
+    });
+    tx.set(db.collection('team_tokens').doc(id), { token, created_at: now });
+    tx.set(db.collection('team_token_index').doc(token), { teamId: id, created_at: now });
+  });
+
+  return { id, name, token };
+});
+
+/**
+ * Retrieve an existing sponsor team's dashboard token (e.g. if the creator
+ * lost the link). Creator-only, checked against teams/{teamId}.created_by —
+ * the same ownership signal used everywhere else in this codebase, since no
+ * admin-role system exists here (spec §4 deliberately doesn't build one).
+ */
+exports.getTeamToken = onCall(async (request) => {
+  if (!request.auth) {
+    throw new HttpsError('unauthenticated', 'Sign in to retrieve a team token.');
+  }
+  const teamId = String((request.data && request.data.teamId) || '').trim();
+  if (!teamId) throw new HttpsError('invalid-argument', 'teamId is required.');
+
+  const teamSnap = await db.collection('teams').doc(teamId).get();
+  if (!teamSnap.exists) throw new HttpsError('not-found', 'No such team.');
+  if (teamSnap.data().created_by !== request.auth.uid) {
+    throw new HttpsError('permission-denied', 'Only the team creator can retrieve its dashboard token.');
+  }
+
+  const tokenSnap = await db.collection('team_tokens').doc(teamId).get();
+  if (!tokenSnap.exists) {
+    throw new HttpsError('not-found', 'This team has no dashboard token (it isn\'t an area-scoped sponsor team).');
+  }
+  return { token: tokenSnap.data().token };
+});
+
+/**
+ * District-scoped totals for one team's area — a pure geographic filter over
+ * ALL cleanups, independent of who did them or what team they're on (spec
+ * decision #2: out-of-district cleanups don't count, but any in-district
+ * cleanup does, regardless of team). `cleanupsSnap` is passed in so a caller
+ * touching many teams (the scheduled snapshot job) reads the cleanups
+ * collection once, not once per team.
+ */
+function districtStatsFromSnapshot(area, cleanupsSnap) {
+  let cleanupsN = 0, pickups = 0, bagsTotal = 0, seconds = 0, lastCleanup = 0;
+  cleanupsSnap.forEach((doc) => {
+    const d = doc.data();
+    if (!cleanupInArea(d, area)) return;
+    cleanupsN += 1;
+    pickups += num(d.items_count);
+    bagsTotal += bagsFor(d);
+    seconds += num(d.duration_seconds);
+    const ms = toMillis(d.timestamp);
+    if (ms > lastCleanup) lastCleanup = ms;
+  });
+  return {
+    cleanups: cleanupsN,
+    pickups,
+    bags: Math.round(bagsTotal),
+    hours: round1(seconds / 3600),
+    last_cleanup: lastCleanup,
+  };
+}
+
+/** Every team that carries an `area` — i.e. every sponsor/civic-org team. */
+async function areaScopedTeams() {
+  const snap = await db.collection('teams').get();
+  const teams = [];
+  snap.forEach((doc) => {
+    const d = doc.data();
+    if (d && d.area && typeof d.area === 'object') teams.push({ id: doc.id, ...d });
+  });
+  return teams;
+}
+
+/** Snapshot every sponsor team's district totals, timestamped, for the
+ *  dashboard's time-series view. Periodic snapshots (not read-time
+ *  aggregation) per the spec's resolved decision on §3.3. */
+async function buildOrgSnapshots() {
+  const [teams, cleanupsSnap] = await Promise.all([areaScopedTeams(), db.collection('cleanups').get()]);
+  const now = Date.now();
+  await Promise.all(
+    teams.map((team) => {
+      const stats = districtStatsFromSnapshot(team.area, cleanupsSnap);
+      return db.collection('team_snapshots').doc(team.id).collection('history').add({ timestamp: now, ...stats });
+    })
+  );
+  return { teams: teams.length, timestamp: now };
+}
+
+/** Weekly snapshot — matches the cadence of the city-requests digest below;
+ *  a reasonable default per the spec, nothing about this data needs to be
+ *  fresher than that. */
+exports.scheduledOrgSnapshots = onSchedule('every monday 08:00', async () => {
+  await buildOrgSnapshots();
+});
+
+/**
+ * Public, token-gated JSON endpoint for the sponsor/civic-org dashboard page
+ * (pickglobal.org/org — web/org.html fetches this client-side). A per-team
+ * token, not a shared secret like CITY_REQUESTS_DIGEST_KEY below — looked up
+ * via the team_token_index reverse map, so an invalid or missing token
+ * fails closed without ever touching a real team's data.
+ */
+exports.orgDashboard = onRequest(async (req, res) => {
+  const token = String(req.query.token || '').trim();
+  if (!token) { res.status(403).json({ ok: false, error: 'missing token' }); return; }
+
+  try {
+    const indexSnap = await db.collection('team_token_index').doc(token).get();
+    if (!indexSnap.exists) { res.status(403).json({ ok: false, error: 'invalid token' }); return; }
+    const teamId = indexSnap.data().teamId;
+
+    const teamSnap = await db.collection('teams').doc(teamId).get();
+    if (!teamSnap.exists || !teamSnap.data().area) {
+      res.status(404).json({ ok: false, error: 'team not found' });
+      return;
+    }
+    const team = teamSnap.data();
+
+    const cleanupsSnap = await db.collection('cleanups').get();
+    const stats = districtStatsFromSnapshot(team.area, cleanupsSnap);
+
+    const historySnap = await db
+      .collection('team_snapshots').doc(teamId).collection('history')
+      .orderBy('timestamp', 'asc')
+      .get();
+    const timeSeries = historySnap.docs.map((d) => {
+      const s = d.data();
+      return { timestamp: s.timestamp, cleanups: s.cleanups, pickups: s.pickups, bags: s.bags, hours: s.hours };
+    });
+
+    // Includes the full area (ring/bbox for a custom-drawn district, if any)
+    // — the token holder is the sponsor this district belongs to, not the
+    // general public, so showing them exactly what geographic area their
+    // report covers (e.g. drawn on a map) is expected, not a privacy leak
+    // the way exposing a city's or another team's boundary would be.
+    res.json({
+      ok: true,
+      name: team.name,
+      area: team.area,
+      goal: team.goal || null,
+      stats,
+      timeSeries,
+      updated_at: Date.now(),
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: String((e && e.message) || e) });
+  }
+});
+
+// ==========================================================================
 // CITY REQUESTS — "prioritize my city". Fires from the map's fallback-city
 // card (src/services/neighborhoods.ts's OSM fallback + isFallbackCityWithNoSubdivision
 // gate in app/(tabs)/map.tsx): OSM gave us only the city's own outline, no
