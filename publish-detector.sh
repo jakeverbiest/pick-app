@@ -36,6 +36,33 @@ fi
 
 cd "$REPO" || { echo "cannot cd to $REPO" >&2; exit 1; }
 
+# eas update bundles the working tree LOCALLY via Metro, which inlines
+# EXPO_PUBLIC_* vars from the SHELL's own process.env at bundle time — a
+# completely separate mechanism from EAS's registered "production" env vars
+# (those only apply to `eas build`, run on EAS's cloud servers). This has
+# shipped a broken CARTO key three times (31 Aug native build, 1 Sep OTA x2)
+# because the operator forgot to source .env into the shell first. Do it here
+# instead of relying on memory.
+if [ -f "$APP/.env" ]; then
+  set -a
+  # shellcheck disable=SC1091
+  source "$APP/.env"
+  set +a
+elif [ -f "$REPO/.env" ]; then
+  set -a
+  # shellcheck disable=SC1091
+  source "$REPO/.env"
+  set +a
+fi
+if [ -z "${EXPO_PUBLIC_CARTO_API_KEY:-}" ]; then
+  echo "⚠️  EXPO_PUBLIC_CARTO_API_KEY is not set (checked $APP/.env and $REPO/.env)." >&2
+  echo "    The map will ship with the API-key-required watermark. Fix .env or set it" >&2
+  echo "    in the shell before publishing." >&2
+  printf "    Continue anyway? [y/N] "
+  read -r reply
+  case "$reply" in [yY]*) ;; *) echo "    aborted."; exit 1;; esac
+fi
+
 # Scan the whole app package, not just app/ and src/. The narrow version
 # missed app.json and assets/, so a splash change reported "clean" and then
 # shipped anyway. Anything under apps/companion goes into the bundle.

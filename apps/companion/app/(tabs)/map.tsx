@@ -18,7 +18,7 @@ import { app } from '../../src/services/firebaseConfig';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import Constants from 'expo-constants';
-import { startBackgroundSession, stopBackgroundSession, drainBackgroundLocations } from '../../src/services/backgroundSession';
+import { startBackgroundSession, stopBackgroundSession, drainBackgroundLocations, isBackgroundLocationTaskRunning } from '../../src/services/backgroundSession';
 import { beginSessionTrace, heartbeat, endSessionTrace, isSessionActiveFresh } from '../../src/services/crashRecorder';
 import { saveWalkDraft, loadWalkDraft, clearWalkDraft } from '../../src/services/sessionRecovery';
 import { startPresence, pingPresence, endPresence, getLiveWalks } from '../../src/services/presence';
@@ -257,11 +257,21 @@ export default function MapScreen() {
   // sentinel (same start/stop window as walkIntent — see startCleanup /
   // stopCleanup) for a heartbeat recent enough to trust as "still walking
   // right now," not just "crashed at some point and never cleaned up."
+  //
+  // A fresh heartbeat alone is ambiguous — it looks identical whether the
+  // walk is genuinely still running in the background OR the app was just
+  // force-quit and relaunched within the freshness window (reported
+  // 2026-09-01: force-quit mid-walk, reopen, and BOTH the live-walk UI and
+  // the separate walk-draft "Recover your last walk?" alert showed at once).
+  // Also require the OS to confirm the background location task is actually
+  // still registered — force-quit stops it, so this resolves the ambiguity
+  // a timestamp can't. Without this, a force-quit inside the freshness
+  // window falsely restores the live-walk screen on top of the draft alert.
   useEffect(() => {
     let canceled = false;
-    isSessionActiveFresh().then((active) => {
+    Promise.all([isSessionActiveFresh(), isBackgroundLocationTaskRunning()]).then(([active, taskRunning]) => {
       if (canceled) return;
-      if (active) setWalkIntent(true);
+      if (active && taskRunning) setWalkIntent(true);
       setWalkIntentChecked(true);
     });
     return () => { canceled = true; };

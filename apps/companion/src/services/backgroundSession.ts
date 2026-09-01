@@ -108,6 +108,24 @@ export async function startBackgroundSession(): Promise<'background' | 'foregrou
   }
 }
 
+/**
+ * Ground truth for "is the background location task actually still
+ * registered with iOS/Android right now" — unlike crashRecorder's
+ * isSessionActiveFresh(), which only checks whether the last heartbeat
+ * TIMESTAMP is recent, this asks the OS directly. A heartbeat can look fresh
+ * (written seconds ago) whether the walk is genuinely still running in the
+ * background OR the app was just force-quit and relaunched — those are
+ * indistinguishable by timestamp alone. A force-quit stops this task, so
+ * this resolves the ambiguity that isSessionActiveFresh() can't.
+ */
+export async function isBackgroundLocationTaskRunning(): Promise<boolean> {
+  try {
+    return await Location.hasStartedLocationUpdatesAsync(LOCATION_TASK);
+  } catch {
+    return false;
+  }
+}
+
 export async function stopBackgroundSession(): Promise<void> {
   try {
     const started = await Location.hasStartedLocationUpdatesAsync(LOCATION_TASK);
