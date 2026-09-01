@@ -665,13 +665,24 @@ export async function markRouteCleaned(
  * shared Firestore status from all users.
  */
 export async function getCoverage(lat: number, lon: number): Promise<RenderSegment[]> {
-  let segments: StreetSegment[] = [];
   try {
-    segments = await getSegmentsAround(lat, lon);
+    return await getCoverageOrThrow(lat, lon);
   } catch (error) {
     console.error('Street coverage unavailable:', error);
     return [];
   }
+}
+
+/** Same as getCoverage(), but lets a fetch failure propagate instead of
+ *  swallowing it to []. getCoverage()'s permissive swallow-to-[] is relied on
+ *  by its one direct caller (the incremental per-pan overview fetch in
+ *  map.tsx's loadStreetCoverage), which already has its own "don't clobber
+ *  good stats with a bogus 0/0" guard for that case. getCoverageForRingTiled
+ *  needs the opposite: a real failure signal, so a total Overpass outage
+ *  across every sampled tile doesn't get counted as "25 legitimately empty
+ *  tiles" and rendered as a false 0%/"complete" neighborhood. */
+async function getCoverageOrThrow(lat: number, lon: number): Promise<RenderSegment[]> {
+  const segments = await getSegmentsAround(lat, lon);
   const statuses = await loadStatuses(lat, lon);
   const now = Date.now();
   return segments.map((seg) => {
@@ -827,12 +838,27 @@ async function getCoverageForRingTiled(ring: [number, number][]): Promise<Render
   }
   const seen = new Map<string, RenderSegment>();
   const CONCURRENCY = 5;
+  // Track real fetch failures separately from "this tile legitimately has no
+  // matching segments" — getCoverage() itself swallows fetch errors to [],
+  // so use the throwing variant here and distinguish the two ourselves.
+  // Otherwise a total Overpass outage (every tile's fetch fails) looks
+  // identical to "25 tiles sampled, genuinely nothing there," and the caller
+  // renders that as a real, completed 0% result instead of an error.
+  let anyTileSucceeded = false;
+  let anyTileFailed = false;
   for (let i = 0; i < points.length; i += CONCURRENCY) {
     const batch = points.slice(i, i + CONCURRENCY);
     const results = await Promise.all(
-      batch.map(([la, lo]) => getCoverage(la, lo).catch(() => [] as RenderSegment[]))
+      batch.map(([la, lo]) =>
+        getCoverageOrThrow(la, lo)
+          .then((segs) => { anyTileSucceeded = true; return segs; })
+          .catch(() => { anyTileFailed = true; return [] as RenderSegment[]; })
+      )
     );
     for (const segs of results) for (const s of segs) if (!seen.has(s.id)) seen.set(s.id, s);
+  }
+  if (!anyTileSucceeded && anyTileFailed) {
+    throw new Error('Street coverage unavailable: every tiled fetch failed (Overpass likely down)');
   }
   const out: RenderSegment[] = [];
   for (const s of seen.values()) {
