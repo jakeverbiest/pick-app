@@ -1,4 +1,4 @@
-import { View, Text, StyleSheet, TouchableOpacity, Modal, TextInput, ScrollView, Alert, AppState, Image, Share, ActivityIndicator, KeyboardAvoidingView, Platform, Keyboard } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, Modal, TextInput, ScrollView, Alert, AppState, Image, Share, ActivityIndicator, KeyboardAvoidingView, Platform, Keyboard, InteractionManager } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
 import * as ImagePicker from 'expo-image-picker';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -814,23 +814,30 @@ export default function MapScreen() {
     (async () => {
       const draft = await loadWalkDraft();
       if (canceled || !draft || isListening) return;
-      Alert.alert(
-        'Recover your last walk?',
-        `A walk from ${new Date(draft.startedAt).toLocaleString()} with ${draft.pickupCount} pickup${draft.pickupCount === 1 ? '' : 's'} was never saved. Restore it so you can log it?`,
-        [
-          { text: 'Discard', style: 'destructive', onPress: () => { clearWalkDraft(); } },
-          {
-            text: 'Restore',
-            onPress: () => {
-              setSessionRoute(draft.route || []);
-              setPickupLocations(draft.pickups || []);
-              setPickupCount(draft.pickupCount || 0);
-              setElapsedSeconds(draft.elapsedSeconds || 0);
-              setShowSummary(true);
+      // Deferred to runAfterInteractions: firing Alert.alert() immediately on
+      // mount can race the native splash-screen dismissal — the alert renders
+      // but the window isn't key/interactive yet, and the first tap is
+      // swallowed (reported 2026-09-01: had to select "Restore" twice).
+      InteractionManager.runAfterInteractions(() => {
+        if (canceled) return;
+        Alert.alert(
+          'Recover your last walk?',
+          `A walk from ${new Date(draft.startedAt).toLocaleString()} with ${draft.pickupCount} pickup${draft.pickupCount === 1 ? '' : 's'} was never saved. Restore it so you can log it?`,
+          [
+            { text: 'Discard', style: 'destructive', onPress: () => { clearWalkDraft(); } },
+            {
+              text: 'Restore',
+              onPress: () => {
+                setSessionRoute(draft.route || []);
+                setPickupLocations(draft.pickups || []);
+                setPickupCount(draft.pickupCount || 0);
+                setElapsedSeconds(draft.elapsedSeconds || 0);
+                setShowSummary(true);
+              },
             },
-          },
-        ],
-      );
+          ],
+        );
+      });
     })();
     return () => { canceled = true; };
     // Run once on mount.
