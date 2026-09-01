@@ -476,6 +476,16 @@ function chopWaysIntoSegments(json: any, split = false): StreetSegment[] {
   return segments;
 }
 
+// In-flight request coalescing: callers that land within the same grid cell
+// (or the same ring/poly) close together — e.g. the debounced pan handler
+// firing right after refreshOverviewAround(), or a post-save refresh racing
+// a moveend — used to each independently miss the AsyncStorage cache (which
+// is only written AFTER a fetch resolves) and fire their own duplicate
+// Overpass round-trip for the same streets. Same pattern already used by
+// neighborhoods.ts's hoodsInflight/hoodsCache for per-city GeoJSON; applied
+// here so concurrent callers share one fetch instead of paying for it twice.
+const segmentsInflight: Record<string, Promise<StreetSegment[]> | null> = {};
+
 /** Cached street segments around a point (fetches OSM on cache miss). */
 export async function getSegmentsAround(lat: number, lon: number): Promise<StreetSegment[]> {
   const cacheKey = `${GEOMETRY_CACHE_PREFIX}${gridKey(lat, lon)}`;
@@ -489,12 +499,20 @@ export async function getSegmentsAround(lat: number, lon: number): Promise<Stree
     }
   } catch {}
 
-  const segments = await fetchStreetGeometry(lat, lon);
-  console.log(`🛣️ Fetched ${segments.length} street segments from OSM`);
+  if (segmentsInflight[cacheKey]) return segmentsInflight[cacheKey]!;
+  segmentsInflight[cacheKey] = (async () => {
+    const segments = await fetchStreetGeometry(lat, lon);
+    console.log(`🛣️ Fetched ${segments.length} street segments from OSM`);
+    try {
+      await AsyncStorage.setItem(cacheKey, JSON.stringify({ fetchedAt: Date.now(), segments }));
+    } catch {}
+    return segments;
+  })();
   try {
-    await AsyncStorage.setItem(cacheKey, JSON.stringify({ fetchedAt: Date.now(), segments }));
-  } catch {}
-  return segments;
+    return await segmentsInflight[cacheKey]!;
+  } finally {
+    segmentsInflight[cacheKey] = null;
+  }
 }
 
 // ---------- shared status (Firestore) ----------
@@ -675,6 +693,8 @@ async function fetchStreetGeometryForRing(ring: [number, number][]): Promise<Str
   return segments;
 }
 
+const ringSegmentsInflight: Record<string, Promise<StreetSegment[]> | null> = {};
+
 /** Cached whole-ring segments (fetches OSM on cache miss). Kept separate from
  *  the per-grid cache: a poly query clips at the hood edge, so folding its
  *  results into border grid cells would leave them permanently half-empty. */
@@ -687,12 +707,23 @@ async function getSegmentsForRing(ring: [number, number][]): Promise<StreetSegme
       if (Date.now() - fetchedAt < GEOMETRY_CACHE_TTL_MS && segments?.length) return segments;
     }
   } catch {}
-  const segments = await fetchStreetGeometryForRing(ring);
-  console.log(`🛣️ Fetched ${segments.length} street segments for ring (single poly query)`);
+  // Coalesce concurrent callers for the same ring (e.g. a double-tap on the
+  // same hood outline before the first activation's cache write lands) — see
+  // segmentsInflight above for the full rationale.
+  if (ringSegmentsInflight[cacheKey]) return ringSegmentsInflight[cacheKey]!;
+  ringSegmentsInflight[cacheKey] = (async () => {
+    const segments = await fetchStreetGeometryForRing(ring);
+    console.log(`🛣️ Fetched ${segments.length} street segments for ring (single poly query)`);
+    try {
+      await AsyncStorage.setItem(cacheKey, JSON.stringify({ fetchedAt: Date.now(), segments }));
+    } catch {}
+    return segments;
+  })();
   try {
-    await AsyncStorage.setItem(cacheKey, JSON.stringify({ fetchedAt: Date.now(), segments }));
-  } catch {}
-  return segments;
+    return await ringSegmentsInflight[cacheKey]!;
+  } finally {
+    ringSegmentsInflight[cacheKey] = null;
+  }
 }
 
 /**
@@ -837,6 +868,8 @@ async function fetchParks(lat: number, lon: number): Promise<Park[]> {
   return parks;
 }
 
+const parksInflight: Record<string, Promise<Park[]> | null> = {};
+
 /** Cached parks around a point (fetches OSM on cache miss). */
 export async function getParksAround(lat: number, lon: number): Promise<Park[]> {
   const cacheKey = `${PARK_GEOMETRY_CACHE_PREFIX}${gridKey(lat, lon)}`;
@@ -850,12 +883,20 @@ export async function getParksAround(lat: number, lon: number): Promise<Park[]> 
     }
   } catch {}
 
-  const parks = await fetchParks(lat, lon);
-  console.log(`🌳 Fetched ${parks.length} parks from OSM`);
+  if (parksInflight[cacheKey]) return parksInflight[cacheKey]!;
+  parksInflight[cacheKey] = (async () => {
+    const parks = await fetchParks(lat, lon);
+    console.log(`🌳 Fetched ${parks.length} parks from OSM`);
+    try {
+      await AsyncStorage.setItem(cacheKey, JSON.stringify({ fetchedAt: Date.now(), parks }));
+    } catch {}
+    return parks;
+  })();
   try {
-    await AsyncStorage.setItem(cacheKey, JSON.stringify({ fetchedAt: Date.now(), parks }));
-  } catch {}
-  return parks;
+    return await parksInflight[cacheKey]!;
+  } finally {
+    parksInflight[cacheKey] = null;
+  }
 }
 
 async function loadParkStatuses(lat: number, lon: number): Promise<Map<string, ParkStatus>> {
