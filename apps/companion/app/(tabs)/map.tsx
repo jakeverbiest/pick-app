@@ -48,6 +48,17 @@ import { postToBluesky } from '../../src/services/bluesky';
 const LAST_BAG_SIZE_KEY = '@pick_last_bag_size';
 const LOCATION_EXPLAINER_SHOWN_KEY = '@pick_location_explainer_shown';
 
+// Module-scoped, not component state: the walk-draft recovery effect below
+// has been observed firing more than once per app launch (reported
+// 2026-09-01 — after tapping "Restore" once, the same alert reappeared,
+// needing a second Discard/Restore before it actually cleared), which
+// strongly suggests this screen mounts more than once during the launch/
+// navigation-replace sequence. A per-mount ref can't guard against that; this
+// survives across every remount for the life of the app process, so the
+// prompt can only ever be shown once per launch no matter how many times the
+// effect runs.
+let recoverWalkAlertShownThisLaunch = false;
+
 export default function MapScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
@@ -824,12 +835,14 @@ export default function MapScreen() {
     (async () => {
       const draft = await loadWalkDraft();
       if (canceled || !draft || isListening) return;
+      if (recoverWalkAlertShownThisLaunch) return;
       // Deferred to runAfterInteractions: firing Alert.alert() immediately on
       // mount can race the native splash-screen dismissal — the alert renders
       // but the window isn't key/interactive yet, and the first tap is
       // swallowed (reported 2026-09-01: had to select "Restore" twice).
       InteractionManager.runAfterInteractions(() => {
-        if (canceled) return;
+        if (canceled || recoverWalkAlertShownThisLaunch) return;
+        recoverWalkAlertShownThisLaunch = true;
         Alert.alert(
           'Recover your last walk?',
           `A walk from ${new Date(draft.startedAt).toLocaleString()} with ${draft.pickupCount} pickup${draft.pickupCount === 1 ? '' : 's'} was never saved. Restore it so you can log it?`,
