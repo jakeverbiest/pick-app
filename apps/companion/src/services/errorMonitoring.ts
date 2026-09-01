@@ -10,13 +10,25 @@
  * before a Sentry project exists — wire one up and set the env var whenever
  * you're ready, no code changes needed.
  *
- * The "@sentry/react-native" Expo config plugin is deliberately NOT in
- * app.json's plugins list yet — its iOS build phase runs sentry-cli to
- * upload dSYMs and hard-fails the build without a real org/project (there's
- * no "skip this" option, only "don't configure it yet"). Once you have a
- * Sentry project, add `["@sentry/react-native", { organization, project }]`
- * back to app.json's plugins and rebuild — JS-level error capture already
- * works without it, that plugin only adds native dSYM upload.
+ * This is the ONLY place that should call Sentry.init() — the setup wizard
+ * (run 2026-09-01) also generated its own Sentry.init() call directly in
+ * app/_layout.tsx with its default options; that block was removed in favor
+ * of routing through here, so there's one source of truth instead of two
+ * competing inits on every launch.
+ *
+ * Deliberately OFF, against the wizard's defaults — reconsider explicitly,
+ * don't just re-enable from a future wizard re-run:
+ *  - sendDefaultPii: sends IP address and other personal data with every
+ *    event. The privacy policy reconciled the same day this was wired up
+ *    describes Sentry as collecting only device/app version and stack
+ *    trace — turning this on would make that disclosure inaccurate.
+ *  - Session Replay: a materially bigger feature than crash reporting
+ *    (records/replays user sessions, masked by default) — worth its own
+ *    decision later, not a side effect of enabling basic error reporting.
+ *  - the feedback-widget integration: the app already has its own feedback
+ *    feature (Settings → Send Feedback → Firestore `feedback` collection,
+ *    see firebaseDatabase.ts submitFeedback()) — Sentry's widget would be a
+ *    second, redundant path writing feedback somewhere else entirely.
  */
 import * as Sentry from '@sentry/react-native';
 
@@ -33,6 +45,7 @@ export function initErrorMonitoring() {
     dsn,
     tracesSampleRate: 0.2,
     enabled: !__DEV__,
+    sendDefaultPii: false,
   });
   initialized = true;
 }

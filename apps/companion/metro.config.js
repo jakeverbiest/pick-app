@@ -1,4 +1,14 @@
-// Metro config — required for Firebase Auth on React Native.
+// getSentryExpoConfig wraps Expo's default Metro config to also enable
+// Sentry's source-map upload at build time (added by the Sentry setup
+// wizard, 2026-09-01) — functionally the same base config as
+// expo/metro-config's getDefaultConfig otherwise.
+const {
+  getSentryExpoConfig
+} = require("@sentry/react-native/metro");
+
+const config = getSentryExpoConfig(__dirname);
+
+// Required for Firebase Auth on React Native.
 //
 // The Firebase JS SDK ships its React Native auth bundle behind the legacy
 // "react-native" main field, but its modern package "exports" map only lists
@@ -10,10 +20,6 @@
 // correctly picks @firebase/auth's dist/rn bundle.
 //
 // If you ever remove this, re-test login on a real device before shipping.
-
-const { getDefaultConfig } = require('expo/metro-config');
-
-const config = getDefaultConfig(__dirname);
 config.resolver.unstable_enablePackageExports = false;
 
 module.exports = config;

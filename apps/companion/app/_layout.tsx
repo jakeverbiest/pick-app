@@ -23,6 +23,7 @@ import { registerForPush, setupNotificationRouting } from '@/src/services/notifi
 import { LoadingView, ErrorView } from '@/src/pick/LoadingView';
 import { initErrorMonitoring } from '@/src/services/errorMonitoring';
 import { loadWalkDraft, clearWalkDraft, handOffWalkRestore } from '@/src/services/sessionRecovery';
+import * as Sentry from '@sentry/react-native';
 
 // Keep the native splash up until our own branded loading view is on screen,
 // so there's no white flash between the OS splash and the app.
@@ -40,7 +41,7 @@ export const unstable_settings = {
 // listener can emit a new user object reference for the same logged-in user.
 let walkRecoveryPromptChecked = false;
 
-export default function RootLayout() {
+export default Sentry.wrap(function RootLayout() {
   const colorScheme = useColorScheme();
   const { isInitialized, authUser, error } = useAppInitialization();
 
@@ -137,4 +138,4 @@ export default function RootLayout() {
       <StatusBar style="auto" />
     </ThemeProvider>
   );
-}
+});
