@@ -354,6 +354,33 @@ export function getTileStats(lat: number, lon: number, coverage: RenderSegment[]
 // usually fine, so fail over fast instead.
 const OVERPASS_TIMEOUT_MS = 15000;
 
+// Field data 2026-08-31 (Fort Greene, first-open cold cache): a genuinely
+// heavy poly query over a dense NYC neighborhood took "almost a minute,
+// then well over a minute" to resolve — not a hang, just slow. Root cause:
+// pure SEQUENTIAL mirror fallback (try mirror 1 for up to 15s, abort, try
+// mirror 2 for up to 15s, abort, try mirror 3) means a mirror that is alive
+// but genuinely needs >15s to compute a heavy query gets aborted and its
+// work thrown away, then the NEXT mirror — often similarly loaded — pays
+// the same 15s before also getting cut off. Worst case for ONE query
+// (sidewalk or road) was 3 mirrors x 15s = 45s; getCoverageForRing's ring
+// query fires two such queries in parallel (Promise.all in
+// fetchStreetGeometryForRing), so that alone can eat ~45s before falling
+// back to the OLD tiled ~25-point implementation, which is sequential in
+// batches of 5 and was already flagged in its own comment as taking
+// "minutes" on a cold cache — exactly what was observed.
+//
+// Fix: HEDGE instead of pure sequential fallback. Start with one mirror;
+// if it hasn't answered within HEDGE_DELAY_MS, start the NEXT mirror
+// concurrently (without killing the first) rather than aborting and
+// restarting from zero. First response wins; the rest are aborted. This
+// keeps the common case (healthy preferred mirror) at exactly one request
+// — no extra mirror load — while capping worst case at roughly
+// (mirrors-1) x HEDGE_DELAY_MS + OVERPASS_TIMEOUT_MS instead of
+// mirrors x OVERPASS_TIMEOUT_MS: ~27s instead of ~45s for one query with
+// today's 3 mirrors, and a slow-but-alive mirror that was about to
+// succeed is never thrown away mid-flight by an unrelated timer.
+const HEDGE_DELAY_MS = 6000;
+
 // The primary mirror is dead/rate-limited more often than not, and every fresh
 // query was burning a full timeout on it before failing over. Remember which
 // mirror answered last and lead with it for the rest of the session.
@@ -362,16 +389,23 @@ let preferredOverpass: string | null = null;
 /** Exported so other services (e.g. neighborhoods.ts's OSM boundary
  *  fallback) can reuse the same mirror-failover/timeout machinery instead
  *  of standing up a second Overpass client. */
-export async function runOverpass(query: string): Promise<any> {
-  let lastErr: unknown;
+export function runOverpass(query: string): Promise<any> {
   const endpoints = preferredOverpass
     ? [preferredOverpass, ...OVERPASS_ENDPOINTS.filter((u) => u !== preferredOverpass)]
     : OVERPASS_ENDPOINTS;
-  for (const url of endpoints) {
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), OVERPASS_TIMEOUT_MS);
-    try {
-      const res = await fetch(url, {
+
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let pending = endpoints.length;
+    let lastErr: unknown;
+    const hedgeTimers: ReturnType<typeof setTimeout>[] = [];
+    const controllers: AbortController[] = [];
+
+    const attempt = (url: string) => {
+      const ctrl = new AbortController();
+      controllers.push(ctrl);
+      const timer = setTimeout(() => ctrl.abort(), OVERPASS_TIMEOUT_MS);
+      fetch(url, {
         method: 'POST',
         // Overpass mirrors explicitly rate-limit harder without a real
         // User-Agent (confirmed live 2026-08-13 — a 429 response's own body
@@ -383,19 +417,36 @@ export async function runOverpass(query: string): Promise<any> {
         },
         body: `data=${encodeURIComponent(query)}`,
         signal: ctrl.signal,
-      });
-      if (!res.ok) throw new Error(`Overpass error ${res.status}`);
-      const json = await res.json();
-      preferredOverpass = url;
-      return json;
-    } catch (e) {
-      lastErr = e;
-      console.warn(`🛣️ Overpass endpoint failed (${url}): ${(e as Error)?.message ?? e}`);
-    } finally {
-      clearTimeout(timer);
+      })
+        .then(async (res) => {
+          if (!res.ok) throw new Error(`Overpass error ${res.status}`);
+          const json = await res.json();
+          if (!settled) {
+            settled = true;
+            preferredOverpass = url;
+            hedgeTimers.forEach(clearTimeout);
+            controllers.forEach((c) => c.abort());
+            resolve(json);
+          }
+        })
+        .catch((e) => {
+          lastErr = e;
+          console.warn(`🛣️ Overpass endpoint failed (${url}): ${(e as Error)?.message ?? e}`);
+          pending--;
+          if (!settled && pending === 0) {
+            settled = true;
+            hedgeTimers.forEach(clearTimeout);
+            reject(lastErr ?? new Error('All Overpass endpoints failed'));
+          }
+        })
+        .finally(() => clearTimeout(timer));
+    };
+
+    attempt(endpoints[0]);
+    for (let i = 1; i < endpoints.length; i++) {
+      hedgeTimers.push(setTimeout(() => attempt(endpoints[i]), HEDGE_DELAY_MS * i));
     }
-  }
-  throw lastErr ?? new Error('All Overpass endpoints failed');
+  });
 }
 
 async function fetchStreetGeometry(lat: number, lon: number): Promise<StreetSegment[]> {
