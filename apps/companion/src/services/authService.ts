@@ -240,9 +240,14 @@ class AuthService {
       if (error?.code === 'ERR_REQUEST_CANCELED') {
         throw new Error('__CANCELED__');
       }
-      const reason = error?.code || error?.message || 'unknown error';
-      console.error('❌ Sign in with Apple failed:', reason);
-      throw new Error(`Sign in with Apple failed (${reason}). Please try again, or use email instead.`);
+      // Firebase errors carry both a generic code (auth/invalid-credential)
+      // and a more specific message (e.g. a nonce-mismatch or audience
+      // detail) — show both, since the code alone doesn't distinguish
+      // between the several different sub-causes that produce it.
+      const code = error?.code || 'no-code';
+      const detail = error?.message || 'no message';
+      console.error('❌ Sign in with Apple failed:', code, detail);
+      throw new Error(`Sign in with Apple failed (${code}: ${detail}). Please try again, or use email instead.`);
     }
   }
 
