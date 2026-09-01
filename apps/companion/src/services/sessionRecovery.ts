@@ -83,3 +83,57 @@ export async function clearWalkDraft(): Promise<void> {
     // ignore
   }
 }
+
+/**
+ * Hand-off for applying a restored draft to whichever Map screen instance is
+ * actually live, regardless of how many times that screen has remounted.
+ *
+ * Why this exists: the "Recover your last walk?" prompt used to live inside
+ * the Map screen's own mount effect, capturing that instance's setState
+ * functions in its onPress closures. Reported 2026-09-01: after fixing a
+ * separate double-alert bug, tapping "Restore" started silently doing
+ * nothing — the app just showed the normal idle map. Root cause: the Map
+ * screen mounts more than once during launch (cause not fully chased down),
+ * and a native Alert stays on screen independent of the JS tree underneath
+ * it — so by the time a human reads the alert and taps a button, the
+ * component instance whose closures the alert captured may have already
+ * unmounted. Its setState calls silently no-op; the actually-visible,
+ * newer instance never hears about it.
+ *
+ * Fix: the prompt itself now lives in the root layout (mounts exactly once
+ * per launch, so there's only ever one Alert.alert() call and it can't go
+ * stale before the user answers it). "Restore" hands the draft off through
+ * here instead of touching Map-screen state directly. Whichever Map screen
+ * instance is actually mounted when the user answers — or the one that
+ * mounts next, if the answer arrives before any instance has subscribed —
+ * is the one that applies it, via subscribeToWalkRestore() below.
+ */
+let pendingRestore: WalkDraft | null = null;
+let restoreSubscriber: ((draft: WalkDraft) => void) | null = null;
+
+/** Called by the root-layout prompt when the user taps "Restore". */
+export function handOffWalkRestore(draft: WalkDraft): void {
+  if (restoreSubscriber) {
+    restoreSubscriber(draft);
+  } else {
+    pendingRestore = draft;
+  }
+}
+
+/**
+ * Called once by the Map screen on every mount. Registers as the current
+ * "live" instance — replacing any previous (now-stale) subscriber — and
+ * immediately consumes a hand-off that arrived before this instance existed.
+ * Returns an unsubscribe function for the effect's cleanup.
+ */
+export function subscribeToWalkRestore(callback: (draft: WalkDraft) => void): () => void {
+  restoreSubscriber = callback;
+  if (pendingRestore) {
+    const draft = pendingRestore;
+    pendingRestore = null;
+    callback(draft);
+  }
+  return () => {
+    if (restoreSubscriber === callback) restoreSubscriber = null;
+  };
+}

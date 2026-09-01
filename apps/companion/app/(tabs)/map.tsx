@@ -1,4 +1,4 @@
-import { View, Text, StyleSheet, TouchableOpacity, Modal, TextInput, ScrollView, Alert, AppState, Image, Share, ActivityIndicator, KeyboardAvoidingView, Platform, Keyboard, InteractionManager } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, Modal, TextInput, ScrollView, Alert, AppState, Image, Share, ActivityIndicator, KeyboardAvoidingView, Platform, Keyboard } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
 import * as ImagePicker from 'expo-image-picker';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -20,7 +20,7 @@ import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import Constants from 'expo-constants';
 import { startBackgroundSession, stopBackgroundSession, drainBackgroundLocations, isBackgroundLocationTaskRunning } from '../../src/services/backgroundSession';
 import { beginSessionTrace, heartbeat, endSessionTrace, isSessionActiveFresh } from '../../src/services/crashRecorder';
-import { saveWalkDraft, loadWalkDraft, clearWalkDraft } from '../../src/services/sessionRecovery';
+import { saveWalkDraft, clearWalkDraft, subscribeToWalkRestore } from '../../src/services/sessionRecovery';
 import { startPresence, pingPresence, endPresence, getLiveWalks } from '../../src/services/presence';
 import { computeNeed, parseRoute, needColor, needTileKey, type NeedTile } from '../../src/services/needMap';
 import { syncWorkoutToHealth, isHealthSyncEnabled } from '../../src/services/healthService';
@@ -47,17 +47,6 @@ import { postToBluesky } from '../../src/services/bluesky';
 
 const LAST_BAG_SIZE_KEY = '@pick_last_bag_size';
 const LOCATION_EXPLAINER_SHOWN_KEY = '@pick_location_explainer_shown';
-
-// Module-scoped, not component state: the walk-draft recovery effect below
-// has been observed firing more than once per app launch (reported
-// 2026-09-01 — after tapping "Restore" once, the same alert reappeared,
-// needing a second Discard/Restore before it actually cleared), which
-// strongly suggests this screen mounts more than once during the launch/
-// navigation-replace sequence. A per-mount ref can't guard against that; this
-// survives across every remount for the life of the app process, so the
-// prompt can only ever be shown once per launch no matter how many times the
-// effect runs.
-let recoverWalkAlertShownThisLaunch = false;
 
 export default function MapScreen() {
   const router = useRouter();
@@ -827,44 +816,23 @@ export default function MapScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionRoute, isListening]);
 
-  // Restore an unsaved walk on launch. If the last walk was stopped but never
-  // saved (summary dismissed, app force-quit, or a crash at the summary), a
-  // draft survived on disk — offer to bring it back so it can be logged.
+  // Apply a restored walk draft handed off from the root layout's recovery
+  // prompt (see sessionRecovery.ts's subscribeToWalkRestore()). The prompt
+  // itself no longer lives here — it used to, and capturing setState in its
+  // onPress closures broke when this screen turned out to remount during
+  // launch (2026-09-01: "Restore" silently did nothing, because the alert's
+  // closures belonged to an already-unmounted instance). Subscribing on every
+  // mount means whichever instance is actually live is the one that applies
+  // it, no matter how many times this screen has remounted.
   useEffect(() => {
-    let canceled = false;
-    (async () => {
-      const draft = await loadWalkDraft();
-      if (canceled || !draft || isListening) return;
-      if (recoverWalkAlertShownThisLaunch) return;
-      // Deferred to runAfterInteractions: firing Alert.alert() immediately on
-      // mount can race the native splash-screen dismissal — the alert renders
-      // but the window isn't key/interactive yet, and the first tap is
-      // swallowed (reported 2026-09-01: had to select "Restore" twice).
-      InteractionManager.runAfterInteractions(() => {
-        if (canceled || recoverWalkAlertShownThisLaunch) return;
-        recoverWalkAlertShownThisLaunch = true;
-        Alert.alert(
-          'Recover your last walk?',
-          `A walk from ${new Date(draft.startedAt).toLocaleString()} with ${draft.pickupCount} pickup${draft.pickupCount === 1 ? '' : 's'} was never saved. Restore it so you can log it?`,
-          [
-            { text: 'Discard', style: 'destructive', onPress: () => { clearWalkDraft(); } },
-            {
-              text: 'Restore',
-              onPress: () => {
-                setSessionRoute(draft.route || []);
-                setPickupLocations(draft.pickups || []);
-                setPickupCount(draft.pickupCount || 0);
-                setElapsedSeconds(draft.elapsedSeconds || 0);
-                setShowSummary(true);
-              },
-            },
-          ],
-        );
-      });
-    })();
-    return () => { canceled = true; };
-    // Run once on mount.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    const unsubscribe = subscribeToWalkRestore((draft) => {
+      setSessionRoute(draft.route || []);
+      setPickupLocations(draft.pickups || []);
+      setPickupCount(draft.pickupCount || 0);
+      setElapsedSeconds(draft.elapsedSeconds || 0);
+      setShowSummary(true);
+    });
+    return unsubscribe;
   }, []);
 
   // Continuous autosave (throttled to ~20s) so even a mid-walk crash leaves the
