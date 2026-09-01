@@ -48,4 +48,12 @@ export function initErrorMonitoring() {
     sendDefaultPii: false,
   });
   initialized = true;
+
+  // TEMPORARY — verifying the setup actually reaches Sentry's dashboard on a
+  // real production-flagged build, since Simulator/dev testing can't (Sentry
+  // is deliberately `enabled: !__DEV__`). Remove this block in the very next
+  // OTA publish after confirming the event lands. 2026-09-01.
+  if (!__DEV__) {
+    Sentry.captureMessage('Verification event — Sentry setup confirmed working (2026-09-01)');
+  }
 }
