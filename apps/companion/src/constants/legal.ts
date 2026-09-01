@@ -4,10 +4,15 @@
  * web/terms.html). Keep in sync with those, not with legal/*.md, which are superseded stubs.
  */
 
-export const LEGAL_LAST_UPDATED = 'September 1, 2026';
+// Separate dates, not a shared constant — Privacy and Terms don't necessarily
+// change on the same day (2026-09-01: a privacy-only reconciliation once
+// used a shared LEGAL_LAST_UPDATED and it silently back-dated the Terms
+// copy's claimed update date to a day nothing in the Terms actually changed).
+export const PRIVACY_LAST_UPDATED = 'September 1, 2026';
+export const TERMS_LAST_UPDATED = 'June 11, 2026'; // matches web/terms.html — no substantive Terms change since
 
 export const PRIVACY_POLICY_TEXT = `PICK Privacy Policy
-Last updated: ${LEGAL_LAST_UPDATED}
+Last updated: ${PRIVACY_LAST_UPDATED}
 Operated by John Larkin Verbiest, known publicly as Jake Verbiest ("we", "us").
 
 WHAT WE COLLECT
@@ -38,7 +43,7 @@ CONTACT
 hello@pickglobal.org`;
 
 export const TERMS_OF_SERVICE_TEXT = `PICK Terms of Service
-Last updated: ${LEGAL_LAST_UPDATED}
+Last updated: ${TERMS_LAST_UPDATED}
 Operated by John Larkin Verbiest, known publicly as Jake Verbiest ("we", "us").
 
 WHAT PICK IS
