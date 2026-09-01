@@ -844,21 +844,46 @@ async function getCoverageForRingTiled(ring: [number, number][]): Promise<Render
   // Otherwise a total Overpass outage (every tile's fetch fails) looks
   // identical to "25 tiles sampled, genuinely nothing there," and the caller
   // renders that as a real, completed 0% result instead of an error.
-  let anyTileSucceeded = false;
-  let anyTileFailed = false;
+  // Per-tile counts (not just booleans) so a *partial* outage — most tiles
+  // fail, a handful succeed — can be told apart from "one or two blips,
+  // otherwise fine." A tile that succeeds with zero segments (a genuinely
+  // empty patch — water, a park, a real small neighborhood) still counts as
+  // a success here; only network/Overpass fetch errors count as failures.
+  // That keeps this ratio a clean signal of fetch reliability, uncontaminated
+  // by real geographic sparsity.
+  let succeededCount = 0;
+  let failedCount = 0;
   for (let i = 0; i < points.length; i += CONCURRENCY) {
     const batch = points.slice(i, i + CONCURRENCY);
     const results = await Promise.all(
       batch.map(([la, lo]) =>
         getCoverageOrThrow(la, lo)
-          .then((segs) => { anyTileSucceeded = true; return segs; })
-          .catch(() => { anyTileFailed = true; return [] as RenderSegment[]; })
+          .then((segs) => { succeededCount++; return segs; })
+          .catch(() => { failedCount++; return [] as RenderSegment[]; })
       )
     );
     for (const segs of results) for (const s of segs) if (!seen.has(s.id)) seen.set(s.id, s);
   }
-  if (!anyTileSucceeded && anyTileFailed) {
+  const attempted = succeededCount + failedCount;
+  if (succeededCount === 0 && failedCount > 0) {
     throw new Error('Street coverage unavailable: every tiled fetch failed (Overpass likely down)');
+  }
+  // A minority of tiles succeeding is not enough to trust as "the real total
+  // for this neighborhood" — a large neighborhood where most tiles failed
+  // can otherwise settle on a tiny, implausible count (e.g. "36 to go" for a
+  // neighborhood the size of Sunset Park, Brooklyn) that renders identically
+  // to a real, complete result. Below this success rate, treat it as
+  // unreliable and surface the existing retry error state instead of
+  // silently showing a partial count as the finished total. 50% is
+  // deliberately permissive of the ordinary case — one or two blips out of
+  // ~20-25 tiles (90%+ success) sail through untouched — and only trips when
+  // the fetch is degraded enough that the result can no longer be trusted.
+  const MIN_SUCCESS_RATE = 0.5;
+  if (attempted > 0 && succeededCount / attempted < MIN_SUCCESS_RATE) {
+    throw new Error(
+      `Street coverage unreliable: only ${succeededCount}/${attempted} tiled fetches succeeded ` +
+      `(Overpass likely degraded) — refusing to show a partial result as the real total`
+    );
   }
   const out: RenderSegment[] = [];
   for (const s of seen.values()) {
