@@ -96,6 +96,18 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
+    // --- Org stats: the incrementally-maintained "current district totals"
+    //     rollup that orgDashboard now reads instead of scanning `cleanups`
+    //     live on every pageview (2026-09-01 cost fix — see LEDGER_INBOX.md).
+    //     Written only by applyOrgDeltaFor (per-cleanup-write delta),
+    //     createSponsorTeam (initial backfill), and buildOrgSnapshots
+    //     (weekly self-heal) — all Admin SDK, bypasses these rules. Never
+    //     read directly by a client; the orgDashboard HTTPS endpoint (also
+    //     Admin SDK) is the only reader. ---
+    match /org_stats/{teamId} {
+      allow read, write: if false;
+    }
+
     // --- Team stats: the privacy-safe leaderboard aggregate. Written only by
     //     the onCleanupWrite / rebuildTeamStats Cloud Functions (the admin SDK
     //     bypasses these rules); any signed-in user may read. No raw cleanup
@@ -103,6 +115,18 @@ service cloud.firestore {
     match /team_stats/{teamId} {
       allow read: if signedIn();
       allow write: if false;
+    }
+
+    // --- Team stats counter subcollections: per-member and per-day refcounts
+    //     backing team_stats' incremental member_count/total_days fields
+    //     (2026-09-01 cost fix — see LEDGER_INBOX.md). Internal bookkeeping
+    //     only, never read or written by a client — same admin-only pattern
+    //     as team_stats itself. ---
+    match /team_stats/{teamId}/members/{uid} {
+      allow read, write: if false;
+    }
+    match /team_stats/{teamId}/days/{day} {
+      allow read, write: if false;
     }
 
     // --- Badges: readable by all signed-in (profiles), writable by owner ---

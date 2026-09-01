@@ -7,17 +7,38 @@
  * lets leaderboards work cross-user without exposing anyone's raw cleanups.
  *
  * Two entry points (the names referenced in firestore.rules):
- *   - onCleanupWrite:   recomputes a team's stats whenever one of its cleanups
- *                       is created, edited, or deleted.
- *   - rebuildTeamStats: callable backfill that recomputes every team from
- *                       scratch (run once after first deploy, or any time you
- *                       want to resync).
+ *   - onCleanupWrite:   applies an INCREMENTAL delta to a team's stats whenever
+ *                       one of its cleanups is created, edited, or deleted.
+ *   - rebuildTeamStats: callable backfill that recomputes every team FROM
+ *                       SCRATCH (full scan) — run once after first deploy, any
+ *                       time you want to resync, or if drift is ever suspected.
+ *                       This is the correctness backstop for the incremental
+ *                       path below.
  *
- * Aggregation strategy: on each change we re-query the affected team's cleanups
- * and recompute its totals. Recompute-from-source (rather than incremental
- * deltas) can't drift, and at Pick's scale the read cost is negligible.
+ * Aggregation strategy (changed 2026-09-01, see LEDGER_INBOX.md): this used to
+ * re-query and recompute the WHOLE team's cleanup history on every single
+ * write, in a scheduled hourly cron, AND on every dashboard pageview — three
+ * full collection scans whose cost scaled with CUMULATIVE cleanups ever
+ * logged, not with active usage. That's fine at low volume but doesn't stay
+ * "negligible" as history accumulates; a finance/cost review flagged it before
+ * web/org.html sponsor traffic made the dashboard-pageview case much worse.
+ *
+ * Now: onCleanupWrite applies a small delta (the one cleanup that changed) to
+ * a running rollup doc, inside a Firestore transaction so concurrent writes to
+ * the same team can't lose an update. Firestore doesn't support subtracting
+ * from a Set, so exact distinct-member and distinct-day counts are tracked via
+ * per-member / per-day counter subcollections (team_stats/{id}/members/{uid},
+ * team_stats/{id}/days/{day}) rather than trying to recompute Set cardinality
+ * from a diff. `rebuildTeamFromScratch` (full scan) remains as the manual
+ * resync path — the correctness backstop if delta application ever drifts
+ * (a failed write, a bug, whatever). See the function-level comments below for
+ * the exact idempotency/concurrency reasoning, and for what's still a full
+ * scan (scheduledPublicStats, the org_stats weekly self-heal) and why.
  *
  * Deploy:  firebase deploy --only functions      (from apps/companion)
+ *          firebase deploy --only firestore:indexes   (new composite index for
+ *                                                       the team_stats last_cleanup
+ *                                                       lookback query, see below)
  */
 
 const { onDocumentWritten, onDocumentCreated, onDocumentDeleted } = require('firebase-functions/v2/firestore');
@@ -65,14 +86,30 @@ function teamDocId(team) {
 }
 
 /**
- * Recompute and write team_stats for one team. Deletes the doc if the team has
- * no cleanups left.
+ * Recompute and write team_stats for one team FROM SCRATCH (full scan of that
+ * team's cleanups). This is the correctness backstop, not the hot path — used
+ * by the manual `rebuildTeamStats` resync callable, and by anything that
+ * suspects the incremental rollup (applyTeamDelta, below) has drifted. Also
+ * rebuilds the members/days counter subcollections so a resync is a true
+ * "erase and recompute" of everything the incremental path maintains, not
+ * just the top-level fields.
  */
-async function rebuildTeam(team) {
+async function rebuildTeamFromScratch(team) {
   if (team == null || NON_TEAM.has(String(team))) return;
 
   const docRef = db.collection('team_stats').doc(teamDocId(team));
   const snap = await db.collection('cleanups').where('team', '==', team).get();
+
+  // Clear existing counter subcollections first so stale per-member/per-day
+  // docs from cleanups that moved teams or were deleted don't linger.
+  const [oldMembers, oldDays] = await Promise.all([
+    docRef.collection('members').get(),
+    docRef.collection('days').get(),
+  ]);
+  const clearBatch = db.batch();
+  oldMembers.forEach((d) => clearBatch.delete(d.ref));
+  oldDays.forEach((d) => clearBatch.delete(d.ref));
+  await clearBatch.commit();
 
   if (snap.empty) {
     await docRef.delete().catch(() => {});
@@ -81,59 +118,205 @@ async function rebuildTeam(team) {
 
   let totalCleanups = 0;
   let totalPickups = 0;
-  let totalWeight = 0;
-  let totalBags = 0;
+  let totalWeightRaw = 0;
+  let totalBagsRaw = 0;
   let lastCleanup = 0;
-  const days = new Set();
-  const members = new Set();
+  const dayCounts = new Map(); // day -> count
+  const memberCounts = new Map(); // uid -> count
 
   snap.forEach((doc) => {
     const d = doc.data();
     totalCleanups += 1;
     totalPickups += num(d.items_count);
-    totalWeight += num(d.weight_lb);
-    totalBags += bagsFor(d);
-    if (d.userId) members.add(d.userId);
+    totalWeightRaw += num(d.weight_lb);
+    totalBagsRaw += bagsFor(d);
+    if (d.userId) memberCounts.set(d.userId, (memberCounts.get(d.userId) || 0) + 1);
     const ms = toMillis(d.timestamp);
     if (ms) {
       if (ms > lastCleanup) lastCleanup = ms;
-      days.add(new Date(ms).toISOString().slice(0, 10)); // UTC calendar day
+      const day = new Date(ms).toISOString().slice(0, 10); // UTC calendar day
+      dayCounts.set(day, (dayCounts.get(day) || 0) + 1);
     }
   });
 
-  await docRef.set({
+  const writeBatch = db.batch();
+  memberCounts.forEach((count, uid) => writeBatch.set(docRef.collection('members').doc(uid), { count }));
+  dayCounts.forEach((count, day) => writeBatch.set(docRef.collection('days').doc(day), { count }));
+  writeBatch.set(docRef, {
     team: String(team),
     total_cleanups: totalCleanups,
     total_pickups: totalPickups,
-    total_weight: round1(totalWeight),
-    total_bags: Math.round(totalBags),
-    total_days: days.size,
-    member_count: members.size,
+    total_weight_raw: totalWeightRaw,
+    total_weight: round1(totalWeightRaw),
+    total_bags_raw: totalBagsRaw,
+    total_bags: Math.round(totalBagsRaw),
+    total_days: dayCounts.size,
+    member_count: memberCounts.size,
     last_cleanup: lastCleanup,
     avg_pickups_per_session: totalCleanups ? round1(totalPickups / totalCleanups) : 0,
     updated_at: Date.now(),
+  });
+  await writeBatch.commit();
+}
+
+/**
+ * Apply ONE cleanup's contribution to a team's rollup, incrementally.
+ * `sign` is +1 (the cleanup now counts towards this team) or -1 (it no longer
+ * does — deleted, or moved to a different team). Runs inside a transaction so
+ * concurrent writes to the same team's rollup can't lose an update (Firestore
+ * transactions retry automatically on contention).
+ *
+ * Distinct member/day counts can't be maintained by incrementing a number
+ * alone (you can't "subtract from a Set" without knowing if anyone else still
+ * has an entry there) — so member_count and total_days are backed by counter
+ * subcollections (one tiny doc per member/day, refcounted): the top-level
+ * count only changes when a subcollection doc is newly created (0 -> 1) or
+ * fully removed (1 -> 0).
+ *
+ * last_cleanup (a max) is similarly awkward to decrement on removal — handled
+ * by only ever moving it forward on add, and on removal, re-deriving it with a
+ * single indexed query (`team == X order by timestamp desc limit 1`) ONLY in
+ * the rare case the removed cleanup WAS the current last_cleanup. That query
+ * reads the live `cleanups` collection directly, so it's always correct
+ * (self-corrects even mid-update, since Firestore triggers fire after the
+ * write that changed the doc has already committed) and cheap (one indexed
+ * doc read, not a scan) — needs the composite index in firestore.indexes.json.
+ *
+ * Idempotency note: this is NOT guarded against duplicate delta application
+ * from a retried trigger invocation. firebase-functions v2 onDocumentWritten
+ * does not retry by default (no `retry: true` here), so in normal operation
+ * this only runs once per write. If retries are ever enabled for this
+ * trigger, this function would need an idempotency ledger (e.g. a
+ * processed-event-id marker) to stay safe — deliberately not built now since
+ * it isn't needed under the current (non-retrying) trigger config. Flagging
+ * this explicitly rather than silently assuming it away.
+ */
+async function applyTeamDelta(team, cleanup, sign) {
+  if (team == null || NON_TEAM.has(String(team))) return;
+
+  const docRef = db.collection('team_stats').doc(teamDocId(team));
+  const pickups = num(cleanup.items_count);
+  const weight = num(cleanup.weight_lb);
+  const bags = bagsFor(cleanup);
+  const ms = toMillis(cleanup.timestamp);
+  const uid = cleanup.userId || null;
+  const day = ms ? new Date(ms).toISOString().slice(0, 10) : null;
+  const memberRef = uid ? docRef.collection('members').doc(uid) : null;
+  const dayRef = day ? docRef.collection('days').doc(day) : null;
+
+  await db.runTransaction(async (tx) => {
+    // --- ALL reads first (Firestore transactions require every get() before
+    //     any set()/delete()) — including the conditional last_cleanup
+    //     lookback query, which can only be decided once teamSnap is read,
+    //     but must still happen before any write below. ---
+    const teamSnap = await tx.get(docRef);
+    const memberSnap = memberRef ? await tx.get(memberRef) : null;
+    const daySnap = dayRef ? await tx.get(dayRef) : null;
+
+    const cur = teamSnap.exists ? teamSnap.data() : {};
+    const curLastCleanup = num(cur.last_cleanup);
+    const needsLookback = sign < 0 && ms > 0 && ms === curLastCleanup;
+    const nextMaxSnap = needsLookback
+      ? await tx.get(
+          db.collection('cleanups').where('team', '==', team).orderBy('timestamp', 'desc').limit(1)
+        )
+      : null;
+
+    // --- now compute + write ---
+    let totalCleanups = num(cur.total_cleanups);
+    let totalPickups = num(cur.total_pickups);
+    let totalWeightRaw = num(cur.total_weight_raw ?? cur.total_weight);
+    let totalBagsRaw = num(cur.total_bags_raw ?? cur.total_bags);
+    let memberCount = num(cur.member_count);
+    let totalDays = num(cur.total_days);
+    let lastCleanup = curLastCleanup;
+
+    totalCleanups += sign;
+    totalPickups += sign * pickups;
+    totalWeightRaw += sign * weight;
+    totalBagsRaw += sign * bags;
+
+    // Member refcount.
+    if (memberRef) {
+      const prevCount = memberSnap.exists ? num(memberSnap.data().count) : 0;
+      const nextCount = prevCount + sign;
+      if (nextCount <= 0) {
+        tx.delete(memberRef);
+        if (prevCount > 0) memberCount -= 1;
+      } else {
+        tx.set(memberRef, { count: nextCount });
+        if (prevCount <= 0) memberCount += 1;
+      }
+    }
+
+    // Day refcount.
+    if (dayRef) {
+      const prevCount = daySnap.exists ? num(daySnap.data().count) : 0;
+      const nextCount = prevCount + sign;
+      if (nextCount <= 0) {
+        tx.delete(dayRef);
+        if (prevCount > 0) totalDays -= 1;
+      } else {
+        tx.set(dayRef, { count: nextCount });
+        if (prevCount <= 0) totalDays += 1;
+      }
+    }
+
+    // last_cleanup: move forward freely; only re-derive on the rare case a
+    // removal takes away the current max (see doc comment above).
+    if (sign > 0 && ms > lastCleanup) {
+      lastCleanup = ms;
+    } else if (needsLookback) {
+      lastCleanup = nextMaxSnap.empty ? 0 : toMillis(nextMaxSnap.docs[0].data().timestamp);
+    }
+
+    if (totalCleanups <= 0) {
+      // Team has no cleanups left — mirror the old "delete if empty" behavior.
+      tx.delete(docRef);
+      return;
+    }
+
+    tx.set(docRef, {
+      team: String(team),
+      total_cleanups: totalCleanups,
+      total_pickups: totalPickups,
+      total_weight_raw: totalWeightRaw,
+      total_weight: round1(totalWeightRaw),
+      total_bags_raw: totalBagsRaw,
+      total_bags: Math.round(totalBagsRaw),
+      total_days: totalDays,
+      member_count: memberCount,
+      last_cleanup: lastCleanup,
+      avg_pickups_per_session: totalCleanups ? round1(totalPickups / totalCleanups) : 0,
+      updated_at: Date.now(),
+    });
   });
 }
 
 // ---------- triggers ----------
 
 /**
- * Fires on every create/update/delete of a cleanup. Rebuilds the team(s) the
- * cleanup belonged to (handles a cleanup moving between teams: both the old and
- * new team are recomputed).
+ * Fires on every create/update/delete of a cleanup. Applies an incremental
+ * delta to the team(s) the cleanup belongs to (a plain edit removes-then-
+ * re-adds within the same team; a team change removes from the old team and
+ * adds to the new one) — see applyTeamDelta for the full correctness story.
+ * Also updates org_stats for any sponsor/civic-org team whose district the
+ * cleanup enters or leaves (see applyOrgDelta near the org-dashboard code).
  */
 exports.onCleanupWrite = onDocumentWritten('cleanups/{cleanupId}', async (event) => {
   const before = event.data && event.data.before && event.data.before.data();
   const after = event.data && event.data.after && event.data.after.data();
 
-  const teams = new Set();
-  if (before && before.team) teams.add(before.team);
-  if (after && after.team) teams.add(after.team);
+  const ops = [];
+  if (before && before.team) ops.push(applyTeamDelta(before.team, before, -1));
+  if (after && after.team) ops.push(applyTeamDelta(after.team, after, +1));
+  ops.push(applyOrgDeltaForCleanup(before, after));
 
-  await Promise.all([...teams].map((t) => rebuildTeam(t)));
+  await Promise.all(ops);
 });
 
-/** Recompute team_stats for every team found across all cleanups. */
+/** Recompute team_stats for every team found across all cleanups (full scan —
+ *  see rebuildTeamFromScratch doc comment; this is the manual resync path). */
 async function rebuildAllTeams() {
   const snap = await db.collection('cleanups').get();
   const teams = new Set();
@@ -141,7 +324,7 @@ async function rebuildAllTeams() {
     const t = doc.data().team;
     if (t != null && !NON_TEAM.has(String(t))) teams.add(t);
   });
-  await Promise.all([...teams].map((t) => rebuildTeam(t)));
+  await Promise.all([...teams].map((t) => rebuildTeamFromScratch(t)));
   return { rebuilt: teams.size, teams: [...teams] };
 }
 
@@ -327,8 +510,24 @@ async function rebuildPublicStats() {
   return { cities: cities.size, cleanups: snap.size, updated_at: now };
 }
 
-/** Scheduled rebuild — hourly keeps the public dashboard reasonably fresh. */
-exports.scheduledPublicStats = onSchedule('every 60 minutes', async () => {
+/**
+ * Scheduled rebuild — full recompute-from-source, same as before. Deliberately
+ * NOT made incremental (unlike team_stats above): this aggregate needs a
+ * rolling "last 7 days" window, a sorted top-25 pickers board, and decaying
+ * hotspot/tile counts, none of which can be derived from a single cleanup's
+ * delta the way a running total can — entries need to fall back OUT of the
+ * week window and off the leaderboard as time passes, which a pure add/
+ * subtract delta doesn't express. Building that correctly (bucketed daily
+ * rollups, an expiry sweep, etc.) is real new infrastructure, not a quick
+ * change, so per the cost-review tradeoff call: keep this exact, and instead
+ * cut the frequency 6x (60min -> 4h) since a public dashboard doesn't need
+ * sub-hourly freshness. That alone cuts this function's contribution to the
+ * free-tier ceiling by 6x without any drift risk. If cost pressure returns,
+ * the next real lever is a `modified_at` cursor field on cleanups so this can
+ * read only what changed since the last run, rather than a further frequency
+ * cut.
+ */
+exports.scheduledPublicStats = onSchedule('every 4 hours', async () => {
   await rebuildPublicStats();
 });
 
@@ -549,6 +748,26 @@ exports.createSponsorTeam = onCall(async (request) => {
     tx.set(db.collection('team_token_index').doc(token), { teamId: id, created_at: now });
   });
 
+  // Seed org_stats with this district's ALL-TIME totals (a sponsor's district
+  // totals include cleanups logged before the sponsor team existed, per spec
+  // decision #2 — it's a pure geographic filter, not scoped to team age). This
+  // is the one place a full `cleanups` scan for this team is still paid for
+  // live, but it happens once, at team-creation time (a rare, human-driven
+  // event), not on every pageview or every write — after this, org_stats for
+  // this team stays current via the incremental applyOrgDeltaForCleanup path.
+  const cleanupsSnap = await db.collection('cleanups').get();
+  const stats = districtStatsFromSnapshot(area, cleanupsSnap);
+  await db.collection('org_stats').doc(id).set({
+    cleanups: stats.cleanups,
+    pickups: stats.pickups,
+    bags_raw: stats.bags,
+    bags: stats.bags,
+    seconds_raw: stats.hours * 3600,
+    hours: stats.hours,
+    last_cleanup: stats.last_cleanup,
+    updated_at: now,
+  });
+
   return { id, name, token };
 });
 
@@ -607,27 +826,141 @@ function districtStatsFromSnapshot(area, cleanupsSnap) {
   };
 }
 
-/** Every team that carries an `area` — i.e. every sponsor/civic-org team. */
+/** Every team that carries an `area` — i.e. every sponsor/civic-org team.
+ *  Cached briefly in memory: sponsor teams are created rarely (a manual,
+ *  human-driven flow via createSponsorTeam), so re-reading the `teams`
+ *  collection on every single cleanup write (this is called from
+ *  applyOrgDeltaForCleanup, which onCleanupWrite runs on every write) is
+ *  wasted cost on a warm instance. A short TTL bounds staleness: a
+ *  brand-new sponsor team might miss incremental credit for cleanups logged
+ *  in the ~60s after it's created on an already-warm instance, but
+ *  createSponsorTeam seeds org_stats with a full historical backfill at
+ *  creation time anyway (see below), and the weekly buildOrgSnapshots
+ *  self-heal (see below) closes any gap within a week regardless. */
+let _areaScopedTeamsCache = null;
+let _areaScopedTeamsCacheAt = 0;
+const AREA_SCOPED_TEAMS_TTL_MS = 60 * 1000;
+
 async function areaScopedTeams() {
+  const now = Date.now();
+  if (_areaScopedTeamsCache && now - _areaScopedTeamsCacheAt < AREA_SCOPED_TEAMS_TTL_MS) {
+    return _areaScopedTeamsCache;
+  }
   const snap = await db.collection('teams').get();
   const teams = [];
   snap.forEach((doc) => {
     const d = doc.data();
     if (d && d.area && typeof d.area === 'object') teams.push({ id: doc.id, ...d });
   });
+  _areaScopedTeamsCache = teams;
+  _areaScopedTeamsCacheAt = now;
   return teams;
 }
 
-/** Snapshot every sponsor team's district totals, timestamped, for the
- *  dashboard's time-series view. Periodic snapshots (not read-time
- *  aggregation) per the spec's resolved decision on §3.3. */
+/**
+ * Apply one cleanup's contribution to org_stats for whichever sponsor
+ * team(s)' district it falls inside — geographically scoped, so unlike
+ * team_stats this has nothing to do with which `team` field the cleanup
+ * carries (per spec decision #2: district totals are a pure geographic
+ * filter over ALL cleanups, regardless of team). `sign` is +1/-1 exactly
+ * like applyTeamDelta.
+ *
+ * Same last_cleanup caveat as applyTeamDelta EXCEPT the cheap re-derivation
+ * query isn't available here: there's no indexed "which cleanups are in this
+ * polygon" query (point-in-polygon isn't a Firestore-native filter — that's
+ * exactly why districtStatsFromSnapshot has to scan+filter in application
+ * code). So on removal, if the removed cleanup WAS the district's
+ * last_cleanup, this leaves it as-is rather than paying for a full scan on
+ * every such write — a deliberate, explicitly-flagged correctness
+ * compromise, bounded to at most 7 days of staleness on this ONE field
+ * (never the counts/totals, which stay exact via the transaction) because
+ * buildOrgSnapshots overwrites org_stats from a full recompute weekly.
+ */
+async function applyOrgDeltaFor(team, cleanup, sign) {
+  const docRef = db.collection('org_stats').doc(team.id);
+  const pickups = num(cleanup.items_count);
+  const bags = bagsFor(cleanup);
+  const seconds = num(cleanup.duration_seconds);
+  const ms = toMillis(cleanup.timestamp);
+
+  await db.runTransaction(async (tx) => {
+    const snap = await tx.get(docRef);
+    const cur = snap.exists ? snap.data() : {};
+    let cleanups = num(cur.cleanups) + sign;
+    const pickupsTotal = num(cur.pickups) + sign * pickups;
+    const bagsRaw = num(cur.bags_raw ?? cur.bags) + sign * bags;
+    const secondsRaw = num(cur.seconds_raw) + sign * seconds;
+    let lastCleanup = num(cur.last_cleanup);
+    if (sign > 0 && ms > lastCleanup) lastCleanup = ms;
+    // sign < 0 and ms === lastCleanup: deliberately left as-is, see doc comment.
+
+    if (cleanups <= 0) {
+      tx.delete(docRef);
+      return;
+    }
+    tx.set(docRef, {
+      cleanups,
+      pickups: pickupsTotal,
+      bags_raw: bagsRaw,
+      bags: Math.round(bagsRaw),
+      seconds_raw: secondsRaw,
+      hours: round1(secondsRaw / 3600),
+      last_cleanup: lastCleanup,
+      updated_at: Date.now(),
+    });
+  });
+}
+
+/** Called from onCleanupWrite for every cleanup write. Checks the (small,
+ *  cached) list of sponsor teams and applies a delta to each whose district
+ *  the before-state and/or after-state cleanup falls inside. */
+async function applyOrgDeltaForCleanup(before, after) {
+  const teams = await areaScopedTeams();
+  if (teams.length === 0) return;
+  const ops = [];
+  for (const team of teams) {
+    if (before && cleanupInArea(before, team.area)) ops.push(applyOrgDeltaFor(team, before, -1));
+    if (after && cleanupInArea(after, team.area)) ops.push(applyOrgDeltaFor(team, after, +1));
+  }
+  await Promise.all(ops);
+}
+
+/**
+ * Snapshot every sponsor team's district totals, timestamped, for the
+ * dashboard's time-series view. Periodic snapshots (not read-time
+ * aggregation) per the spec's resolved decision on §3.3.
+ *
+ * Deliberately still a full `cleanups` scan (unlike orgDashboard reads, which
+ * now serve from the org_stats rollup) — this doubles as the weekly
+ * correctness backstop for org_stats: applyOrgDeltaForCleanup's incremental
+ * path skips the (rare, expensive) last_cleanup re-derivation on removal, so
+ * this full recompute overwrites org_stats with ground truth every run,
+ * bounding any drift on that field to at most a week. Cost-wise this is fine
+ * to keep exact: it's one scan a week (not per write, not per pageview), and
+ * sponsor-team count — the other dimension it fans out over — is small and
+ * grows slowly (a human-driven signup flow), unlike cleanup or pageview
+ * volume.
+ */
 async function buildOrgSnapshots() {
   const [teams, cleanupsSnap] = await Promise.all([areaScopedTeams(), db.collection('cleanups').get()]);
   const now = Date.now();
   await Promise.all(
-    teams.map((team) => {
+    teams.map(async (team) => {
       const stats = districtStatsFromSnapshot(team.area, cleanupsSnap);
-      return db.collection('team_snapshots').doc(team.id).collection('history').add({ timestamp: now, ...stats });
+      await db.collection('team_snapshots').doc(team.id).collection('history').add({ timestamp: now, ...stats });
+      // Self-heal: overwrite org_stats with this week's ground truth so any
+      // drift accumulated by the incremental path never lasts more than a
+      // week (see applyOrgDeltaFor's last_cleanup comment).
+      await db.collection('org_stats').doc(team.id).set({
+        cleanups: stats.cleanups,
+        pickups: stats.pickups,
+        bags_raw: stats.bags,
+        bags: stats.bags,
+        seconds_raw: stats.hours * 3600,
+        hours: stats.hours,
+        last_cleanup: stats.last_cleanup,
+        updated_at: now,
+      });
     })
   );
   return { teams: teams.length, timestamp: now };
@@ -646,6 +979,17 @@ exports.scheduledOrgSnapshots = onSchedule('every monday 08:00', async () => {
  * token, not a shared secret like CITY_REQUESTS_DIGEST_KEY below — looked up
  * via the team_token_index reverse map, so an invalid or missing token
  * fails closed without ever touching a real team's data.
+ *
+ * Reads the org_stats rollup instead of scanning `cleanups` live — this
+ * endpoint is hit on every pageview (unauthenticated, so traffic isn't even
+ * bounded by signed-in user count), so a full collection scan per request was
+ * the worst offender the cost review flagged: cost scaling with all-time
+ * cleanup volume AND multiplying with sponsor-driven pageviews. org_stats is
+ * kept current by applyOrgDeltaForCleanup (incremental, per cleanup write)
+ * and self-healed weekly by buildOrgSnapshots (full recompute) — see those
+ * for the correctness story. Falls back to a live scan only if org_stats is
+ * somehow missing (shouldn't happen: createSponsorTeam seeds it at team
+ * creation) so a broken rollup degrades to "slow" rather than "wrong."
  */
 exports.orgDashboard = onRequest(async (req, res) => {
   const token = String(req.query.token || '').trim();
@@ -663,8 +1007,34 @@ exports.orgDashboard = onRequest(async (req, res) => {
     }
     const team = teamSnap.data();
 
-    const cleanupsSnap = await db.collection('cleanups').get();
-    const stats = districtStatsFromSnapshot(team.area, cleanupsSnap);
+    const rollupSnap = await db.collection('org_stats').doc(teamId).get();
+    let stats;
+    if (rollupSnap.exists) {
+      const r = rollupSnap.data();
+      stats = {
+        cleanups: num(r.cleanups),
+        pickups: num(r.pickups),
+        bags: num(r.bags),
+        hours: num(r.hours),
+        last_cleanup: num(r.last_cleanup),
+      };
+    } else {
+      // Cold-start fallback (rollup missing — shouldn't happen post-deploy,
+      // see doc comment above). Also repairs it for next time.
+      console.warn(`orgDashboard: org_stats/${teamId} missing, falling back to a live scan`);
+      const cleanupsSnap = await db.collection('cleanups').get();
+      stats = districtStatsFromSnapshot(team.area, cleanupsSnap);
+      await db.collection('org_stats').doc(teamId).set({
+        cleanups: stats.cleanups,
+        pickups: stats.pickups,
+        bags_raw: stats.bags,
+        bags: stats.bags,
+        seconds_raw: stats.hours * 3600,
+        hours: stats.hours,
+        last_cleanup: stats.last_cleanup,
+        updated_at: Date.now(),
+      });
+    }
 
     const historySnap = await db
       .collection('team_snapshots').doc(teamId).collection('history')
