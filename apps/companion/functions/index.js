@@ -1211,12 +1211,28 @@ const PRECACHE_BOUNDARIES_COLLECTION = 'precache_boundaries';
 // during this session specifically because they were NOT cached, and both
 // took the ~20-24s live-Overpass path. Real demonstrated interest in exactly
 // this list, not a guess.
+// Broadened again same day (2026-09-03), Jake's explicit direction: rather
+// than keep growing this one neighborhood at a time as he happens to test
+// somewhere new (which is what just happened with Williamsburg and Prospect
+// Park — both live-tested this session, both genuine misses, confirmed via
+// direct Firestore lookups before adding them here), seed the contiguous
+// north/central "brownstone Brooklyn" area he's actually walking in: Park
+// Slope, Prospect Heights, and Clinton Hill fill the geographic gaps between
+// the points already seeded (Fort Greene, Kensington, Downtown Brooklyn) so
+// the combined footprint reads as one covered area rather than a scatter of
+// disconnected points. Approximate public-knowledge centroids, same caveat
+// as above — no coordinate data exists to refine these further.
 const STREET_SEED_POINTS = [
   { label: 'Fort Greene, Brooklyn', lat: 40.6896, lon: -73.9745 },
   { label: 'Sunset Park (north), Brooklyn', lat: 40.658, lon: -74.005 },
   { label: 'Sunset Park (south), Brooklyn', lat: 40.639, lon: -74.014 },
   { label: 'Kensington, Brooklyn', lat: 40.6415, lon: -73.9743 },
   { label: 'Downtown Brooklyn', lat: 40.6926, lon: -73.9857 },
+  { label: 'Williamsburg, Brooklyn', lat: 40.7081, lon: -73.9571 },
+  { label: 'Prospect Park, Brooklyn', lat: 40.6602, lon: -73.969 },
+  { label: 'Park Slope, Brooklyn', lat: 40.671, lon: -73.9814 },
+  { label: 'Prospect Heights, Brooklyn', lat: 40.6772, lon: -73.9675 },
+  { label: 'Clinton Hill, Brooklyn', lat: 40.6896, lon: -73.9646 },
 ];
 // 3x3 block of 0.01° gridKey cells (~1km) per seed point — a small, bounded
 // per-neighborhood footprint (tens of tiles total across the whole seed
