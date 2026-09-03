@@ -1000,6 +1000,12 @@ exports.scheduledOrgSnapshots = onSchedule('every monday 08:00', async () => {
  * creation) so a broken rollup degrades to "slow" rather than "wrong."
  */
 exports.orgDashboard = onRequest(async (req, res) => {
+  // Public, token-gated JSON hit via client-side fetch() from pickglobal.org —
+  // the only onRequest export in this file actually called from a browser, so
+  // it's the only one that needs CORS. Missing this header silently broke
+  // every real dashboard load (blocked before the response body was ever
+  // read), caught 2026-09-03 testing the first real sponsor team end-to-end.
+  res.set('Access-Control-Allow-Origin', '*');
   const token = String(req.query.token || '').trim();
   if (!token) { res.status(403).json({ ok: false, error: 'missing token' }); return; }
 
