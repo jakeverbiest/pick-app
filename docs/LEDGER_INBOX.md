@@ -36,3 +36,35 @@ the ledger's actual structure, not paste it verbatim.
   until the functions deploy, the precache collections are empty and every read is a guaranteed
   (fail-open) cache miss, so no behavior change ships until that deploy happens. Still an open
   item for the ledger until Jake deploys.
+
+- 2026-09-03 (follow-up, same day) — Overpass pre-cache above is now **fully deployed and
+  confirmed live**, superseding the "committed, not deployed" note two entries up. Jake gave
+  explicit go-ahead for both pending steps; `firebase deploy --only functions,firestore:rules`
+  ran clean (new functions `scheduledOverpassPrecacheRefresh`/`runOverpassPrecacheRefresh`
+  created, rules released), and `eas update` published the client cache-first check to
+  `production` (runtime 1.2.2, update group `02b5d94c`).
+  **A real bug was caught before it could bite testers**: the first manual trigger of
+  `runOverpassPrecacheRefresh` failed every street-tile write with Firestore's "Property array
+  contains an invalid nested entity" — `StreetSegment.coords`/`OsmBoundaryFeature.ring` are both
+  `[number,number][]`, which Firestore rejects once nested inside the segments/features array.
+  This is the same nested-array constraint `src/services/challenges.ts`'s `flattenRing` already
+  works around elsewhere in this codebase; the precache code hadn't applied that pattern. Fixed
+  by flattening to `[lat,lon,lat,lon,...]` on write and rebuilding pairs on client read
+  (`b4b3f17`), redeployed the two functions, re-triggered the refresh, and confirmed a real
+  precache doc now exists with correctly-shaped data via a direct Firestore REST read.
+  **Second follow-up bug caught in the same pass**: the client-side unflatten fix was written
+  after the first OTA publish had already shipped, so that published bundle didn't know how to
+  read the now-correctly-flattened docs. Re-ran the OTA pre-flight + publish immediately
+  (typecheck clean, all runnable suites passed) — update group `d0306cec`, published before any
+  real user could hit a populated cache with the stale client logic.
+  **Current state**: Fort Greene's seed tiles have at least one confirmed-good precache doc.
+  Sunset Park's tiles and the full seed set weren't individually re-verified doc-by-doc this
+  pass (the manual trigger's HTTP response times out at 60s — the function's own configured
+  `timeoutSeconds` — well before the ~9-tile sequential Overpass fetch finishes, though the
+  writes complete server-side regardless of the client timeout, confirmed by the successful
+  Firestore read after the first "timeout"). Worth a follow-up pass to confirm the full seed
+  list populated, and to watch the first scheduled weekly run (rather than only the manual
+  trigger) succeeds end to end. No boundary-cache docs expected yet — `city_requests` is still
+  empty, so nothing has crossed the promotion threshold, which is expected per the spec, not a
+  bug. Field-testable now: a real device cold-loading Fort Greene street geometry should hit the
+  precache fast-path instead of a live Overpass call.

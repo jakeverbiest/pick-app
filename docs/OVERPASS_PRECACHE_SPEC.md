@@ -1,10 +1,16 @@
 # Overpass server-side pre-cache — spec + build record
 
-**Status (2026-09-03):** all six open questions in §5 decided by Jake and implemented by the
-`code` subagent. Code is written and **committed**, but **not deployed** — the Cloud Functions
-backend (`firebase deploy --only functions,firestore:rules`) and the client OTA publish
-(`eas update`) are both separate steps pending Jake's explicit go-ahead. See the "Built /
-pending" note at the end of §5 for exactly what shipped and what didn't.
+**Status (2026-09-03, updated same day):** all six open questions in §5 decided by Jake and
+implemented by the `code` subagent, then **deployed and confirmed live** on Jake's explicit
+go-ahead. `firebase deploy --only functions,firestore:rules` and `eas update` (production,
+runtime 1.2.2) both ran clean. A real bug surfaced on the first live refresh — Firestore
+rejected the nested `[number,number][]` shape of `coords`/`ring` once embedded in the cached
+array — fixed by flattening to `[lat,lon,lat,lon,...]` on write and unflattening on client read
+(commit `b4b3f17`), redeployed, and **confirmed via a direct Firestore REST read** that a real
+precache doc now exists with correctly-shaped data. The OTA was re-published a second time after
+that fix so no client ever ran the stale unflatten-less code against real flattened data. Full
+account in `LEDGER_INBOX.md`'s two 2026-09-03 entries. See the "Built / pending" note at the end
+of §5 for what shipped.
 
 **Origin:** `LAUNCH_LEDGER.md`'s "Overpass mirror reliance — structural risk" launch gate
 (opened 2026-09-01), scoped 2026-09-02 in `LEDGER_INBOX.md` (three options evaluated: paid
@@ -266,15 +272,31 @@ separate, still-open item.
 - This file (§5, above) and `~/Desktop/pick-app/docs/LEDGER_INBOX.md` (dated entry for the next
   reconciliation).
 
-**Explicitly NOT done — pending Jake's go-ahead:**
-- `firebase deploy --only functions,firestore:rules` — the scheduled refresh function and the
-  new Firestore rules are written and committed but not live. Until this runs,
-  `precache_streets`/`precache_boundaries` stay empty and every client read is a guaranteed
-  cache miss — i.e., **the app's behavior is unchanged** until this deploy happens (the whole
-  point of the fail-open design).
-- `eas update` (OTA publish) — the client-side cache-first checks are committed but not shipped
-  to any tester's device. Also low-risk to ship even before the backend deploy, since a miss
-  (which is 100% of reads until the backend deploys) falls through to exactly today's behavior.
+**Deployed (2026-09-03, same day, Jake's explicit go-ahead):**
+- `firebase deploy --only functions,firestore:rules` — ran clean. `scheduledOverpassPrecacheRefresh`
+  and `runOverpassPrecacheRefresh` created, rules released, every other function updated
+  without incident.
+- `eas update` — published twice. The first publish (update group `02b5d94c`) shipped before a
+  bug was found (see below); a second publish (update group `d0306cec`) shipped the fix before
+  any real device could hit a populated cache with the broken client logic.
+
+**Bug found and fixed post-deploy (2026-09-03):** the first manual trigger of
+`runOverpassPrecacheRefresh` failed every street-tile write — Firestore rejected
+`StreetSegment.coords`/`OsmBoundaryFeature.ring` (`[number,number][]`) once nested inside the
+segments/features array ("Property array contains an invalid nested entity"). This is the exact
+nested-array constraint `src/services/challenges.ts`'s `flattenRing`/`unflattenRing` already
+works around elsewhere in this codebase — the precache write path hadn't applied it. Fixed
+(commit `b4b3f17`) by flattening `coords`/`ring` to `[lat,lon,lat,lon,...]` in
+`refreshStreetTile`/`refreshBoundaryCell` and rebuilding pairs in the two client read functions.
+Redeployed the two functions, re-triggered the refresh, and **confirmed via a direct Firestore
+REST read** (`GET .../documents/precache_streets/40.67_-73.99`) that a real doc now exists with
+correctly-shaped flattened data. Full account in `LEDGER_INBOX.md`.
+
+**Not yet independently re-verified:** the manual trigger's HTTP response times out at 60s (the
+function's own `timeoutSeconds`) before the full ~9-tile sequential refresh finishes, though
+writes complete server-side regardless (confirmed by the successful read after the "timeout").
+Only one Fort Greene tile was spot-checked this pass — worth confirming the rest of the seed set
+populated, and watching the first real scheduled (not manual) weekly run succeed end to end.
 
 **Judgment calls made without a separate ask:**
 - Exact seed-point coordinates and the 3x3-tile radius per point (§1) — sized to keep the seed
