@@ -1205,10 +1205,18 @@ const PRECACHE_BOUNDARIES_COLLECTION = 'precache_boundaries';
 // centroids (not pulled from the CSVs, which don't have coordinates at
 // all); Sunset Park is long and narrow along the Brooklyn waterfront, so it
 // gets two seed points (north/south) instead of one.
+// Kensington and Downtown Brooklyn added 2026-09-03: not from field-data (same
+// ceiling as the original three — docs/fielddata/*.csv still has no lat/lon),
+// but from firsthand evidence stronger than prose — Jake tested both live
+// during this session specifically because they were NOT cached, and both
+// took the ~20-24s live-Overpass path. Real demonstrated interest in exactly
+// this list, not a guess.
 const STREET_SEED_POINTS = [
   { label: 'Fort Greene, Brooklyn', lat: 40.6896, lon: -73.9745 },
   { label: 'Sunset Park (north), Brooklyn', lat: 40.658, lon: -74.005 },
   { label: 'Sunset Park (south), Brooklyn', lat: 40.639, lon: -74.014 },
+  { label: 'Kensington, Brooklyn', lat: 40.6415, lon: -73.9743 },
+  { label: 'Downtown Brooklyn', lat: 40.6926, lon: -73.9857 },
 ];
 // 3x3 block of 0.01° gridKey cells (~1km) per seed point — a small, bounded
 // per-neighborhood footprint (tens of tiles total across the whole seed
@@ -1370,10 +1378,25 @@ async function refreshBoundaryCell(key, lat, lon, cityLabel) {
   return features.length;
 }
 
-/** Refresh every tile/cell on the current seed+demand-grown list. A failure
- *  on ONE tile doesn't abort the run — the other tens of tiles still
- *  refresh, and a stale-but-present doc is exactly what the client's 14-day
- *  staleness ceiling (2x this weekly cadence) is there to tolerate. */
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// Cooldown before the retry pass — confirmed live 2026-09-03 that a tile
+// failing mid-run (429/aborted mirror request under real load) often
+// succeeds on a later attempt once the burst of prior calls has had a
+// moment to clear; a fixed pause is simpler than parsing Overpass's
+// Retry-After and good enough at this call volume (tens of tiles/week).
+const RETRY_COOLDOWN_MS = 15000;
+
+/** Refresh every tile/cell on the current seed+demand-grown list, then retry
+ *  once whatever failed the first pass after a cooldown (decision from the
+ *  2026-09-03 live run: a single-attempt pass left real seed tiles — including
+ *  Fort Greene's own center cell — permanently missing until the next
+ *  Monday or a manual re-trigger; a same-run retry turned a 21/28 first pass
+ *  into 24/28 automatically). A failure on one tile never aborts the run —
+ *  the rest still refresh, and a stale-but-present doc is exactly what the
+ *  client's 14-day staleness ceiling (2x this weekly cadence) tolerates. */
 async function refreshOverpassPrecache() {
   const streetTiles = new Map();
   for (const seed of STREET_SEED_POINTS) {
@@ -1388,43 +1411,91 @@ async function refreshOverpassPrecache() {
   const boundaryCells = await promotedBoundaryCellsFromCityRequests();
 
   const results = {
-    streets: { attempted: 0, ok: 0, failed: 0 },
-    boundaries: { attempted: 0, ok: 0, failed: 0 },
+    streets: { attempted: 0, ok: 0, failed: 0, failedKeys: [] },
+    boundaries: { attempted: 0, ok: 0, failed: 0, failedKeys: [] },
   };
 
-  for (const [key, point] of streetTiles) {
-    results.streets.attempted++;
-    try {
-      await refreshStreetTile(key, point.lat, point.lon);
-      results.streets.ok++;
-    } catch (e) {
-      results.streets.failed++;
-      console.warn(`precache: street tile ${key} failed: ${(e && e.message) || e}`);
+  async function runStreetPass(entries) {
+    const failed = [];
+    for (const [key, point] of entries) {
+      try {
+        await refreshStreetTile(key, point.lat, point.lon);
+        results.streets.ok++;
+      } catch (e) {
+        failed.push([key, point]);
+        console.warn(`precache: street tile ${key} failed: ${(e && e.message) || e}`);
+      }
     }
+    return failed;
   }
 
-  for (const [key, cell] of boundaryCells) {
-    results.boundaries.attempted++;
-    try {
-      await refreshBoundaryCell(key, cell.lat, cell.lon, cell.city);
-      results.boundaries.ok++;
-    } catch (e) {
-      results.boundaries.failed++;
-      console.warn(`precache: boundary cell ${key} failed: ${(e && e.message) || e}`);
+  async function runBoundaryPass(entries) {
+    const failed = [];
+    for (const [key, cell] of entries) {
+      try {
+        await refreshBoundaryCell(key, cell.lat, cell.lon, cell.city);
+        results.boundaries.ok++;
+      } catch (e) {
+        failed.push([key, cell]);
+        console.warn(`precache: boundary cell ${key} failed: ${(e && e.message) || e}`);
+      }
     }
+    return failed;
   }
+
+  results.streets.attempted = streetTiles.size;
+  results.boundaries.attempted = boundaryCells.size;
+
+  let failedStreets = await runStreetPass([...streetTiles]);
+  let failedBoundaries = await runBoundaryPass([...boundaryCells]);
+
+  if (failedStreets.length || failedBoundaries.length) {
+    console.log(
+      `precache: ${failedStreets.length} street tile(s) and ${failedBoundaries.length} ` +
+      `boundary cell(s) failed the first pass — retrying after ${RETRY_COOLDOWN_MS}ms cooldown`
+    );
+    await sleep(RETRY_COOLDOWN_MS);
+    failedStreets = await runStreetPass(failedStreets);
+    failedBoundaries = await runBoundaryPass(failedBoundaries);
+  }
+
+  results.streets.failed = failedStreets.length;
+  results.streets.failedKeys = failedStreets.map(([key]) => key);
+  results.boundaries.failed = failedBoundaries.length;
+  results.boundaries.failedKeys = failedBoundaries.map(([key]) => key);
 
   console.log(
     `precache: refreshed ${results.streets.ok}/${results.streets.attempted} street tiles, ` +
     `${results.boundaries.ok}/${results.boundaries.attempted} boundary cells`
   );
-  return { generatedAt: Date.now(), ...results };
+
+  const summary = { generatedAt: Date.now(), ...results };
+  // Status doc so coverage/health is visible without a manual Firestore
+  // query — a single small doc, not a growing collection, so this adds no
+  // meaningful read/write cost of its own.
+  await db.collection('precache_status').doc('latest').set(summary);
+  return summary;
 }
 
+// Both precache functions need a much longer timeout than the 60s default —
+// confirmed live 2026-09-03: the default cut the manual trigger off after
+// only 3 of the seed list's ~9+ street tiles wrote successfully (Sunset
+// Park's tiles never ran), because refreshOverpassPrecache() does two full
+// collection scans (cleanups, city_requests) up front, then fetches each
+// tile sequentially against Overpass mirrors that are still measurably
+// unstable (429s and aborted requests observed in the same run — see
+// LEDGER_INBOX.md). 540s is gen2's practical max without bumping CPU/memory
+// off the default tier, and comfortably covers the "tens of tiles" scale
+// this job is scoped to even with retries.
+const PRECACHE_TIMEOUT_SECONDS = 540;
+
 /** Weekly — matches the city_requests digest cadence (decision 2, spec §5). */
-exports.scheduledOverpassPrecacheRefresh = onSchedule('every monday 07:00', async () => {
-  await refreshOverpassPrecache();
-});
+exports.scheduledOverpassPrecacheRefresh = onSchedule(
+  { schedule: 'every monday 07:00', timeoutSeconds: PRECACHE_TIMEOUT_SECONDS },
+  async () => {
+    await refreshOverpassPrecache();
+  }
+);
 
 // Secret gate for the manual/external trigger, same convention as
 // CITY_REQUESTS_DIGEST_KEY/ADOPTION_TRIGGER_KEY above (a hardcoded shared
@@ -1434,14 +1505,17 @@ exports.scheduledOverpassPrecacheRefresh = onSchedule('every monday 07:00', asyn
 // without waiting for the next Monday.
 const PRECACHE_REFRESH_KEY = 'pick-precache-9k3p';
 
-exports.runOverpassPrecacheRefresh = onRequest(async (req, res) => {
-  if (req.query.key !== PRECACHE_REFRESH_KEY) { res.status(403).send('forbidden'); return; }
-  try {
-    res.json({ ok: true, ...(await refreshOverpassPrecache()) });
-  } catch (e) {
-    res.status(500).json({ ok: false, error: String((e && e.message) || e) });
+exports.runOverpassPrecacheRefresh = onRequest(
+  { timeoutSeconds: PRECACHE_TIMEOUT_SECONDS },
+  async (req, res) => {
+    if (req.query.key !== PRECACHE_REFRESH_KEY) { res.status(403).send('forbidden'); return; }
+    try {
+      res.json({ ok: true, ...(await refreshOverpassPrecache()) });
+    } catch (e) {
+      res.status(500).json({ ok: false, error: String((e && e.message) || e) });
+    }
   }
-});
+);
 
 // ==========================================================================
 // ADOPT A STREET — daily check: if an adopted spot has had no cleanup within

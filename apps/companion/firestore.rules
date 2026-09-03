@@ -291,6 +291,15 @@ service cloud.firestore {
       allow read: if true;
       allow write: if false;
     }
+    // Single status doc (precache_status/latest) written by the refresh
+    // job — coverage/health visibility without needing service auth to
+    // check it. No client code reads this; public for convenience only,
+    // same reasoning as the two collections above (public OSM-derived
+    // geometry/counts, nothing sensitive).
+    match /precache_status/{doc} {
+      allow read: if true;
+      allow write: if false;
+    }
 
     // --- Adopt-a-street: each picker's adopted spots, private to the owner.
     //     The scheduled Cloud Function (admin SDK) reads them all and stamps
