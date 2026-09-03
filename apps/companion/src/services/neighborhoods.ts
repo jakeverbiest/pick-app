@@ -1,6 +1,20 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as FileSystem from 'expo-file-system/legacy';
-import { tileId, pointInPolygon, runOverpass } from './streetSegments';
+import { getFirestore, doc, getDoc } from 'firebase/firestore';
+import { tileId, pointInPolygon } from './streetSegments';
+import { app } from './firebaseConfig';
+// OSM administrative-boundary fetch/stitch pipeline lives under
+// functions/shared/ now, not here — a single implementation the Cloud
+// Functions precache-refresh job also imports, instead of a second copy
+// that could drift from this one. See
+// functions/shared/overpassClient.js's doc comment for why that directory
+// (not src/) and how this cross-boundary import resolves in Metro.
+import { ringBBox, osmCellKey, fetchOsmBoundariesInBox, OSM_CELL_DEG } from '../../functions/shared/boundaryGeometry';
+
+const db = getFirestore(app);
+const PRECACHE_BOUNDARIES_COLLECTION = 'precache_boundaries';
+// 2x the weekly refresh cadence (OVERPASS_PRECACHE_SPEC.md §5 decision 4).
+const PRECACHE_STALENESS_MS = 14 * 24 * 60 * 60 * 1000;
 
 /**
  * Neighborhood NAME resolver (scalable, no per-city data).
@@ -378,9 +392,11 @@ export async function neighborhoodBoundary(
 // bug to keep chasing. Safe to widen further later since nothing gets
 // rejected based on level itself anymore (see MIN_SUBDIVISION_SHAPES
 // below) — the size cap is what keeps further widening safe.
-const OSM_ADMIN_LEVELS = '^(6|7|8|9)$';
+// OSM_ADMIN_LEVELS, OSM_CELL_DEG, and the fetch/stitch pipeline below are
+// imported from functions/shared/boundaryGeometry (see top of file) — the
+// exact same functions the precache refresh job uses, so a cache doc it
+// writes is byte-for-byte what a live client fetch would have produced.
 const OSM_BCACHE_PREFIX = FileSystem.documentDirectory + 'osmhoods-';
-const OSM_CELL_DEG = 0.2; // ~20km — one Overpass call + cache file covers a whole metro area
 // Informational only, not a rejection gate — see OsmCellResult.hasFineSubdivision.
 // Earlier versions of this file used these to REJECT single-shape ("this is
 // just the city") results and fall back to a generic circle. That was wrong:
@@ -397,116 +413,12 @@ interface OsmBoundaryFeature {
   ring: [number, number][];
 }
 
-function samePoint(a: [number, number], b: [number, number]): boolean {
-  return Math.abs(a[0] - b[0]) < 1e-6 && Math.abs(a[1] - b[1]) < 1e-6;
-}
-
-/** Stitch a relation's "outer" member ways (each an ordered lat/lon polyline)
- *  into closed ring(s) by matching shared endpoints — administrative
- *  boundaries are usually assembled from several ways, not one. Returns the
- *  largest closed ring, same "biggest piece wins" rule as geojsonToRing. */
-function stitchOuterWays(ways: [number, number][][]): [number, number][] | null {
-  const remaining = ways.map((w) => w.slice());
-  const rings: [number, number][][] = [];
-  while (remaining.length) {
-    let chain = remaining.shift()!;
-    let grew = true;
-    while (grew && (chain.length < 2 || !samePoint(chain[0], chain[chain.length - 1]))) {
-      grew = false;
-      for (let i = 0; i < remaining.length; i++) {
-        const w = remaining[i];
-        const end = chain[chain.length - 1];
-        const start = chain[0];
-        if (samePoint(w[0], end)) { chain = chain.concat(w.slice(1)); remaining.splice(i, 1); grew = true; break; }
-        if (samePoint(w[w.length - 1], end)) { chain = chain.concat(w.slice(0, -1).reverse()); remaining.splice(i, 1); grew = true; break; }
-        if (samePoint(w[w.length - 1], start)) { chain = w.slice(0, -1).concat(chain); remaining.splice(i, 1); grew = true; break; }
-        if (samePoint(w[0], start)) { chain = w.slice(1).reverse().concat(chain); remaining.splice(i, 1); grew = true; break; }
-      }
-    }
-    rings.push(chain);
-  }
-  let best: [number, number][] | null = null;
-  for (const r of rings) if (!best || r.length > best.length) best = r;
-  return best && best.length >= 4 ? best : null;
-}
-
-/** Straight-line bbox diagonal in km — cheap (equirectangular, not true
- *  geodesic) but plenty accurate at city scale. Used to filter out
- *  county/region-scale relations that get swept in when widening the
- *  admin_level range (see MAX_SHAPE_DIAGONAL_KM). */
-function ringDiagonalKm(ring: [number, number][]): number {
-  const [minLat, minLon, maxLat, maxLon] = ringBBox(ring);
-  const latKm = (maxLat - minLat) * 111.32;
-  const midLat = (minLat + maxLat) / 2;
-  const lonKm = (maxLon - minLon) * 111.32 * Math.cos((midLat * Math.PI) / 180);
-  return Math.sqrt(latKm * latKm + lonKm * lonKm);
-}
-
-// Calibrated live 2026-08-13 against real Paris-area data spanning levels
-// 6-9: the three surrounding French départements (county-scale parents, not
-// city districts) measured 28-32km bbox diagonal; Paris itself (a large but
-// legitimate single city) measured 20.4km, with every real commune/borough
-// below that. 25km sits cleanly in the gap — excludes the county-scale
-// outliers admin_level widening pulls in, keeps genuinely large single
-// cities. Not a universal law (some real metros ARE bigger than this
-// worldwide), just evidence-based, not a guess.
-const MAX_SHAPE_DIAGONAL_KM = 25;
-
-/** Named administrative boundaries inside a bbox, straight from OSM — reuses
- *  runOverpass's mirror-failover/timeout rather than a new HTTP client.
- *  `out geom` on a relation query embeds each member way's geometry inline
- *  (no separate recursion query needed), so one round trip is enough. */
-async function fetchOsmBoundariesInBox(
-  minLat: number, minLon: number, maxLat: number, maxLon: number
-): Promise<OsmBoundaryFeature[]> {
-  const query = `
-    [out:json][timeout:25];
-    relation["boundary"="administrative"]["admin_level"~"${OSM_ADMIN_LEVELS}"](${minLat},${minLon},${maxLat},${maxLon});
-    out geom;
-  `;
-  const json = await runOverpass(query);
-  const elements = json?.elements ?? [];
-  const out: OsmBoundaryFeature[] = [];
-  const seenNames = new Set<string>();
-  let skippedNoName = 0;
-  let skippedNoRing = 0;
-  let skippedTooBig = 0;
-  let skippedDuplicate = 0;
-  for (const rel of elements) {
-    if (rel.type !== 'relation') continue;
-    const name = rel.tags?.name;
-    if (!name) { skippedNoName++; continue; }
-    const outerWays: [number, number][][] = (rel.members || [])
-      .filter((m: any) => m.type === 'way' && Array.isArray(m.geometry) && (m.role === 'outer' || !m.role))
-      .map((m: any) => m.geometry.map((g: any) => [g.lat, g.lon] as [number, number]));
-    if (!outerWays.length) { skippedNoRing++; continue; }
-    const ring = stitchOuterWays(outerWays);
-    if (!ring) { skippedNoRing++; continue; }
-    if (ringDiagonalKm(ring) > MAX_SHAPE_DIAGONAL_KM) { skippedTooBig++; continue; }
-    // The same place is sometimes tagged as multiple relations at different
-    // admin_levels (confirmed live: "Paris" appeared at levels 6, 7, AND 8,
-    // all ~20km, near-identical shapes) — widening the level range surfaces
-    // these as apparent duplicates. Keep only the first one seen per name.
-    const key = String(name);
-    if (seenNames.has(key)) { skippedDuplicate++; continue; }
-    seenNames.add(key);
-    out.push({ id: rel.id, name: key, ring });
-  }
-  console.log(
-    `🗺️ OSM boundary query: ${elements.length} elements → ${out.length} usable boundaries` +
-    (skippedNoName || skippedNoRing || skippedTooBig || skippedDuplicate
-      ? ` (skipped ${skippedNoName} unnamed, ${skippedNoRing} unstitchable, ${skippedTooBig} too-big, ${skippedDuplicate} duplicate)`
-      : '')
-  );
-  return out;
-}
+// samePoint/stitchOuterWays/ringDiagonalKm/MAX_SHAPE_DIAGONAL_KM/
+// fetchOsmBoundariesInBox/osmCellKey are all imported from
+// functions/shared/boundaryGeometry (see top of file).
 
 const osmHoodsCache: Record<string, OsmCellResult> = {};
 const osmHoodsInflight: Record<string, Promise<OsmCellResult> | null> = {};
-
-function osmCellKey(lat: number, lon: number): string {
-  return `${Math.floor(lat / OSM_CELL_DEG)}_${Math.floor(lon / OSM_CELL_DEG)}`;
-}
 
 interface OsmCellResult {
   features: OsmBoundaryFeature[];
@@ -529,6 +441,28 @@ function bboxOverlapFraction(
   const ixLon = Math.max(0, Math.min(d, maxLon) - Math.max(b, minLon));
   const refArea = Math.max(1e-9, (maxLat - minLat) * (maxLon - minLon));
   return (ixLat * ixLon) / refArea;
+}
+
+/** Read the precache doc for an OSM_CELL_DEG cell. Returns null (a cache
+ *  miss) on: no doc, an empty/missing features array, a doc past the
+ *  staleness ceiling, or any Firestore read error — the last case fails
+ *  OPEN by design (OVERPASS_PRECACHE_SPEC.md §3): a permission problem or a
+ *  transient Firestore outage must never surface as a distinct error, it
+ *  just falls through to exactly today's live-Overpass path. */
+async function getPrecachedBoundaryFeatures(cell: string): Promise<OsmBoundaryFeature[] | null> {
+  try {
+    const snap = await getDoc(doc(db, PRECACHE_BOUNDARIES_COLLECTION, cell));
+    if (!snap.exists()) return null;
+    const data = snap.data() as any;
+    const refreshedAt = typeof data?.refreshedAt === 'number' ? data.refreshedAt : 0;
+    if (Date.now() - refreshedAt > PRECACHE_STALENESS_MS) return null;
+    const features = data?.features;
+    if (!Array.isArray(features) || features.length === 0) return null;
+    return features as OsmBoundaryFeature[];
+  } catch (e) {
+    console.warn(`🗺️ Precache read failed for boundary cell — falling through to live Overpass: ${(e as Error)?.message ?? e}`);
+    return null;
+  }
 }
 
 /** Boundaries for the metro-scale cell containing a point — fetched once per
@@ -571,7 +505,15 @@ async function loadOsmHoodsForCell(lat: number, lon: number): Promise<OsmCellRes
       }
     } catch {} // no file yet — first visit to this cell
     try {
-      const features = await fetchOsmBoundariesInBox(cellLat0, cellLon0, cellMaxLat, cellMaxLon);
+      // Server-side precache check (OVERPASS_PRECACHE_SPEC.md) — a pure
+      // fast-path in front of the live Overpass call. A miss (no doc, stale,
+      // or a Firestore read error) falls through to fetchOsmBoundariesInBox
+      // unchanged, same as if the precache didn't exist.
+      const precached = await getPrecachedBoundaryFeatures(cell);
+      const features = precached ?? (await fetchOsmBoundariesInBox(cellLat0, cellLon0, cellMaxLat, cellMaxLon));
+      if (precached) {
+        console.log(`🗺️ Served OSM cell ${cell} from precache: ${features.length} boundaries`);
+      }
       // Only cache on a SUCCESSFUL query, even if it legitimately found
       // nothing — a thrown error (network, timeout, bad mirror) falls
       // through without caching, so the next visit to this cell retries
@@ -579,9 +521,11 @@ async function loadOsmHoodsForCell(lat: number, lon: number): Promise<OsmCellRes
       const result = classify(features);
       osmHoodsCache[cell] = result;
       if (features.length) FileSystem.writeAsStringAsync(file, JSON.stringify(features)).catch(() => {});
-      console.log(
-        `🗺️ OSM cell ${cell}: ${features.length} boundaries, hasFineSubdivision=${result.hasFineSubdivision}`
-      );
+      if (!precached) {
+        console.log(
+          `🗺️ OSM cell ${cell}: ${features.length} boundaries, hasFineSubdivision=${result.hasFineSubdivision}`
+        );
+      }
       return result;
     } catch (e) {
       console.warn(`🗺️ OSM boundary fetch failed for cell ${cell} — will retry next visit: ${(e as Error)?.message ?? e}`);
@@ -653,16 +597,9 @@ export interface HoodShape {
   ring: [number, number][]; // [lat,lon], simplified for drawing/hit-testing
 }
 
-function ringBBox(ring: [number, number][]): [number, number, number, number] {
-  let minLat = 90, minLon = 180, maxLat = -90, maxLon = -180;
-  for (const [la, lo] of ring) {
-    if (la < minLat) minLat = la;
-    if (la > maxLat) maxLat = la;
-    if (lo < minLon) minLon = lo;
-    if (lo > maxLon) maxLon = lo;
-  }
-  return [minLat, minLon, maxLat, maxLon];
-}
+// ringBBox is imported from functions/shared/boundaryGeometry (see top of
+// file) — used above by bboxOverlapFraction and below by getHoodsInBounds/
+// getOsmHoodsInBounds's viewport-intersection checks.
 
 /** Thin a dense ring so we can ship/hit-test many polygons cheaply. */
 function decimate(ring: [number, number][], max = 160): [number, number][] {

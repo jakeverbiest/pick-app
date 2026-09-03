@@ -275,6 +275,23 @@ service cloud.firestore {
       }
     }
 
+    // --- Overpass pre-cache (OVERPASS_PRECACHE_SPEC.md): server-fetched
+    //     street geometry / admin boundary polygons for popular areas.
+    //     PUBLIC read (no auth) — the client's live-Overpass fallback this
+    //     replaces isn't auth-gated either, and the contents are the same
+    //     public-domain OSM geometry the app already fetches directly.
+    //     Written ONLY by the scheduledOverpassPrecacheRefresh /
+    //     runOverpassPrecacheRefresh Cloud Functions (Admin SDK, bypasses
+    //     these rules). ---
+    match /precache_streets/{gridKey} {
+      allow read: if true;
+      allow write: if false;
+    }
+    match /precache_boundaries/{cellKey} {
+      allow read: if true;
+      allow write: if false;
+    }
+
     // --- Adopt-a-street: each picker's adopted spots, private to the owner.
     //     The scheduled Cloud Function (admin SDK) reads them all and stamps
     //     lastNotified; clients only touch their own. ---

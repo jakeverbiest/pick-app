@@ -22,6 +22,7 @@ import {
   getFirestore,
   collection,
   doc,
+  getDoc,
   getDocs,
   query,
   where,
@@ -29,18 +30,28 @@ import {
 } from 'firebase/firestore';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { app } from './firebaseConfig';
+// Overpass hedge/mirror-failover client and the street-geometry fetch/chop
+// pipeline both live under functions/shared/ now, not here — a single
+// implementation the Cloud Functions precache-refresh job can also import,
+// instead of a second copy that could drift from this one. See
+// functions/shared/overpassClient.js's doc comment for why that directory
+// (not src/) and how this cross-boundary import resolves in Metro.
+import { runOverpass } from '../../functions/shared/overpassClient';
+import {
+  distM,
+  offsetCoords,
+  gridKey,
+  chopWaysIntoSegments,
+  fetchStreetGeometry,
+  MIN_SIDEWALK_SEGMENTS,
+  FETCH_RADIUS_M,
+  ROAD_SIDE_OFFSET_M,
+} from '../../functions/shared/streetGeometry';
 
 const db = getFirestore(app);
 
-// Multiple public Overpass mirrors — the primary is frequently slow/rate-limited,
-// which is the main reason a fresh neighborhood "fails to load on start". We try
-// them in order so a single flaky endpoint doesn't leave the map empty.
-const OVERPASS_ENDPOINTS = [
-  'https://overpass-api.de/api/interpreter',
-  'https://overpass.kumi.systems/api/interpreter',
-  'https://maps.mail.ru/osm/tools/overpass/api/interpreter',
-];
-const SEGMENT_LENGTH_M = 50;
+export { runOverpass, offsetCoords, gridKey, ROAD_SIDE_OFFSET_M };
+
 // Sidewalk-level snapping: tight enough not to credit the OPPOSITE side of the
 // street (~18m away in NYC), loose enough for Balanced GPS (~10m error). Field
 // test showed 15m was crediting both sides on narrower streets — tightened to
@@ -57,7 +68,8 @@ export const SNAP_DISTANCE_M = 11;
 // pass, not a drive-by. Tunable — watch for over-crediting on the next walk.
 export const COVERAGE_THRESHOLD = 0.6;
 const SEGMENT_SAMPLE_STEP_M = 5; // sample the segment every ~5m to measure coverage
-const FETCH_RADIUS_M = 600;
+// FETCH_RADIUS_M is imported from functions/shared/streetGeometry (used by
+// fetchParks below, which stayed here — only geometry fetch/chop moved).
 // When we can't get real per-side sidewalks and fall back to a road CENTERLINE,
 // we split that centerline into two virtual sidewalks offset this far to each
 // side. This MUST be ≥ SNAP_DISTANCE_M: at offset 8 (the original value) a
@@ -70,11 +82,17 @@ const FETCH_RADIUS_M = 600;
 // half-ranges [offset-11, offset+11] and [-offset-11, -offset+11] disjoint
 // for any point, so no route position can ever satisfy the 11m snap against
 // both virtual sidewalks at once.
-export const ROAD_SIDE_OFFSET_M = 15;
+// ROAD_SIDE_OFFSET_M is imported (see top of file) — re-exported for
+// geometryCoverage.test.ts, which asserted this invariant directly.
 const GEOMETRY_CACHE_PREFIX = '@pick_sidewalks_v3_'; // v3: split centerline fallbacks per-side
-const MIN_SIDEWALK_SEGMENTS = 30; // below this, area has unmapped sidewalks → fall back to roads
+// MIN_SIDEWALK_SEGMENTS is imported — used below by fetchStreetGeometryForRing.
 const GEOMETRY_CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 const STATUS_COLLECTION = 'segment_status';
+const PRECACHE_STREETS_COLLECTION = 'precache_streets';
+// 2x the weekly refresh cadence (OVERPASS_PRECACHE_SPEC.md §5 decision 4) —
+// a doc past this age is treated as a miss, not shown as if fresh, so one
+// missed scheduled run doesn't quietly serve week(s)-stale geometry.
+const PRECACHE_STALENESS_MS = 14 * 24 * 60 * 60 * 1000;
 
 // Parks are open polygons, not sidewalk lines — you don't walk every inch, so a
 // park counts as cleaned when the route spent real time inside it.
@@ -122,13 +140,8 @@ export interface RenderPark {
 }
 
 // ---------- geometry helpers ----------
-
-/** Meters between two lat/lon points (equirectangular — fine at city scale). */
-function distM(lat1: number, lon1: number, lat2: number, lon2: number): number {
-  const x = (lon2 - lon1) * 111320 * Math.cos(((lat1 + lat2) / 2) * (Math.PI / 180));
-  const y = (lat2 - lat1) * 110540;
-  return Math.sqrt(x * x + y * y);
-}
+// distM/offsetCoords/gridKey are imported from functions/shared/streetGeometry
+// (see top of file) — the exact same functions the precache refresh job uses.
 
 /** Min distance in meters from point p to polyline segment a-b. */
 function pointToEdgeM(
@@ -149,25 +162,8 @@ function pointToEdgeM(
   return distM(py, px / cosLat, cy, cx / cosLat);
 }
 
-/** Shift a whole segment sideways by `meters` (perpendicular to its overall
- *  heading). Positive = left of the a→b direction, negative = right. Used to
- *  turn a road centerline into two virtual per-side sidewalks. Exported for
- *  unit tests (see the both-sides-credited regression test). */
-export function offsetCoords(coords: [number, number][], meters: number): [number, number][] {
-  if (coords.length < 2) return coords;
-  const a = coords[0];
-  const b = coords[coords.length - 1];
-  const cosLat = Math.cos((a[0] * Math.PI) / 180);
-  const dxE = (b[1] - a[1]) * 111320 * cosLat; // east component (m)
-  const dyN = (b[0] - a[0]) * 110540; // north component (m)
-  const len = Math.hypot(dxE, dyN) || 1;
-  // left normal = rotate heading +90°: (-north, east)
-  const nE = -dyN / len;
-  const nN = dxE / len;
-  const dLon = (nE * meters) / (111320 * cosLat);
-  const dLat = (nN * meters) / 110540;
-  return coords.map(([la, lo]) => [la + dLat, lo + dLon] as [number, number]);
-}
+// offsetCoords (used above by pointToEdgeM's callers indirectly, and
+// re-exported below) is imported from functions/shared/streetGeometry.
 
 /** Resample a polyline into points spaced ~stepM apart, for coverage sampling. */
 function sampleAlong(coords: [number, number][], stepM: number): [number, number][] {
@@ -272,9 +268,9 @@ export function assignRoutePointsToNearestSegment<T extends { coords: [number, n
   return buckets;
 }
 
-export function gridKey(lat: number, lon: number): string {
-  return `${(Math.floor(lat * 100) / 100).toFixed(2)}_${(Math.floor(lon * 100) / 100).toFixed(2)}`;
-}
+// gridKey is imported from functions/shared/streetGeometry (see top of
+// file) and re-exported — the precache refresh job's doc ids and this
+// client's cache keys MUST agree on the same formula.
 
 /** The 3x3 block of grid cells around a point (covers query radius). */
 function gridNeighborhood(lat: number, lon: number): string[] {
@@ -348,183 +344,35 @@ export function getTileStats(lat: number, lon: number, coverage: RenderSegment[]
 }
 
 // ---------- OSM fetch + segmentation ----------
-
-// Per-endpoint timeout: without it, one hung mirror stalls the whole load
-// indefinitely (fetch has no default timeout in RN) — the next mirror is
-// usually fine, so fail over fast instead.
-const OVERPASS_TIMEOUT_MS = 15000;
-
-// Field data 2026-08-31 (Fort Greene, first-open cold cache): a genuinely
-// heavy poly query over a dense NYC neighborhood took "almost a minute,
-// then well over a minute" to resolve — not a hang, just slow. Root cause:
-// pure SEQUENTIAL mirror fallback (try mirror 1 for up to 15s, abort, try
-// mirror 2 for up to 15s, abort, try mirror 3) means a mirror that is alive
-// but genuinely needs >15s to compute a heavy query gets aborted and its
-// work thrown away, then the NEXT mirror — often similarly loaded — pays
-// the same 15s before also getting cut off. Worst case for ONE query
-// (sidewalk or road) was 3 mirrors x 15s = 45s; getCoverageForRing's ring
-// query fires two such queries in parallel (Promise.all in
-// fetchStreetGeometryForRing), so that alone can eat ~45s before falling
-// back to the OLD tiled ~25-point implementation, which is sequential in
-// batches of 5 and was already flagged in its own comment as taking
-// "minutes" on a cold cache — exactly what was observed.
 //
-// Fix: HEDGE instead of pure sequential fallback. Start with one mirror;
-// if it hasn't answered within HEDGE_DELAY_MS, start the NEXT mirror
-// concurrently (without killing the first) rather than aborting and
-// restarting from zero. First response wins; the rest are aborted. This
-// keeps the common case (healthy preferred mirror) at exactly one request
-// — no extra mirror load — while capping worst case at roughly
-// (mirrors-1) x HEDGE_DELAY_MS + OVERPASS_TIMEOUT_MS instead of
-// mirrors x OVERPASS_TIMEOUT_MS: ~27s instead of ~45s for one query with
-// today's 3 mirrors, and a slow-but-alive mirror that was about to
-// succeed is never thrown away mid-flight by an unrelated timer.
-const HEDGE_DELAY_MS = 6000;
+// runOverpass, fetchStreetGeometry, and chopWaysIntoSegments now live in
+// functions/shared/streetGeometry.js (imported at the top of this file) —
+// the exact fetch/hedge/chop pipeline the Cloud Functions precache refresh
+// job reuses so a cache hit is byte-for-byte what a live client fetch would
+// have produced. See that file for the full field-data reasoning behind the
+// hedge timing and the sidewalk→road fallback threshold.
 
-// The primary mirror is dead/rate-limited more often than not, and every fresh
-// query was burning a full timeout on it before failing over. Remember which
-// mirror answered last and lead with it for the rest of the session.
-let preferredOverpass: string | null = null;
-
-/** Exported so other services (e.g. neighborhoods.ts's OSM boundary
- *  fallback) can reuse the same mirror-failover/timeout machinery instead
- *  of standing up a second Overpass client. */
-export function runOverpass(query: string): Promise<any> {
-  const endpoints = preferredOverpass
-    ? [preferredOverpass, ...OVERPASS_ENDPOINTS.filter((u) => u !== preferredOverpass)]
-    : OVERPASS_ENDPOINTS;
-
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    let pending = endpoints.length;
-    let lastErr: unknown;
-    const hedgeTimers: ReturnType<typeof setTimeout>[] = [];
-    const controllers: AbortController[] = [];
-
-    const attempt = (url: string) => {
-      const ctrl = new AbortController();
-      controllers.push(ctrl);
-      const timer = setTimeout(() => ctrl.abort(), OVERPASS_TIMEOUT_MS);
-      fetch(url, {
-        method: 'POST',
-        // Overpass mirrors explicitly rate-limit harder without a real
-        // User-Agent (confirmed live 2026-08-13 — a 429 response's own body
-        // said so directly). Same convention already used for the Nominatim
-        // reverse-geocode calls in neighborhoods.ts's osmNeighborhood().
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
-          'User-Agent': 'PICK-cleanup-app/1.0 (street + boundary geometry)',
-        },
-        body: `data=${encodeURIComponent(query)}`,
-        signal: ctrl.signal,
-      })
-        .then(async (res) => {
-          if (!res.ok) throw new Error(`Overpass error ${res.status}`);
-          const json = await res.json();
-          if (!settled) {
-            settled = true;
-            preferredOverpass = url;
-            hedgeTimers.forEach(clearTimeout);
-            controllers.forEach((c) => c.abort());
-            resolve(json);
-          }
-        })
-        .catch((e) => {
-          lastErr = e;
-          console.warn(`🛣️ Overpass endpoint failed (${url}): ${(e as Error)?.message ?? e}`);
-          pending--;
-          if (!settled && pending === 0) {
-            settled = true;
-            hedgeTimers.forEach(clearTimeout);
-            reject(lastErr ?? new Error('All Overpass endpoints failed'));
-          }
-        })
-        .finally(() => clearTimeout(timer));
-    };
-
-    attempt(endpoints[0]);
-    for (let i = 1; i < endpoints.length; i++) {
-      hedgeTimers.push(setTimeout(() => attempt(endpoints[i]), HEDGE_DELAY_MS * i));
-    }
-  });
-}
-
-async function fetchStreetGeometry(lat: number, lon: number): Promise<StreetSegment[]> {
-  // SIDEWALKS, not road centerlines — pickers walk the sidewalk, and NYC OSM
-  // maps each side of the street as its own footway=sidewalk way.
-  const sidewalkQuery = `
-    [out:json][timeout:25];
-    (
-      way["highway"="footway"]["footway"="sidewalk"](around:${FETCH_RADIUS_M},${lat},${lon});
-      way["highway"~"^(pedestrian|path|living_street)$"](around:${FETCH_RADIUS_M},${lat},${lon});
-    );
-    out geom;
-  `;
-  const roadQuery = `
-    [out:json][timeout:25];
-    way["highway"~"^(residential|primary|secondary|tertiary|unclassified|living_street|pedestrian|footway|path)$"]
-      (around:${FETCH_RADIUS_M},${lat},${lon});
-    out geom;
-  `;
-  // Fired together, not sequentially — the road query is only USED as a
-  // fallback when sidewalks are sparse, but it doesn't depend on the
-  // sidewalk result, so waiting for one before starting the other just
-  // doubles latency in areas without mapped sidewalks (common outside big
-  // cities). Costs one extra Overpass call on the common case where
-  // sidewalks alone are enough, but that trade is worth halving worst-case
-  // load time.
-  const [sidewalkJson, roadJson] = await Promise.all([
-    runOverpass(sidewalkQuery),
-    runOverpass(roadQuery),
-  ]);
-  let segments = chopWaysIntoSegments(sidewalkJson);
-
-  if (segments.length < MIN_SIDEWALK_SEGMENTS) {
-    // Area without mapped sidewalks (common outside big cities) — fall back
-    // to road centerlines so coverage still works
-    console.log(`🛣️ Only ${segments.length} sidewalk segments mapped here — falling back to road centerlines`);
-    segments = chopWaysIntoSegments(roadJson, true); // centerlines → split into per-side sidewalks
+/** Read the precache doc for the gridKey tile a point falls in. Returns null
+ *  (a cache miss) on: no doc, an empty/missing segments array, a doc past
+ *  the staleness ceiling, or any Firestore read error — the last case fails
+ *  OPEN by design (OVERPASS_PRECACHE_SPEC.md §3): a permission problem or a
+ *  transient Firestore outage must never surface as a distinct error to the
+ *  user, it just falls through to exactly today's live-Overpass path. */
+async function getPrecachedStreetSegments(lat: number, lon: number): Promise<StreetSegment[] | null> {
+  try {
+    const key = gridKey(lat, lon);
+    const snap = await getDoc(doc(db, PRECACHE_STREETS_COLLECTION, key));
+    if (!snap.exists()) return null;
+    const data = snap.data() as any;
+    const refreshedAt = typeof data?.refreshedAt === 'number' ? data.refreshedAt : 0;
+    if (Date.now() - refreshedAt > PRECACHE_STALENESS_MS) return null;
+    const segments = data?.segments;
+    if (!Array.isArray(segments) || segments.length === 0) return null;
+    return segments as StreetSegment[];
+  } catch (e) {
+    console.warn(`🛣️ Precache read failed for street tile — falling through to live Overpass: ${(e as Error)?.message ?? e}`);
+    return null;
   }
-  return segments;
-}
-
-// `split` = this geometry is road CENTERLINES (the no-sidewalk fallback), so
-// emit two offset per-side segments (…_L / …_R) instead of one centerline. In
-// true-sidewalk data each side is already its own way, so we leave it alone.
-function chopWaysIntoSegments(json: any, split = false): StreetSegment[] {
-  const segments: StreetSegment[] = [];
-  const emit = (baseId: string, segCoords: [number, number][]) => {
-    if (segCoords.length < 2) return;
-    const mid = segCoords[Math.floor(segCoords.length / 2)];
-    const grid = gridKey(mid[0], mid[1]);
-    if (split) {
-      segments.push({ id: `${baseId}_L`, coords: offsetCoords(segCoords, ROAD_SIDE_OFFSET_M), grid, side: 'L' });
-      segments.push({ id: `${baseId}_R`, coords: offsetCoords(segCoords, -ROAD_SIDE_OFFSET_M), grid, side: 'R' });
-    } else {
-      segments.push({ id: baseId, coords: segCoords, grid });
-    }
-  };
-  for (const way of json.elements || []) {
-    if (way.type !== 'way' || !way.geometry || way.geometry.length < 2) continue;
-    const pts: [number, number][] = way.geometry.map((g: any) => [g.lat, g.lon]);
-
-    // Chop the way into ~SEGMENT_LENGTH_M pieces with stable indices
-    let segCoords: [number, number][] = [pts[0]];
-    let segLen = 0;
-    let segIndex = 0;
-    for (let i = 1; i < pts.length; i++) {
-      segCoords.push(pts[i]);
-      segLen += distM(pts[i - 1][0], pts[i - 1][1], pts[i][0], pts[i][1]);
-      const isLast = i === pts.length - 1;
-      if (segLen >= SEGMENT_LENGTH_M || isLast) {
-        emit(`${way.id}_${segIndex}`, segCoords);
-        segIndex++;
-        segCoords = [pts[i]];
-        segLen = 0;
-      }
-    }
-  }
-  return segments;
 }
 
 // In-flight request coalescing: callers that land within the same grid cell
@@ -552,8 +400,18 @@ export async function getSegmentsAround(lat: number, lon: number): Promise<Stree
 
   if (segmentsInflight[cacheKey]) return segmentsInflight[cacheKey]!;
   segmentsInflight[cacheKey] = (async () => {
-    const segments = await fetchStreetGeometry(lat, lon);
-    console.log(`🛣️ Fetched ${segments.length} street segments from OSM`);
+    // Server-side precache check (OVERPASS_PRECACHE_SPEC.md) — a pure
+    // fast-path in front of the live Overpass call. Any miss (no doc, stale,
+    // or a read error) falls through to fetchStreetGeometry unchanged, so
+    // behavior with an empty/unreachable precache is identical to before
+    // this existed.
+    let segments = await getPrecachedStreetSegments(lat, lon);
+    if (segments) {
+      console.log(`🛣️ Served ${segments.length} street segments from precache`);
+    } else {
+      segments = await fetchStreetGeometry(lat, lon);
+      console.log(`🛣️ Fetched ${segments.length} street segments from OSM`);
+    }
     try {
       await AsyncStorage.setItem(cacheKey, JSON.stringify({ fetchedAt: Date.now(), segments }));
     } catch {}

@@ -48,6 +48,14 @@ const { initializeApp } = require('firebase-admin/app');
 const { getFirestore, FieldValue } = require('firebase-admin/firestore');
 const { getAuth } = require('firebase-admin/auth');
 const { getStorage } = require('firebase-admin/storage');
+// Overpass hedge/mirror-failover client + the exact street/boundary fetch
+// pipelines the app's own map screen uses client-side — shared so the
+// scheduled precache refresh below (OVERPASS_PRECACHE_SPEC.md) writes the
+// identical shape a live client fetch would have produced, not a second,
+// possibly-drifting implementation. See functions/shared/overpassClient.js's
+// doc comment for why these live under functions/ instead of src/.
+const { fetchStreetGeometry, gridKey } = require('./shared/streetGeometry');
+const { fetchOsmBoundariesInBox, osmCellKey, OSM_CELL_DEG } = require('./shared/boundaryGeometry');
 
 initializeApp();
 const db = getFirestore();
@@ -1163,6 +1171,253 @@ exports.runCityRequestsDigest = onRequest(async (req, res) => {
   if (req.query.key !== CITY_REQUESTS_DIGEST_KEY) { res.status(403).send('forbidden'); return; }
   try {
     res.json({ ok: true, ...(await buildCityRequestsDigest()) });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: String((e && e.message) || e) });
+  }
+});
+
+// ==========================================================================
+// OVERPASS PRE-CACHE — server-side pre-fetch of street geometry + admin
+// boundary polygons for popular areas, so a user's first map load there
+// reads a Firestore doc instead of making a live Overpass call. See
+// docs/OVERPASS_PRECACHE_SPEC.md — this implements the six decisions
+// recorded in its §5 (seed list, weekly cadence, the street-geometry growth
+// signal, the 14-day staleness ceiling, the shared fetch/hedge modules, and
+// building now rather than waiting on unrelated blockers).
+//
+// Client-side cache-first reads live in src/services/streetSegments.ts
+// (precache_streets/{gridKey}) and src/services/neighborhoods.ts
+// (precache_boundaries/{cellKey}) — both fail OPEN to today's exact live-
+// Overpass path on any miss or read error (spec §3). This job only ever
+// WRITES those two collections; it never reads them.
+// ==========================================================================
+
+const PRECACHE_STREETS_COLLECTION = 'precache_streets';
+const PRECACHE_BOUNDARIES_COLLECTION = 'precache_boundaries';
+
+// Decision 1 (spec §5): Fort Greene + Sunset Park, Brooklyn — the only
+// neighborhoods with any tester field-data on record (LEDGER_INBOX.md,
+// 2026-09-02). Checked before picking this: docs/fielddata/*.csv have NO
+// lat/lon columns (motion-classifier logs only — peak/dur/gyro/conf/
+// accepted/counted/reason/speed), so they can't further confirm or refine
+// this list. That's the ceiling of available evidence, not a gap left
+// uninvestigated. These are approximate public-knowledge neighborhood
+// centroids (not pulled from the CSVs, which don't have coordinates at
+// all); Sunset Park is long and narrow along the Brooklyn waterfront, so it
+// gets two seed points (north/south) instead of one.
+const STREET_SEED_POINTS = [
+  { label: 'Fort Greene, Brooklyn', lat: 40.6896, lon: -73.9745 },
+  { label: 'Sunset Park (north), Brooklyn', lat: 40.658, lon: -74.005 },
+  { label: 'Sunset Park (south), Brooklyn', lat: 40.639, lon: -74.014 },
+];
+// 3x3 block of 0.01° gridKey cells (~1km) per seed point — a small, bounded
+// per-neighborhood footprint (tens of tiles total across the whole seed
+// list), not an attempt to cover a neighborhood's full extent in one shot.
+const SEED_GRID_RADIUS_CELLS = 1;
+
+/** The (2*radius+1)^2 block of 0.01° gridKey cells around a point — mirrors
+ *  the shape of src/services/streetSegments.ts's private gridNeighborhood()
+ *  (radius 1 there), generalized to a configurable radius. Returns a Map so
+ *  a repeated key (seed points whose blocks overlap) only fetches once. */
+function gridKeysAround(lat, lon, radiusCells) {
+  const cells = new Map(); // gridKey -> representative {lat, lon} to fetch from
+  for (let dLat = -radiusCells; dLat <= radiusCells; dLat++) {
+    for (let dLon = -radiusCells; dLon <= radiusCells; dLon++) {
+      const cLat = lat + dLat * 0.01;
+      const cLon = lon + dLon * 0.01;
+      cells.set(gridKey(cLat, cLon), { lat: cLat, lon: cLon });
+    }
+  }
+  return cells;
+}
+
+// Decision 3 (spec §5), hybrid (a)+(c): grow the street-geometry list past
+// the static seed once real `cleanups` documents cluster in a tile — real
+// usage, no new instrumentation, no unconditional whole-city caching
+// (option (b) was explicitly rejected: that reintroduces the unbounded-scan
+// cost pattern the 2026-09-01 Firestore fix eliminated). Threshold: 3+
+// cleanups in the same gridKey tile within a rolling 30-day window.
+const CLEANUP_PROMOTION_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
+const CLEANUP_PROMOTION_THRESHOLD = 3;
+
+/** Tiles to add to the street-geometry cache because real cleanups
+ *  clustered there recently. Reads the same `cleanups` collection
+ *  scheduledPublicStats already scans on its own schedule — a second
+ *  consumer of an existing weekly-cadence read, not a new standing cost. */
+async function promotedStreetTilesFromCleanups() {
+  const since = Date.now() - CLEANUP_PROMOTION_WINDOW_MS;
+  const snap = await db.collection('cleanups').get();
+  const counts = new Map(); // gridKey -> { count, lat, lon }
+  snap.forEach((doc) => {
+    const d = doc.data();
+    const ms = toMillis(d.timestamp);
+    if (ms < since) return;
+    const lat = d.location_lat;
+    const lon = d.location_lon;
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+    const key = gridKey(lat, lon);
+    const c = counts.get(key) || { count: 0, lat, lon };
+    c.count++;
+    counts.set(key, c);
+  });
+  const promoted = new Map();
+  for (const [key, c] of counts) {
+    if (c.count >= CLEANUP_PROMOTION_THRESHOLD) promoted.set(key, { lat: c.lat, lon: c.lon });
+  }
+  return promoted;
+}
+
+// Boundary-cache growth: reuse city_requests, don't invent a second signal
+// (spec §1 — additive to the requestCity/city_requests feature that shipped
+// 2026-08-31). Any city crossing this request-count threshold gets its
+// boundary cell added to the refresh list. `count` on a city_requests doc is
+// already a unique-requester count (requestCity's transaction dedups via
+// the requesters/{uid} marker subcollection before incrementing), so this
+// reads directly off it rather than re-deriving uniqueness. Threshold
+// mirrors the spec's own "3-5 unique requesters, tunable" language. Note:
+// city_requests is empty at the time this shipped (spec §1) — this makes
+// the mechanism real, not a guarantee there's anything to promote yet.
+const CITY_REQUEST_PROMOTION_THRESHOLD = 3;
+
+/** Forward-geocode a city name to a representative point via Nominatim —
+ *  same client convention (User-Agent, endpoint) already used by the app's
+ *  own osmBoundaryByName()/osmNeighborhood() in neighborhoods.ts. */
+async function geocodeCityCentroid(city) {
+  try {
+    const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(city)}&format=jsonv2&limit=1`;
+    const res = await fetch(url, {
+      headers: { 'User-Agent': 'PICK-cleanup-app/1.0 (precache refresh)', Accept: 'application/json' },
+    });
+    if (!res.ok) return null;
+    const arr = await res.json();
+    const hit = arr && arr[0];
+    if (!hit) return null;
+    const lat = parseFloat(hit.lat);
+    const lon = parseFloat(hit.lon);
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+    return { lat, lon };
+  } catch (e) {
+    console.warn(`precache: geocode failed for city "${city}": ${(e && e.message) || e}`);
+    return null;
+  }
+}
+
+/** Boundary cells to precache because real users asked for that city via
+ *  the existing "prioritize my city" flow. One Nominatim lookup per
+ *  qualifying city (a handful at most, weekly) — well within usage-policy
+ *  norms for a job at this cadence. */
+async function promotedBoundaryCellsFromCityRequests() {
+  const snap = await db.collection('city_requests').get();
+  const cells = new Map(); // cellKey -> { lat, lon, city }
+  for (const doc of snap.docs) {
+    const d = doc.data() || {};
+    if (num(d.count) < CITY_REQUEST_PROMOTION_THRESHOLD) continue;
+    const city = d.city || doc.id;
+    const point = await geocodeCityCentroid(city);
+    if (!point) continue;
+    const key = osmCellKey(point.lat, point.lon);
+    cells.set(key, { lat: point.lat, lon: point.lon, city });
+  }
+  return cells;
+}
+
+/** One street-geometry tile: fetch + chop via the exact client pipeline,
+ *  write the resulting StreetSegment[] + refreshedAt. */
+async function refreshStreetTile(key, lat, lon) {
+  const segments = await fetchStreetGeometry(lat, lon);
+  await db.collection(PRECACHE_STREETS_COLLECTION).doc(key).set({
+    segments,
+    refreshedAt: Date.now(),
+    seedLat: lat,
+    seedLon: lon,
+  });
+  return segments.length;
+}
+
+/** One ~20km boundary cell: fetch + stitch via the exact client pipeline,
+ *  write the resulting OsmBoundaryFeature[] + refreshedAt. */
+async function refreshBoundaryCell(key, lat, lon, cityLabel) {
+  const cellLat0 = Math.floor(lat / OSM_CELL_DEG) * OSM_CELL_DEG;
+  const cellLon0 = Math.floor(lon / OSM_CELL_DEG) * OSM_CELL_DEG;
+  const features = await fetchOsmBoundariesInBox(cellLat0, cellLon0, cellLat0 + OSM_CELL_DEG, cellLon0 + OSM_CELL_DEG);
+  await db.collection(PRECACHE_BOUNDARIES_COLLECTION).doc(key).set({
+    features,
+    refreshedAt: Date.now(),
+    seedLat: lat,
+    seedLon: lon,
+    ...(cityLabel ? { cityLabel } : {}),
+  });
+  return features.length;
+}
+
+/** Refresh every tile/cell on the current seed+demand-grown list. A failure
+ *  on ONE tile doesn't abort the run — the other tens of tiles still
+ *  refresh, and a stale-but-present doc is exactly what the client's 14-day
+ *  staleness ceiling (2x this weekly cadence) is there to tolerate. */
+async function refreshOverpassPrecache() {
+  const streetTiles = new Map();
+  for (const seed of STREET_SEED_POINTS) {
+    for (const [key, point] of gridKeysAround(seed.lat, seed.lon, SEED_GRID_RADIUS_CELLS)) {
+      streetTiles.set(key, point);
+    }
+  }
+  for (const [key, point] of await promotedStreetTilesFromCleanups()) {
+    if (!streetTiles.has(key)) streetTiles.set(key, point);
+  }
+
+  const boundaryCells = await promotedBoundaryCellsFromCityRequests();
+
+  const results = {
+    streets: { attempted: 0, ok: 0, failed: 0 },
+    boundaries: { attempted: 0, ok: 0, failed: 0 },
+  };
+
+  for (const [key, point] of streetTiles) {
+    results.streets.attempted++;
+    try {
+      await refreshStreetTile(key, point.lat, point.lon);
+      results.streets.ok++;
+    } catch (e) {
+      results.streets.failed++;
+      console.warn(`precache: street tile ${key} failed: ${(e && e.message) || e}`);
+    }
+  }
+
+  for (const [key, cell] of boundaryCells) {
+    results.boundaries.attempted++;
+    try {
+      await refreshBoundaryCell(key, cell.lat, cell.lon, cell.city);
+      results.boundaries.ok++;
+    } catch (e) {
+      results.boundaries.failed++;
+      console.warn(`precache: boundary cell ${key} failed: ${(e && e.message) || e}`);
+    }
+  }
+
+  console.log(
+    `precache: refreshed ${results.streets.ok}/${results.streets.attempted} street tiles, ` +
+    `${results.boundaries.ok}/${results.boundaries.attempted} boundary cells`
+  );
+  return { generatedAt: Date.now(), ...results };
+}
+
+/** Weekly — matches the city_requests digest cadence (decision 2, spec §5). */
+exports.scheduledOverpassPrecacheRefresh = onSchedule('every monday 07:00', async () => {
+  await refreshOverpassPrecache();
+});
+
+// Secret gate for the manual/external trigger, same convention as
+// CITY_REQUESTS_DIGEST_KEY/ADOPTION_TRIGGER_KEY above (a hardcoded shared
+// secret checked as a query param, following this file's existing pattern
+// rather than inventing a differently-shaped one). Change this value if
+// it's ever shared. Lets Jake force a refresh right after this ships,
+// without waiting for the next Monday.
+const PRECACHE_REFRESH_KEY = 'pick-precache-9k3p';
+
+exports.runOverpassPrecacheRefresh = onRequest(async (req, res) => {
+  if (req.query.key !== PRECACHE_REFRESH_KEY) { res.status(403).send('forbidden'); return; }
+  try {
+    res.json({ ok: true, ...(await refreshOverpassPrecache()) });
   } catch (e) {
     res.status(500).json({ ok: false, error: String((e && e.message) || e) });
   }
