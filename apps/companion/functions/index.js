@@ -1484,10 +1484,14 @@ async function refreshOverpassPrecache() {
 // collection scans (cleanups, city_requests) up front, then fetches each
 // tile sequentially against Overpass mirrors that are still measurably
 // unstable (429s and aborted requests observed in the same run — see
-// LEDGER_INBOX.md). 540s is gen2's practical max without bumping CPU/memory
-// off the default tier, and comfortably covers the "tens of tiles" scale
-// this job is scoped to even with retries.
-const PRECACHE_TIMEOUT_SECONDS = 540;
+// LEDGER_INBOX.md). 540s was enough for the original 3-seed-point/28-tile
+// list but still cut the job short once the seed list grew to 5 points plus
+// a same-run retry pass (confirmed live: the run made real progress —
+// Firestore doc count went up — but never reached the final status-doc
+// write). 1800s (30 min) gives real headroom; this is a low-frequency
+// (weekly) background job with no user waiting on it, so a generous ceiling
+// costs nothing.
+const PRECACHE_TIMEOUT_SECONDS = 1800;
 
 /** Weekly — matches the city_requests digest cadence (decision 2, spec §5). */
 exports.scheduledOverpassPrecacheRefresh = onSchedule(
