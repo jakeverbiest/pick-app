@@ -1321,12 +1321,30 @@ async function promotedBoundaryCellsFromCityRequests() {
   return cells;
 }
 
+// Firestore rejects nested arrays (an array whose elements are themselves
+// arrays) — confirmed live 2026-09-03 when the first real refresh run threw
+// "Property array contains an invalid nested entity" on every street tile.
+// StreetSegment.coords and OsmBoundaryFeature.ring are both [number,number][],
+// which is exactly that shape once embedded in the segments/features array.
+// Flatten to [lat,lon,lat,lon,...] for storage, same convention already used
+// by src/services/challenges.ts's flattenRing/unflattenRing for ring storage.
+function flattenCoordPairs(pairs) {
+  const out = [];
+  for (const p of pairs || []) {
+    if (!p || !Number.isFinite(p[0]) || !Number.isFinite(p[1])) continue;
+    out.push(p[0], p[1]);
+  }
+  return out;
+}
+
 /** One street-geometry tile: fetch + chop via the exact client pipeline,
- *  write the resulting StreetSegment[] + refreshedAt. */
+ *  write the resulting StreetSegment[] + refreshedAt (coords flattened for
+ *  Firestore — see flattenCoordPairs). */
 async function refreshStreetTile(key, lat, lon) {
   const segments = await fetchStreetGeometry(lat, lon);
+  const stored = segments.map((s) => ({ ...s, coords: flattenCoordPairs(s.coords) }));
   await db.collection(PRECACHE_STREETS_COLLECTION).doc(key).set({
-    segments,
+    segments: stored,
     refreshedAt: Date.now(),
     seedLat: lat,
     seedLon: lon,
@@ -1335,13 +1353,15 @@ async function refreshStreetTile(key, lat, lon) {
 }
 
 /** One ~20km boundary cell: fetch + stitch via the exact client pipeline,
- *  write the resulting OsmBoundaryFeature[] + refreshedAt. */
+ *  write the resulting OsmBoundaryFeature[] + refreshedAt (ring flattened for
+ *  Firestore — see flattenCoordPairs). */
 async function refreshBoundaryCell(key, lat, lon, cityLabel) {
   const cellLat0 = Math.floor(lat / OSM_CELL_DEG) * OSM_CELL_DEG;
   const cellLon0 = Math.floor(lon / OSM_CELL_DEG) * OSM_CELL_DEG;
   const features = await fetchOsmBoundariesInBox(cellLat0, cellLon0, cellLat0 + OSM_CELL_DEG, cellLon0 + OSM_CELL_DEG);
+  const stored = features.map((f) => ({ ...f, ring: flattenCoordPairs(f.ring) }));
   await db.collection(PRECACHE_BOUNDARIES_COLLECTION).doc(key).set({
-    features,
+    features: stored,
     refreshedAt: Date.now(),
     seedLat: lat,
     seedLon: lon,

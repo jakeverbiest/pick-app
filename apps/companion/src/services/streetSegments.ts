@@ -352,6 +352,21 @@ export function getTileStats(lat: number, lon: number, coverage: RenderSegment[]
 // have produced. See that file for the full field-data reasoning behind the
 // hedge timing and the sidewalk→road fallback threshold.
 
+/** Rebuild [lat,lon] pairs from the flat [lat,lon,lat,lon,...] form Firestore
+ *  storage uses (nested arrays are rejected — see functions/index.js's
+ *  flattenCoordPairs, and src/services/challenges.ts's flattenRing for the
+ *  same convention elsewhere in this codebase). */
+function unflattenCoordPairs(flat: unknown): [number, number][] {
+  if (!Array.isArray(flat)) return [];
+  const out: [number, number][] = [];
+  for (let i = 0; i + 1 < flat.length; i += 2) {
+    const la = flat[i];
+    const lo = flat[i + 1];
+    if (typeof la === 'number' && typeof lo === 'number') out.push([la, lo]);
+  }
+  return out;
+}
+
 /** Read the precache doc for the gridKey tile a point falls in. Returns null
  *  (a cache miss) on: no doc, an empty/missing segments array, a doc past
  *  the staleness ceiling, or any Firestore read error — the last case fails
@@ -368,7 +383,10 @@ async function getPrecachedStreetSegments(lat: number, lon: number): Promise<Str
     if (Date.now() - refreshedAt > PRECACHE_STALENESS_MS) return null;
     const segments = data?.segments;
     if (!Array.isArray(segments) || segments.length === 0) return null;
-    return segments as StreetSegment[];
+    // Firestore rejects nested arrays, so the Cloud Function stores `coords`
+    // flattened to [lat,lon,lat,lon,...] — rebuild the [number,number][] pairs
+    // the rest of the app expects. See functions/index.js's flattenCoordPairs.
+    return segments.map((s: any) => ({ ...s, coords: unflattenCoordPairs(s?.coords) })) as StreetSegment[];
   } catch (e) {
     console.warn(`🛣️ Precache read failed for street tile — falling through to live Overpass: ${(e as Error)?.message ?? e}`);
     return null;

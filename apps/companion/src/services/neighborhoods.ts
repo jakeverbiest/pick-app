@@ -443,6 +443,20 @@ function bboxOverlapFraction(
   return (ixLat * ixLon) / refArea;
 }
 
+/** Rebuild [lat,lon] pairs from the flat [lat,lon,lat,lon,...] form Firestore
+ *  storage uses (nested arrays are rejected — see functions/index.js's
+ *  flattenCoordPairs, and this file's own flattenRing-adjacent convention). */
+function unflattenCoordPairs(flat: unknown): [number, number][] {
+  if (!Array.isArray(flat)) return [];
+  const out: [number, number][] = [];
+  for (let i = 0; i + 1 < flat.length; i += 2) {
+    const la = flat[i];
+    const lo = flat[i + 1];
+    if (typeof la === 'number' && typeof lo === 'number') out.push([la, lo]);
+  }
+  return out;
+}
+
 /** Read the precache doc for an OSM_CELL_DEG cell. Returns null (a cache
  *  miss) on: no doc, an empty/missing features array, a doc past the
  *  staleness ceiling, or any Firestore read error — the last case fails
@@ -458,7 +472,10 @@ async function getPrecachedBoundaryFeatures(cell: string): Promise<OsmBoundaryFe
     if (Date.now() - refreshedAt > PRECACHE_STALENESS_MS) return null;
     const features = data?.features;
     if (!Array.isArray(features) || features.length === 0) return null;
-    return features as OsmBoundaryFeature[];
+    // Firestore rejects nested arrays, so the Cloud Function stores `ring`
+    // flattened to [lat,lon,lat,lon,...] — rebuild the [number,number][] pairs
+    // the rest of the app expects.
+    return features.map((f: any) => ({ ...f, ring: unflattenCoordPairs(f?.ring) })) as OsmBoundaryFeature[];
   } catch (e) {
     console.warn(`🗺️ Precache read failed for boundary cell — falling through to live Overpass: ${(e as Error)?.message ?? e}`);
     return null;
