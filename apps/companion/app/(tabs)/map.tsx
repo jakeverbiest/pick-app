@@ -37,7 +37,7 @@ import { addWatchCommandListener, sendStatsToWatch } from '../../modules/watch-s
 import { groundTruthModeSync, isGroundTruthMode } from '../../src/services/groundTruthMode';
 import { startCleanupActivity, updateCleanupActivity, endCleanupActivity } from '../../modules/live-activity';
 import { findMyLiveEvent, subscribeEventTotal, reportSessionPickups, commitSessionPickups, LiveEvent } from '../../src/services/challengeLive';
-import { refreshMyChallengeContributions } from '../../src/services/challenges';
+import { refreshMyChallengeContributions, findMyActiveChallenge } from '../../src/services/challenges';
 import { getWeeklyGoal, syncWeeklyGoalReminder } from '../../src/services/weeklyGoal';
 import { computeStreak } from '../../src/services/streaks';
 import { isSegmentHapticsEnabled, segmentHapticsEnabledSync, segmentCompleteHaptic } from '../../src/services/haptics';
@@ -1407,7 +1407,20 @@ export default function MapScreen() {
     setPosting(true);
     try {
       const db = await getDatabase();
-      const post = await db.createPost({ caption: communityCaption.trim(), neighborhood, photoUri });
+      // A fresh lookup, not the `liveEvent` state above: `liveEvent` is
+      // cleared the moment the walk stops (`isListening` flips false in
+      // finishCleanup, which the effect above reacts to), and this composer
+      // only renders after that — see the comment on findMyActiveChallenge
+      // for why `liveEvent` also wouldn't be the right source even if it
+      // were still live (goal_type-'pickups'-only vs. any challenge).
+      const uidForChallenge = getAuthService().getCurrentUser()?.uid;
+      const activeChallenge = uidForChallenge ? await findMyActiveChallenge(uidForChallenge) : null;
+      const post = await db.createPost({
+        caption: communityCaption.trim(),
+        neighborhood,
+        photoUri,
+        challengeId: activeChallenge?.id,
+      });
       if (post) {
         setShowCommunityCompose(false);
         setCommunityCaption('');
@@ -2000,7 +2013,11 @@ export default function MapScreen() {
       if (communityAutoPost && communitySharing && photoUri) {
         const authSvc = getAuthService();
         if (authSvc.isEmailVerified() || (await authSvc.refreshEmailVerified())) {
-          const post = await db.createPost({ caption: '', neighborhood, photoUri });
+          // Same fresh lookup as the manual composer — `liveEvent` is already
+          // cleared by this point in the save flow.
+          const uidForChallenge = authSvc.getCurrentUser()?.uid;
+          const activeChallenge = uidForChallenge ? await findMyActiveChallenge(uidForChallenge) : null;
+          const post = await db.createPost({ caption: '', neighborhood, photoUri, challengeId: activeChallenge?.id });
           if (post) console.log('✅ Auto-posted cleanup photo to community');
         } else {
           console.log('ℹ️ Auto-post skipped — email not verified');

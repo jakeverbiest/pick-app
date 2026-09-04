@@ -1264,7 +1264,7 @@ class FirebaseDatabase {
    * Firebase Storage (cleanup_photos/{uid}/...), then writes a `posts` doc with
    * the download URL + caption + neighborhood. No precise location is stored.
    */
-  async createPost(input: { caption: string; neighborhood: string; photoUri: string }): Promise<Post | null> {
+  async createPost(input: { caption: string; neighborhood: string; photoUri: string; challengeId?: string }): Promise<Post | null> {
     const uid = this.currentUserId;
     if (!uid) return null;
     try {
@@ -1286,6 +1286,13 @@ class FirebaseDatabase {
         storage_path: path,
         liked_by: [] as string[],
         created_at: Date.now(),
+        // Tags a photo people already chose to share to Community with the
+        // challenge it was taken during, so a Group Recap can pull it in
+        // later (CHALLENGE_RECAP_SPEC.md §11.3 — Tier 1: only posts already
+        // public, no new privacy surface). Omitted entirely when there's no
+        // live challenge, not written as null/empty, to match every other
+        // optional Post field's convention in this file.
+        ...(input.challengeId ? { challenge_id: input.challengeId } : {}),
       };
       const docRef = await addDoc(collection(db, 'posts'), post);
       console.log(`✅ Community post created: ${docRef.id}`);
@@ -1303,6 +1310,35 @@ class FirebaseDatabase {
       return snapshot.docs.map((d) => ({ id: d.id, ...(d.data() as any) })) as Post[];
     } catch (error) {
       console.error('Failed to get posts:', error);
+      return [];
+    }
+  }
+
+  /**
+   * Posts tagged to a challenge (via `createPost`'s optional `challengeId`),
+   * newest first — powers the Group Recap photo strip
+   * (CHALLENGE_RECAP_SPEC.md §11.3). Mirrors `getPosts`'s
+   * where+orderBy+limit shape; `challenge_id ASC, created_at DESC` needs the
+   * composite index added in firestore.indexes.json (equality + orderBy on a
+   * different field isn't covered by Firestore's automatic single-field
+   * indexes — see the existing `cleanups` team/timestamp index for the same
+   * precedent, and `getPostsByUsers`'s comment for the case where this
+   * project chose to dodge that instead by sorting client-side).
+   */
+  async getPostsForChallenge(challengeId: string, limitCount = 20): Promise<Post[]> {
+    if (!challengeId) return [];
+    try {
+      const snapshot = await getDocs(
+        query(
+          collection(db, 'posts'),
+          where('challenge_id', '==', challengeId),
+          orderBy('created_at', 'desc'),
+          limit(limitCount)
+        )
+      );
+      return snapshot.docs.map((d) => ({ id: d.id, ...(d.data() as any) })) as Post[];
+    } catch (error) {
+      console.error('Failed to get posts for challenge:', error);
       return [];
     }
   }

@@ -331,6 +331,39 @@ export async function listChallenges(opts?: { team?: string }): Promise<Challeng
     });
 }
 
+/**
+ * The joined, currently-live challenge for a user — any `goal_type`, unlike
+ * `challengeLive.ts`'s `findMyLiveEvent` (which is deliberately narrowed to
+ * `goal_type === 'pickups'`, the only kind the live team-event counter/watch
+ * bar shows). Used to tag a Community photo with the challenge it was taken
+ * during (CHALLENGE_RECAP_SPEC.md §11.3) — that has to work for bags/cleanups
+ * challenges too, so `liveEvent` state isn't a substitute for this.
+ *
+ * Same "trust the date window, not the possibly-stale `status` field" note as
+ * `findMyLiveEvent`: `status` is written once at creation and never updated,
+ * so a scheduled challenge can still read 'upcoming' after its start date.
+ * Returns the soonest-ending match when more than one qualifies, so a photo
+ * shared while two challenges overlap tags the one about to close (the more
+ * time-sensitive recap).
+ */
+export async function findMyActiveChallenge(uid: string): Promise<Challenge | null> {
+  if (!uid) return null;
+  try {
+    const snap = await getDocs(
+      query(collection(db, 'challenges'), where('status', 'in', ['active', 'upcoming']))
+    );
+    const now = Date.now() / 1000;
+    const live = snap.docs
+      .map((d) => fromDoc(d.id, d.data()))
+      .filter((c) => (c.participants || []).includes(uid) && c.start_date <= now && c.end_date >= now)
+      .sort((a, b) => a.end_date - b.end_date);
+    return live[0] ?? null;
+  } catch (error) {
+    console.error('Active challenge lookup failed:', error);
+    return null;
+  }
+}
+
 export async function joinChallenge(id: string, uid: string): Promise<void> {
   // Joining clears any pending invite for the same person, so a uid is never
   // in both lists and the "invited you" section empties on accept.

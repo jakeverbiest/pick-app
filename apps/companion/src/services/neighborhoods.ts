@@ -310,6 +310,50 @@ async function osmBoundaryByName(name: string, city: string): Promise<[number, n
   return null;
 }
 
+// ---------- neighborhood boundary BY NAME (challenge recap map, no point) ----------
+//
+// `neighborhoodBoundary` above needs a lat/lon to know which city's curated
+// source (or OSM cell) to check — it's built for "the map tab is centered
+// somewhere real." A challenge's `area` (challenges.ts) stores only a label
+// string for `type: 'neighborhood'` ("Carroll Gardens"), no coordinates —
+// the creator's location was used once, at creation time, just to name it
+// (see app/challenge/new.tsx), then discarded. So a Group Recap card built
+// long after creation, possibly by a participant who lives elsewhere, has no
+// point to hand `neighborhoodBoundary`. `osmBoundaryByName` above already
+// covers exactly this case (name-only lookup, no point required) — this is
+// just a cache wrapper around it, same TTL/AsyncStorage pattern as the rest
+// of this file, keyed by the label text instead of a tile id since there's
+// no tile to key by.
+const CCACHE_PREFIX = '@pick_challengehood_';
+
+/** OSM boundary for a challenge's neighborhood LABEL alone — no lat/lon
+ *  needed, unlike `neighborhoodBoundary`. Used by the Group Recap card for
+ *  `area.type === 'neighborhood'` challenges (CHALLENGE_RECAP_SPEC.md
+ *  §11.2/§11.5 phase 3). Returns null where OSM has no matching shape by
+ *  name (caller falls back to the ornamental placeholder, same as
+ *  'anywhere'). Cached indefinitely-ish (30d, matching TTL_MS) since a
+ *  neighborhood's shape doesn't move. */
+export async function challengeNeighborhoodBoundary(label: string): Promise<[number, number][] | null> {
+  const trimmed = (label || '').trim();
+  if (!trimmed) return null;
+  const key = CCACHE_PREFIX + citySlug(trimmed);
+  try {
+    const raw = await AsyncStorage.getItem(key);
+    if (raw) {
+      const { poly, ts } = JSON.parse(raw);
+      if (Date.now() - ts < TTL_MS) return poly;
+    }
+  } catch {}
+
+  // No city hint to disambiguate ("Carroll Gardens" vs. a same-named place
+  // elsewhere) — same tradeoff §11.2 accepted by reusing the label as-is.
+  const poly = await osmBoundaryByName(trimmed, '');
+  try {
+    await AsyncStorage.setItem(key, JSON.stringify({ poly, ts: Date.now() }));
+  } catch {}
+  return poly;
+}
+
 /**
  * The real neighborhood outline + authoritative name. In a registered city
  * (NYC, Atlanta): the fine official neighborhood (small, single hood).

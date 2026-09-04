@@ -7,16 +7,17 @@
  *    createChallengeRecapPost, same in-app posting pattern as
  *    ImpactComposer's "Share to community" button.
  */
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, Share, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import ViewShot, { type ViewShotRef } from 'react-native-view-shot';
 import { Icon } from './Icon';
 import { GroupRecapCard } from './GroupRecapCard';
 import { C, Fonts, radius, shadow } from './theme';
-import { getDatabase } from '../services/firebaseDatabase';
+import { getDatabase, type Post } from '../services/firebaseDatabase';
 import { buildChallengeRecapCaption, type ChallengeRecapData } from '../services/challengeRecap';
 import { unflattenRing, type Challenge } from '../services/challenges';
+import { challengeNeighborhoodBoundary } from '../services/neighborhoods';
 
 export function GroupRecapModal({
   visible,
@@ -35,6 +36,31 @@ export function GroupRecapModal({
   const shotRef = useRef<ViewShotRef>(null);
   const [sharing, setSharing] = useState(false);
   const [posting, setPosting] = useState(false);
+  // §11.2/§11.3: the card's map + photo strip need data this modal fetches
+  // itself (GroupRecapCard stays pure/presentational, same as RecapCard —
+  // see that file's doc comment). undefined = not fetched yet, null = fetched
+  // and empty; the card treats both as "show the placeholder."
+  const [neighborhoodRing, setNeighborhoodRing] = useState<[number, number][] | null | undefined>(undefined);
+  const [posts, setPosts] = useState<Post[]>([]);
+
+  useEffect(() => {
+    if (!visible || !challenge) return;
+    let canceled = false;
+    if (challenge.area.type === 'neighborhood') {
+      setNeighborhoodRing(undefined);
+      void challengeNeighborhoodBoundary(challenge.area.label).then((ring) => {
+        if (!canceled) setNeighborhoodRing(ring);
+      });
+    }
+    void getDatabase()
+      .then((db) => db.getPostsForChallenge(challenge.id))
+      .then((p) => {
+        if (!canceled) setPosts(p);
+      });
+    return () => {
+      canceled = true;
+    };
+  }, [visible, challenge?.id, challenge?.area.type, challenge?.area.label]);
 
   if (!recap || !challenge) return null;
   const caption = buildChallengeRecapCaption(recap, challenge);
@@ -104,7 +130,7 @@ export function GroupRecapModal({
             <ScrollView showsVerticalScrollIndicator={false}>
               <View style={styles.cardCenter}>
                 <ViewShot ref={shotRef} options={{ format: 'png', quality: 0.95 }}>
-                  <GroupRecapCard recap={recap} challenge={challenge} />
+                  <GroupRecapCard recap={recap} challenge={challenge} neighborhoodRing={neighborhoodRing} posts={posts} />
                 </ViewShot>
               </View>
 
