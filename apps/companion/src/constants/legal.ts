@@ -19,6 +19,7 @@ WHAT WE COLLECT
 • Account info: display name, email, neighborhood, optional team or event name.
 • Cleanup sessions: pickup counts, duration, estimated/reported weight, date/time, and GPS data — your walking route and approximate pickup locations. Stored in our cloud database (Google Firebase) so history, maps, and leaderboards work.
 • Motion sensors: raw accelerometer/gyroscope samples are processed on your device in real time and never transmitted anywhere — only a compact summary of each detected motion event (strength, duration, accepted as a pickup or not) is kept, alongside the session data above.
+• Device and carry position: each cleanup records which iPhone model and iOS version the walk was recorded on (e.g. "iPhone14,3 (iPhone 13 Pro) / iOS 18.5") and, where the app could tell, whether the phone rode in a pocket or in your hand — worked out from the same motion sensors above, and left off entirely when it isn't confident. Both are kept only to make the detection-accuracy work below meaningful: detection performance depends heavily on which phone it runs on and where that phone rides. A hardware model string — never your device's name, which you set yourself.
 • Weight calibration entries stay on your device only.
 • Apple Health: if you enable it, we write each cleanup as a walking workout so it counts toward your activity rings and exercise minutes. We never read anything from Health — the read permission is only requested because Apple requires it alongside the write permission.
 • Photos: you can attach a photo to a cleanup post. It's stored in our cloud storage; if you post it, it's visible on the community feed or wherever you share it. Attaching a photo is always optional.
@@ -30,7 +31,7 @@ No contacts, microphone, or ad identifiers. No data sales. No ads. No location t
 
 HOW WE USE IT
 To run the app: maps, stats, streaks, badges, team totals, leaderboards, challenges. Your display name and aggregate stats may appear on leaderboards visible to other users. Street-cleaning status (which sidewalk segments were cleaned, and when) is shared across all users to power the community coverage map.
-To improve pickup detection: we analyze session data — the motion-event summaries above, how many pickups the app detected vs. the total you confirm at the end of a cleanup, and your walking pace — to measure and improve detection accuracy. Internal engineering work only: never shown to other users, never used to profile you or make decisions about you. Email hello@pickglobal.org to have your account excluded.
+To improve pickup detection: we analyze session data — the motion-event summaries above, how many pickups the app detected vs. the total you confirm at the end of a cleanup, your walking pace, and the device model and carry position above — to measure and improve detection accuracy. Internal engineering work only: never shown to other users, never used to profile you or make decisions about you. Email hello@pickglobal.org to have your account excluded.
 
 LEGAL BASIS (EU/UK/EEA users)
 • Contract necessity: core account and cleanup-session data (email, GPS route, pickup counts, motion-detection summaries, timestamps) — needed to provide the app's core service.

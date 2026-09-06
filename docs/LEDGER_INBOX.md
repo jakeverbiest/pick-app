@@ -19,6 +19,82 @@ the ledger's actual structure, not paste it verbatim.
   longer an open item.
 -->
 
+- 2026-09-06 — **`carry_mode`/`device_model` disclosure gap closed** (draft only, undeployed).
+  Added as its own "Device and carry position" bullet under "what we collect" in both
+  content-carrying copies — `~/pick-app/web/privacy.html` and
+  `apps/companion/src/constants/legal.ts` — deliberately NOT folded into the existing motion-sensor
+  bullet, whose whole rhetorical weight is "raw samples never leave your phone," which is not true
+  of these two fields. Copy states plainly that the device field is a hardware model string and
+  never `Device.deviceName` (user-set, often a real person's name), and that nothing is recorded
+  when the carry classifier isn't confident — both grounded in the actual implementations rather
+  than the brief. Legal basis deliberately not reopened: both fields exist solely to serve the
+  detection-accuracy purpose already named under legitimate interests, and `carry_mode`'s *live*
+  use (gating the pocket-only low-rotation filter) was already covered by contract necessity — only
+  its persistence is new. `PRIVACY_LAST_UPDATED` stays September 6, 2026; there is no later date to
+  move to and both changes ride the same deploys.
+  **CORRECTION to that pass's own conclusion, verified against production:** it reported that "the
+  undisclosed-collection window is live right now" because `62b5ca1` "is already writing both
+  fields." That conflates committed with deployed. `62b5ca1` has not shipped via `eas update`, so
+  no user's app runs that code. Confirmed by direct admin read: **0 of 205 cleanup docs carry
+  `carry_mode` or `device_model`, and the most recent cleanup is 2026-09-03.** There is no live
+  compliance exposure and no clock running. The correct requirement is simply that the disclosure
+  ship before or alongside the OTA — not urgently ahead of it. Worth flagging as a recurring trap:
+  in this repo `eas update` publishes the working tree, so "committed" and "live" routinely diverge,
+  and a claim that something is happening in production should be checked against production.
+  **Standing instruction fix, now raised three passes running:** the "five legal copies" framing is
+  wrong. There are four files and only two carry content; `docs/legal/index/index.html` was deleted
+  2026-09-01 and does not exist. Three consecutive Safety passes have spent effort re-disproving the
+  same phantom file. The instruction text needs correcting, not the repo.
+
+- 2026-09-06 — **CORRECTION: the NYC precache drip is already deployed and running. Multiple
+  ledger/OPS_STATUS entries describing it as "staged, NOT deployed, awaiting Jake's go-ahead" are
+  stale and should be closed.** Discovered by running `firebase deploy --only functions`, which
+  reported *every* function including `scheduledOverpassPrecacheDrip` as "Skipped (No changes
+  detected)" — a brand-new function cannot be skipped, so it was already live. Verified against
+  real data rather than trusting either source: `precache_meta/nyc_street_roster` holds a
+  1,226-tile roster (updated 2026-09-06T11:29) with `cursor: 56`, and `precache_status/drip`
+  records the last run as attempted 8 / ok 8 / failed 0, cursor 48→56, at 2026-09-06T19:58, which
+  matches the newest `refreshedAt` across `precache_streets`. The drip is healthy and advancing.
+  **This also resolves the OTA sequencing concern raised earlier today**: `PRECACHE_STALENESS_MS`
+  at 52 days is correctly paired with a *live* ~25.7-day drip cycle, so it is no longer premature
+  to ship it. The remaining OTA blocker is only the carry_mode/device_model disclosure gap.
+
+- 2026-09-06 — **Concrete precache timing for org outreach, computed from the live roster.** At 8
+  tiles per 4-hourly run (48/day) from cursor 56 of 1,226:
+  • **Astoria (Litter Legion, Astoria Trash Club) — roster index 138, ~82 tiles out, ≈11 drip runs,
+    ≈1.8 days away.** Warm by roughly 2026-09-08. Emailing them before then means a cold
+    ~22-second street-detail load on the neighborhood they'd naturally open first.
+  • **Jackson Heights (JHBG) — roster index 764, ~708 tiles out, ≈89 runs, ≈14.8 days away**
+    (roughly 2026-09-21). Materially later.
+  Recommended: sequence the sends to the drip rather than forcing it. Manually draining 89 batches
+  would defeat the batch-size pacing that exists specifically to respect the OSM wiki's 100
+  queries/day fair-use guidance for regular applications (current pacing is 48/day). Worth noting
+  this happens to match the priority order CRM already picked independently (Litter Legion →
+  Astoria Trash Club → JHBG → Sanitation Foundation), so no re-planning is needed — just don't
+  send JHBG's in the same batch as the Astoria pair.
+
+- 2026-09-06 — **App-repo working tree untangled and is now clean.** It had accumulated eight
+  modified app-code files spanning four unrelated stories from different sessions, which matters
+  because `eas update` ships the working tree — so a publish was going to carry whatever happened
+  to be on disk. Now one commit per story: `2795987` boundary-redraw zoom-gate fix (was
+  uncommitted, authored elsewhere), `7ad8c92` privacy policy (Sep 5 GDPR sections + Sep 6
+  detector-analysis use clause, committed together because they cross-reference), `01583ec`
+  ring-precache lookup **plus** the staged staleness widening, `597abc9` the 8-city batch (already
+  live), `39094fb` the NYC precache drip (Cloud Functions — `firebase deploy` only, cannot ride an
+  OTA), `a1a63b8` planning docs + ledger state, `00b9a14` gitignore.
+  **Two things the next `eas update` would now carry that need a deliberate decision:**
+  (1) `PRECACHE_STALENESS_MS` 14→52 days, which `01583ec` documents as sized for the drip's ~25.7
+  day cycle — shipped before the Cloud Functions deploy it means clients treat precache docs as
+  fresh for ~7.4 weeks against the old weekly cadence. Fix is a one-constant revert, noted in that
+  commit message; the intended sequence is to deploy the drip first instead.
+  (2) `carry_mode`/`device_model` (`62b5ca1`) would ship **still undisclosed** — the privacy
+  amendment in `7ad8c92` does not cover them and neither appears under "what we collect."
+  **Still open, unchanged:** that disclosure gap needs closing before the OTA; and
+  `scheduledPublicStats` still writes zero-pickup accounts into `global_stats.topPickers`
+  server-side (the client-side filter is drafted in `~/pick-app/web/`, undeployed).
+  `PICK Content/` (46MB of generated mockups/banner art) and a stray root-level banner PNG are now
+  gitignored rather than committed — same reasoning as the existing `Pick Images/` entry.
+
 - 2026-09-06 — Pre-send hygiene batch, all **draft-only, awaiting a Netlify drop**, flowing from
   Jake's decision that Pick's goal is "pays for itself, stays a fun project, works as personal PR."
   1. **`web/support.html`: the "reports are reviewed within 24 hours" SLA is gone.** A fixed
