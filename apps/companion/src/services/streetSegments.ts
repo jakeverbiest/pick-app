@@ -22,6 +22,7 @@ import {
   getFirestore,
   collection,
   doc,
+  documentId,
   getDoc,
   getDocs,
   query,
@@ -89,10 +90,47 @@ const GEOMETRY_CACHE_PREFIX = '@pick_sidewalks_v3_'; // v3: split centerline fal
 const GEOMETRY_CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 const STATUS_COLLECTION = 'segment_status';
 const PRECACHE_STREETS_COLLECTION = 'precache_streets';
-// 2x the weekly refresh cadence (OVERPASS_PRECACHE_SPEC.md §5 decision 4) —
-// a doc past this age is treated as a miss, not shown as if fresh, so one
-// missed scheduled run doesn't quietly serve week(s)-stale geometry.
-const PRECACHE_STALENESS_MS = 14 * 24 * 60 * 60 * 1000;
+// Originally 2x the weekly refresh cadence (OVERPASS_PRECACHE_SPEC.md §5
+// decision 4) — a doc past this age is treated as a miss, not shown as if
+// fresh, so one missed scheduled run doesn't quietly serve week(s)-stale
+// geometry. BUMPED 14 -> 28 days (2026-09-05, staged alongside
+// functions/index.js's NYC-wide roster/drip expansion, NOT deployed): the
+// street-tile refresh mechanism changed from "refresh everything once a
+// week" to a small batch drained every 4 hours (see that file's
+// PRECACHE_DRIP_BATCH_SIZE), because the tile count grew from 55
+// (Brooklyn-only) to ~1,225 (every NYC neighborhood's real bbox) — too many
+// to refresh synchronously in one run without risking Overpass rate limits.
+// At the batch size picked there, one full refresh cycle was ~13.6 days, so
+// 28 kept the same "2x the real cycle time" ratio the original 14-day value
+// used.
+//
+// BUMPED AGAIN 28 -> 52 days (2026-09-05, same-day follow-up): reconciling
+// PRECACHE_DRIP_BATCH_SIZE against the OSM wiki's real Overpass fair-use
+// text (100 queries/day for "regular applications," not the looser
+// 10k/day general-instance number) brought the batch size down from 15 to
+// 8 tiles/run, which stretches one full drip cycle from ~13.6 to ~25.7
+// days — see functions/index.js's PRECACHE_DRIP_BATCH_SIZE comment for the
+// full reasoning. 52 keeps the same "~2x the real cycle time" ratio (2 x
+// 25.7 ≈ 51.3, rounded to a clean 52). Real cost of this: a
+// precache_streets doc can now be up to ~7.4 weeks old before a miss forces
+// a live re-fetch, not 4 — still judged acceptable given OSM geometry
+// "rarely changes" (this file's own prior framing), but a real, deliberate
+// widening, not a no-op number bump, and a direct consequence of choosing
+// slower/more-compliant Overpass pacing over faster/looser pacing.
+const PRECACHE_STALENESS_MS = 52 * 24 * 60 * 60 * 1000;
+// A ring's bbox can span multiple 0.01° grid cells (see
+// getPrecachedSegmentsForRing below). The seed list writes a bounded 3x3
+// block (9 cells) per neighborhood (functions/index.js's
+// SEED_GRID_RADIUS_CELLS) — not an attempt to cover a whole neighborhood's
+// extent, let alone a coarse OSM administrative-boundary fallback ring
+// (getOsmHoodsInBounds), which can be much bigger than a curated
+// neighborhood. Above this many covering cells, the ring is already larger
+// than any plausible precache footprint today, so probing at all would just
+// be wasted reads on a guaranteed miss — skip straight to the live-fetch
+// path instead. 25 = a 5x5 block, comfortably above the 3x3 seed footprint
+// with room for a ring not perfectly centered on its seed point, but still
+// a hard ceiling on a runaway-size boundary ring.
+const MAX_RING_PRECACHE_CELLS = 25;
 
 // Parks are open polygons, not sidewalk lines — you don't walk every inch, so a
 // park counts as cleaned when the route spent real time inside it.
@@ -283,6 +321,33 @@ function gridNeighborhood(lat: number, lon: number): string[] {
   return cells;
 }
 
+/** Every 0.01° gridKey cell whose cell rectangle overlaps a ring's bounding
+ *  box — the ring-shaped analog of functions/index.js's gridKeysAround
+ *  (which builds a fixed radius-around-a-point block instead, since a seed
+ *  is a point, not a polygon). Used only to decide which precache_streets
+ *  docs to probe for getPrecachedSegmentsForRing below; deduped via Set even
+ *  though the step loop shouldn't produce duplicates. */
+function gridCellsForRingBbox(ring: [number, number][]): string[] {
+  let minLat = 90, minLon = 180, maxLat = -90, maxLon = -180;
+  for (const [la, lo] of ring) {
+    if (la < minLat) minLat = la;
+    if (la > maxLat) maxLat = la;
+    if (lo < minLon) minLon = lo;
+    if (lo > maxLon) maxLon = lo;
+  }
+  if (minLat > maxLat || minLon > maxLon) return []; // degenerate/empty ring
+  const GRID = 0.01;
+  const latSteps = Math.floor((maxLat - minLat) / GRID) + 1;
+  const lonSteps = Math.floor((maxLon - minLon) / GRID) + 1;
+  const keys = new Set<string>();
+  for (let i = 0; i <= latSteps; i++) {
+    for (let j = 0; j <= lonSteps; j++) {
+      keys.add(gridKey(minLat + i * GRID, minLon + j * GRID));
+    }
+  }
+  return [...keys];
+}
+
 // ---------- completion tiles (universal, zero per-city data) ----------
 // The "complete this area" unit. A fixed geographic tile works identically in
 // every city with no bespoke boundary data — the scalable alternative to
@@ -389,6 +454,100 @@ async function getPrecachedStreetSegments(lat: number, lon: number): Promise<Str
     return segments.map((s: any) => ({ ...s, coords: unflattenCoordPairs(s?.coords) })) as StreetSegment[];
   } catch (e) {
     console.warn(`🛣️ Precache read failed for street tile — falling through to live Overpass: ${(e as Error)?.message ?? e}`);
+    return null;
+  }
+}
+
+/**
+ * Ring-level precache lookup — added 2026-09-04. `getPrecachedStreetSegments`
+ * above only ever checked a single grid cell (the point-radius path); the
+ * whole-neighborhood ring path (`getSegmentsForRing` →
+ * `fetchStreetGeometryForRing`) never consulted precache_streets at all,
+ * meaning even a fully-seeded neighborhood (Fort Greene) got zero benefit
+ * when a user actually tapped into it — see LEDGER_INBOX.md's 2026-09-04
+ * entry for the full trace. This closes that gap for the ring path.
+ *
+ * Partial-hit policy (a real design call, made and recorded here rather than
+ * left ambiguous): require EVERY grid cell covering the ring's bbox to be a
+ * precache hit before using precache for this ring AT ALL. Rejected
+ * alternative: merge precache-hit cells with a live Overpass fetch scoped to
+ * just the miss cells. Two reasons that loses:
+ *   1. `fetchStreetGeometryForRing`'s single-poly-query design (see its own
+ *      doc comment) was ITSELF a deliberate move away from tiling per-cell
+ *      Overpass fetches — tiling ~25 sequential around-queries took minutes
+ *      on a cold cache. Merging would resurrect a version of that pattern
+ *      for every partially-seeded ring.
+ *   2. It wouldn't even buy real latency back: Overpass round-trip time is
+ *      dominated by the request itself, not by how much area one query
+ *      covers, so a live fetch scoped to "just the gaps" costs roughly the
+ *      same ~20s as fetching the whole ring. There's no speed win to justify
+ *      the added complexity.
+ * All-or-nothing means a fully-seeded ring gets the real win (Firestore
+ * reads instead of a ~20s Overpass round-trip); anything less than a full
+ * hit costs a handful of extra Firestore reads (see below) and then falls
+ * through to EXACTLY today's behavior — same single ring-poly Overpass
+ * fetch, same timing, same "Still loading street detail…" banner if it's
+ * slow. That fail-open shape is what makes this safe to ship against the
+ * current sparse seed list (STREET_SEED_POINTS: 10 Brooklyn-only points,
+ * functions/index.js) — everywhere that isn't seeded, this just adds a few
+ * cheap reads and changes nothing else about the user-visible behavior.
+ *
+ * Cost note: uses a documentId() 'in' query, chunked to 10 ids (Firestore's
+ * 'in' limit — same chunking pattern as loadStatusesForGrids above), instead
+ * of N individual getDoc() calls. That choice matters specifically for the
+ * miss case: Firestore bills a direct getDoc() as 1 read EVEN WHEN THE
+ * DOCUMENT DOESN'T EXIST, but a query is billed only for documents actually
+ * found in the result set (minimum 1 read per chunk if the chunk matches
+ * nothing). Since most ring activations today miss precache entirely (the
+ * seed list barely covers Brooklyn), this keeps the overwhelmingly common
+ * case cheap: a ring spanning up to 10 cells with zero hits costs 1 read,
+ * not 10. See LEDGER_INBOX.md's 2026-09-04 entry for the full reads-per-
+ * activation math against Finance's cost-ceiling model.
+ */
+async function getPrecachedSegmentsForRing(ring: [number, number][]): Promise<StreetSegment[] | null> {
+  const cellKeys = gridCellsForRingBbox(ring);
+  if (cellKeys.length === 0 || cellKeys.length > MAX_RING_PRECACHE_CELLS) return null;
+
+  try {
+    const found = new Map<string, any>(); // gridKey -> doc data
+    const chunks: string[][] = [];
+    for (let i = 0; i < cellKeys.length; i += 10) chunks.push(cellKeys.slice(i, i + 10));
+    const snaps = await Promise.all(
+      chunks.map((c) =>
+        getDocs(query(collection(db, PRECACHE_STREETS_COLLECTION), where(documentId(), 'in', c)))
+      )
+    );
+    for (const snap of snaps) snap.forEach((d) => found.set(d.id, d.data()));
+
+    // Require every covering cell to be present — see the partial-hit
+    // policy note above. A cell simply missing from the result set (never
+    // seeded, or not yet returned by a still-running refresh) is a miss for
+    // the whole ring, same as any other miss reason below.
+    if (found.size !== cellKeys.length) return null;
+
+    const now = Date.now();
+    const segById = new Map<string, StreetSegment>();
+    for (const key of cellKeys) {
+      const data = found.get(key);
+      const refreshedAt = typeof data?.refreshedAt === 'number' ? data.refreshedAt : 0;
+      if (now - refreshedAt > PRECACHE_STALENESS_MS) return null;
+      const segments = data?.segments;
+      if (!Array.isArray(segments) || segments.length === 0) return null;
+      for (const s of segments) {
+        const coords = unflattenCoordPairs(s?.coords);
+        if (coords.length === 0) continue;
+        // De-dupe: adjacent cells' precache writes each fetch a 600m radius
+        // around their own representative point (functions/index.js's
+        // refreshStreetTile), which can overlap a neighboring cell's radius
+        // near a shared border — the same real OSM way can land in both
+        // docs under the same stable id. Last-write-wins is fine; the
+        // geometry is identical either way.
+        segById.set(s.id, { ...s, coords });
+      }
+    }
+    return [...segById.values()];
+  } catch (e) {
+    console.warn(`🛣️ Ring precache read failed — falling through to live Overpass: ${(e as Error)?.message ?? e}`);
     return null;
   }
 }
@@ -650,8 +809,19 @@ async function getSegmentsForRing(ring: [number, number][]): Promise<StreetSegme
   // segmentsInflight above for the full rationale.
   if (ringSegmentsInflight[cacheKey]) return ringSegmentsInflight[cacheKey]!;
   ringSegmentsInflight[cacheKey] = (async () => {
-    const segments = await fetchStreetGeometryForRing(ring);
-    console.log(`🛣️ Fetched ${segments.length} street segments for ring (single poly query)`);
+    // Server-side precache check (OVERPASS_PRECACHE_SPEC.md), extended to
+    // the ring path 2026-09-04 — see getPrecachedSegmentsForRing's doc
+    // comment for the partial-hit policy and cost reasoning. Any miss (a
+    // cell not covered, stale, empty, or a read error) falls through to
+    // fetchStreetGeometryForRing unchanged, so behavior wherever precache
+    // doesn't cover is identical to before this existed.
+    let segments = await getPrecachedSegmentsForRing(ring);
+    if (segments) {
+      console.log(`🛣️ Served ${segments.length} street segments for ring from precache`);
+    } else {
+      segments = await fetchStreetGeometryForRing(ring);
+      console.log(`🛣️ Fetched ${segments.length} street segments for ring (single poly query)`);
+    }
     try {
       await AsyncStorage.setItem(cacheKey, JSON.stringify({ fetchedAt: Date.now(), segments }));
     } catch {}
