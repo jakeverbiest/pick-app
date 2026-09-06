@@ -1,0 +1,153 @@
+================================================================================
+PICK -- SEED VIDEO SHOTLIST
+18 shots, five phases. Four are required (marked); the rest turn three short
+social cuts into one real edit. Run through all of them in one Saturday
+session -- cleanup phases outdoors, app-demo phase separately, screen only.
+================================================================================
+
+KEY
+  Frame:  WS wide  /  MS medium  /  CU close-up  /  ECU extreme close-up
+          OTS over-the-shoulder  /  POV point-of-view
+  Zoom:   iPhone-native -- 0.5x ultra-wide / 1x main / 2x tele
+
+
+--------------------------------------------------------------------------------
+PHASE A -- ESTABLISHING  (grab before anyone else is out)
+--------------------------------------------------------------------------------
+
+01  EMPTY STREET
+    Frame: WS          Movement: Static, braced        Zoom: 0.5x       Len: 4s
+    Focus: full street, deep focus
+    Note:  Cold-open or B-roll filler. Morning light, before foot traffic.
+
+02  HEADING OUT
+    Frame: MS          Movement: Handheld, track backward   Zoom: 1x    Len: 5s
+    Focus: both faces
+    Note:  Front door / stoop to sidewalk -- the literal start of the ritual.
+
+
+--------------------------------------------------------------------------------
+PHASE B -- THE WORK  (the core cleanup pass)
+--------------------------------------------------------------------------------
+
+03  BLOCK WALK  ****REQUIRED****
+    Frame: WS/MS       Movement: Handheld, side-track       Zoom: 1x    Len: 8s
+    Focus: both, soft background
+    Note:  Get 2-3 takes. This is the workhorse b-roll for every cut.
+
+04  SPOTTING LITTER
+    Frame: MS          Movement: Static / slow push-in      Zoom: 1x    Len: 3s
+    Focus: face -> object
+    Note:  He looks down, sees it, reacts. Let it be real, not cued.
+
+05  HAND PICKUP
+    Frame: CU          Movement: Static, low angle       Zoom: 1-2x     Len: 3s
+    Focus: hand + item
+    Note:  Crouch to bucket height. Portrait/shallow-focus mode if it holds
+           steady.
+
+06  INTO THE BUCKET
+    Frame: ECU         Movement: Static                     Zoom: 2x    Len: 1.5s
+    Focus: item / bucket rim
+    Note:  Quick, satisfying insert -- the "drop" sound sells it as much as
+           the frame.
+
+07  GRABBER TOOL
+    Frame: MS/OTS      Movement: Static / slight pan         Zoom: 1x   Len: 4s
+    Focus: tool + litter
+    Note:  Over-the-shoulder, following the grabber's reach.
+
+08  BLOCK PROGRESS
+    Frame: WS          Movement: Slow pan               Zoom: 0.5-1x    Len: 5s
+    Focus: deep, both figures small
+    Note:  Pull back to show scale -- two people, one block. Good act-break
+           beat.
+
+
+--------------------------------------------------------------------------------
+PHASE C -- THE WORM MOMENT  (opportunistic -- don't force it)
+--------------------------------------------------------------------------------
+
+09  CURIOUS CROUCH
+    Frame: CU          Movement: Static                     Zoom: 1x    Len: 2.5s
+    Focus: face
+    Note:  He's noticed something. Get the "what is that" expression first.
+
+10  THE WORM
+    Frame: ECU         Movement: Static, near-macro          Zoom: 2x   Len: 1.5s
+    Focus: the worm, everything else soft
+    Note:  Fast -- worms don't hold a mark. Phone low, brace on your knee.
+
+11  REACTION SHOT
+    Frame: MS/CU        Movement: Static / quick whip        Zoom: 1x   Len: 2s
+    Focus: face
+    Note:  Yours or his -- whoever reacts genuinely. Don't perform it twice.
+
+
+--------------------------------------------------------------------------------
+PHASE D -- APP DEMO  (separate 5-min pass, screen only, current navy build)
+--------------------------------------------------------------------------------
+
+12  TAP START  ****REQUIRED****
+    Frame: ECU          Movement: Static, braced            Zoom: 1x    Len: 2s
+    Focus: the tap point
+    Note:  Screen fills frame. This is Board A's panel 1.
+
+13  WALKING POV
+    Frame: MS/POV        Movement: Handheld, walking         Zoom: 1x   Len: 5s
+    Focus: screen + route line
+    Note:  Phone held out at walking height, screen legible.
+
+14  COUNTER TICK
+    Frame: ECU           Movement: Static                    Zoom: 1x   Len: 1.5s
+    Focus: just the number
+    Note:  Isolate the "+1" -- re-frame a beat of Shot 13 or record
+           separately.
+
+15  CONFIRM SHEET  ****REQUIRED****
+    Frame: CU            Movement: Static                    Zoom: 1x   Len: 3s
+    Focus: checkmark tap + count
+    Note:  The "reveal." Hold a beat after the tap before cutting.
+
+16  MAP FILL-IN
+    Frame: MS            Movement: Static (pan is in-app)     Zoom: 1x   Len: 6s
+    Focus: colored blocks
+    Note:  Impact/map tab -- a different screen than the Start flow.
+
+
+--------------------------------------------------------------------------------
+PHASE E -- TALKING + CLOSE
+--------------------------------------------------------------------------------
+
+17  WALK-AND-TALK  ****REQUIRED****
+    Frame: MS         Movement: Handheld, walking   Zoom: 1x front cam  Len: 10s
+    Focus: face, steady eyeline
+    Note:  Carries every VO line in every board. Record 3 takes, over-cover
+           this one.
+
+18  WALKING AWAY
+    Frame: WS          Movement: Static / slow push-in       Zoom: 1x   Len: 5s
+    Focus: deep, both receding
+    Note:  Closing/loop beat. Golden-hour light if the timing works out.
+
+
+================================================================================
+SUGGESTED FULL-CUT ASSEMBLY -- ~90 SEC, ONE COMPLETE VIDEO
+================================================================================
+
+  1.  01-02   Cold open, no VO -- empty street, then heading out.
+  2.  17      VO begins over the tail of 02: "This is PICK..."
+  3.  03-08   The work, cut to VO/music -- walk, spot, pick up, bucket,
+              grabber, pull back.
+  4.  09-11   The worm beat, if you got it -- the one act break in the
+              middle.
+  5.  12-16   The full app demo, unhurried -- tap, walk, counter, confirm,
+              map.
+  6.  17      (second take) VO close: "Beta's live on iPhone..."
+  7.  18      Walking away, hold on logo card. Loops back to 01 for a
+              re-watch.
+
+--------------------------------------------------------------------------------
+DRAFT -- not shot, not edited. Full storyboards + growth notes at the linked
+artifact / docs/SOCIAL_SEED_POSTS.md. Nothing posts without review.
+--------------------------------------------------------------------------------
