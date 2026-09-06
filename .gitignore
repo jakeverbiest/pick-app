@@ -54,3 +54,10 @@ design-audit/
 finish-commits.sh
 apps/companion/assets/images/splash-icon_backup_opaque_05286E.png
 _to_delete/
+
+# Generated marketing/content assets — large binaries, not source. Same
+# reasoning as Pick Images/ above: these are deliverables, and committing
+# them bakes tens of MB into history permanently. PICK Content/ was 46MB
+# when this was added (2026-09-06).
+PICK Content/
+/youtube_banner_*.png
