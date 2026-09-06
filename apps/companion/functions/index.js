@@ -1261,6 +1261,164 @@ function gridKeysAround(lat, lon, radiusCells) {
   return cells;
 }
 
+// ==========================================================================
+// NYC-WIDE EXPANSION (staged 2026-09-05, NOT deployed) — Jake hit real
+// slowness on the Upper East Side, expected since STREET_SEED_POINTS above
+// is a hand-picked Brooklyn-only list of 10 points. This section replaces
+// "hand-add a neighborhood every time someone hits a cold tile" with
+// deriving tiles from the SAME curated GeoJSON src/services/neighborhoods.ts's
+// `nyc` CITY_SOURCES entry already uses — 312 real neighborhood polygons,
+// confirmed live via a direct fetch 2026-09-05 (not assumed from the "~310"
+// figure in prior docs).
+//
+// IMPORTANT correction made while grounding this, not assumed up front:
+// the FIRST version of this derived one gridKey tile per neighborhood
+// CENTROID (a fixed radius block around one point). That would have been
+// wrong. `src/services/streetSegments.ts` grew a SECOND precache consumer
+// on 2026-09-04 — `getPrecachedSegmentsForRing()`, which is what the actual
+// "tap a neighborhood, see its full coverage" flow (`activateHood()` →
+// `getSegmentsForRing()`) calls, and it requires EVERY 0.01° grid cell
+// covering that neighborhood's real bounding box (`gridCellsForRingBbox()`)
+// to already be a precache hit, or the whole ring falls through to a live
+// ~20s Overpass fetch — a single centroid tile, or even a fixed 3x3 block,
+// would satisfy that for almost no real (non-square, non-tiny) neighborhood.
+// This section instead computes each neighborhood's REAL bbox-covering cell
+// set, mirroring gridCellsForRingBbox() exactly (see that duplication note
+// below) — the only shape that actually produces a full ring-cache hit for
+// the exact feature Jake described being slow.
+//
+// Real numbers, measured against the live GeoJSON (2026-09-05): 312
+// neighborhoods need 4-63 cells each (median 12, mean ~14) to cover their
+// real bbox. 291 of 312 (93%) fall at or under
+// streetSegments.ts's own `MAX_RING_PRECACHE_CELLS = 25` — the ring path can
+// structurally never hit-cache the other 21 (Flushing, JFK, Jamaica, Long
+// Island City, Canarsie, Bayside, East New York and 15 more — real
+// neighborhoods, not just parks/airports, so a genuine coverage gap, not an
+// edge case) no matter what's precached for them, because that 25-cell cap
+// is a client constant this task didn't touch. They're still included below
+// (92 of the 1,225 total tiles) since they still help the point-radius
+// pan/route-crediting path even without the ring-activation win. Merged with
+// the existing 55-tile Brooklyn list: **1,225 unique tiles, 2,450 Overpass
+// calls** (sidewalk+road fired concurrently per tile) for full coverage —
+// about 22x the 55-tile/110-call run that ALREADY produced real 429s and
+// aborted requests on 2026-09-03 (LEDGER_INBOX.md). That's why the refresh
+// mechanism itself changes below (a persisted roster + a small batch
+// drained every few hours) instead of just growing the input list and
+// reusing the old synchronous refreshOverpassPrecache(). Full reasoning and
+// the rollout-timeline/cost math are in
+// `~/Desktop/pick-app/docs/LEDGER_INBOX.md`'s 2026-09-05 entry — read that
+// before approving a deploy, not just this comment.
+// ==========================================================================
+
+// Same GeoJSON source src/services/neighborhoods.ts's `nyc` CITY_SOURCES
+// entry uses — duplicated as a plain URL string rather than imported,
+// because that file's CITY_SOURCES array calls `FileSystem.documentDirectory`
+// (an Expo/RN-only API) at module-load time, so requiring the whole module
+// from the Node Cloud Functions runtime would throw. If that URL ever
+// changes in neighborhoods.ts, this constant needs a manual re-sync — a
+// real drift risk, flagged here rather than hidden.
+const NYC_HOODS_GEOJSON_URL =
+  'https://raw.githubusercontent.com/HodgesWardElliott/custom-nyc-neighborhoods/master/custom-pedia-cities-nyc-Mar2018.geojson';
+
+// 0.01° grid step — matches gridKey()'s own cell size. Named here (rather
+// than a bare literal) because gridCellsForRingBbox below needs it twice.
+const NEIGHBORHOOD_GRID_DEG = 0.01;
+
+// NOTE (reference only, not enforced as a skip here): the client's own
+// MAX_RING_PRECACHE_CELLS (src/services/streetSegments.ts) is 25 — see the
+// design-decision comment above for why the ~21 NYC neighborhoods over that
+// size are still included in the roster below despite the ring path never
+// being able to use them for those. If that client constant ever changes,
+// the "291 of 312" figure in the comment above drifts from real behavior.
+
+/** Every 0.01° gridKey cell whose cell rectangle overlaps a ring's bounding
+ *  box. MUST exactly mirror src/services/streetSegments.ts's
+ *  gridCellsForRingBbox() — that function's all-or-nothing precache check
+ *  is what actually decides whether a real neighborhood activation gets a
+ *  cache hit, so this has to produce the identical key set for the same
+ *  ring or precaching the "wrong" cells would satisfy nothing. Duplicated
+ *  rather than imported for the same FileSystem/RN-only-module reason as
+ *  NYC_HOODS_GEOJSON_URL above. Takes [lat, lon] pairs (GeoJSON itself is
+ *  [lon, lat] — callers must convert first, same as the client does). */
+function gridCellsForRingBbox(ring) {
+  let minLat = 90, minLon = 180, maxLat = -90, maxLon = -180;
+  for (const [la, lo] of ring) {
+    if (la < minLat) minLat = la;
+    if (la > maxLat) maxLat = la;
+    if (lo < minLon) minLon = lo;
+    if (lo > maxLon) maxLon = lo;
+  }
+  if (minLat > maxLat || minLon > maxLon) return [];
+  const latSteps = Math.floor((maxLat - minLat) / NEIGHBORHOOD_GRID_DEG) + 1;
+  const lonSteps = Math.floor((maxLon - minLon) / NEIGHBORHOOD_GRID_DEG) + 1;
+  const keys = new Set();
+  for (let i = 0; i <= latSteps; i++) {
+    for (let j = 0; j <= lonSteps; j++) {
+      keys.add(gridKey(minLat + i * NEIGHBORHOOD_GRID_DEG, minLon + j * NEIGHBORHOOD_GRID_DEG));
+    }
+  }
+  return [...keys];
+}
+
+/** Every gridKey cell covering every real NYC neighborhood's actual
+ *  bounding box, fetched live from the exact GeoJSON
+ *  src/services/neighborhoods.ts already downloads client-side (312
+ *  features confirmed live 2026-09-05) — not a hand-maintained list, so
+ *  Staten Island/Queens/the Bronx/Manhattan are covered the same way
+ *  Brooklyn already is, without anyone hand-adding points city by city.
+ *  Uses the LARGEST ring per feature (mirrors neighborhoods.ts's
+ *  geojsonToRing(), the same "pick one ring" convention that actually feeds
+ *  getSegmentsForRing() at real activation time — matching it here means
+ *  this generates exactly the cell set that path will check, not an
+ *  approximation of it). Makes NO Overpass calls itself; it only reads a
+ *  public GitHub-hosted file to compute cell keys. Fails open (returns an
+ *  empty Map) on any fetch/parse error, so a bad week here just means "no
+ *  new neighborhood tiles added this cycle," not a crashed roster rebuild. */
+async function deriveNycNeighborhoodTiles() {
+  const tiles = new Map(); // gridKey -> { lat, lon, label }
+  try {
+    const res = await fetch(NYC_HOODS_GEOJSON_URL);
+    if (!res.ok) {
+      console.warn(`precache: NYC hoods GeoJSON fetch failed (${res.status})`);
+      return tiles;
+    }
+    const fc = await res.json();
+    const features = (fc && fc.features) || [];
+    for (const f of features) {
+      const geometry = f && f.geometry;
+      if (!geometry) continue;
+      let rings;
+      if (geometry.type === 'Polygon') rings = [geometry.coordinates[0]];
+      else if (geometry.type === 'MultiPolygon') rings = geometry.coordinates.map((p) => p[0]);
+      else continue;
+      let best = null;
+      for (const r of rings) {
+        if (Array.isArray(r) && (!best || r.length > best.length)) best = r;
+      }
+      if (!best || best.length < 3) continue;
+      const ringLatLon = best.map(([lon, lat]) => [lat, lon]);
+      const props = (f && f.properties) || {};
+      const label = props.neighborhood || props.name || props.ntaname || props.NTAName || undefined;
+      for (const key of gridCellsForRingBbox(ringLatLon)) {
+        if (tiles.has(key)) continue;
+        // Representative fetch point = THIS CELL's own center, not the
+        // neighborhood's centroid — refreshStreetTile fetches a 600m radius
+        // around whatever point it's given, so a cell far from the
+        // neighborhood's centroid still needs its own nearby fetch point,
+        // or that cell's stored geometry would actually describe a
+        // different (wrong) 600m circle. gridKey()'s format is the cell's
+        // floored SW corner, so splitting it back out and adding half a
+        // grid step gives the cell's center.
+        const [cLat, cLon] = key.split('_').map(Number);
+        tiles.set(key, { lat: cLat + NEIGHBORHOOD_GRID_DEG / 2, lon: cLon + NEIGHBORHOOD_GRID_DEG / 2, label });
+      }
+    }
+  } catch (e) {
+    console.warn(`precache: deriveNycNeighborhoodTiles failed: ${(e && e.message) || e}`);
+  }
+  return tiles;
+}
+
 // Decision 3 (spec §5), hybrid (a)+(c): grow the street-geometry list past
 // the static seed once real `cleanups` documents cluster in a tile — real
 // usage, no new instrumentation, no unconditional whole-city caching
@@ -1371,7 +1529,11 @@ function flattenCoordPairs(pairs) {
  *  write the resulting StreetSegment[] + refreshedAt (coords flattened for
  *  Firestore — see flattenCoordPairs). */
 async function refreshStreetTile(key, lat, lon) {
-  const segments = await fetchStreetGeometry(lat, lon);
+  // enforceCooldown: true — this is the automated background job the OSM
+  // wiki's 429/406 "pause 30s" fair-use text targets, unlike the live
+  // client's own fetchStreetGeometry() calls (see overpassClient.js's
+  // enforceCooldown doc comment; 2026-09-05 reconciliation).
+  const segments = await fetchStreetGeometry(lat, lon, { enforceCooldown: true });
   const stored = segments.map((s) => ({ ...s, coords: flattenCoordPairs(s.coords) }));
   await db.collection(PRECACHE_STREETS_COLLECTION).doc(key).set({
     segments: stored,
@@ -1388,7 +1550,10 @@ async function refreshStreetTile(key, lat, lon) {
 async function refreshBoundaryCell(key, lat, lon, cityLabel) {
   const cellLat0 = Math.floor(lat / OSM_CELL_DEG) * OSM_CELL_DEG;
   const cellLon0 = Math.floor(lon / OSM_CELL_DEG) * OSM_CELL_DEG;
-  const features = await fetchOsmBoundariesInBox(cellLat0, cellLon0, cellLat0 + OSM_CELL_DEG, cellLon0 + OSM_CELL_DEG);
+  // enforceCooldown: true — same reasoning as refreshStreetTile above.
+  const features = await fetchOsmBoundariesInBox(
+    cellLat0, cellLon0, cellLat0 + OSM_CELL_DEG, cellLon0 + OSM_CELL_DEG, { enforceCooldown: true }
+  );
   const stored = features.map((f) => ({ ...f, ring: flattenCoordPairs(f.ring) }));
   await db.collection(PRECACHE_BOUNDARIES_COLLECTION).doc(key).set({
     features: stored,
@@ -1411,52 +1576,257 @@ function sleep(ms) {
 // Retry-After and good enough at this call volume (tens of tiles/week).
 const RETRY_COOLDOWN_MS = 15000;
 
-/** Refresh every tile/cell on the current seed+demand-grown list, then retry
- *  once whatever failed the first pass after a cooldown (decision from the
- *  2026-09-03 live run: a single-attempt pass left real seed tiles — including
- *  Fort Greene's own center cell — permanently missing until the next
- *  Monday or a manual re-trigger; a same-run retry turned a 21/28 first pass
- *  into 24/28 automatically). A failure on one tile never aborts the run —
- *  the rest still refresh, and a stale-but-present doc is exactly what the
- *  client's 14-day staleness ceiling (2x this weekly cadence) tolerates. */
-async function refreshOverpassPrecache() {
-  const streetTiles = new Map();
-  for (const seed of STREET_SEED_POINTS) {
-    for (const [key, point] of gridKeysAround(seed.lat, seed.lon, SEED_GRID_RADIUS_CELLS)) {
-      streetTiles.set(key, point);
+// Both precache functions need a much longer timeout than the 60s default —
+// confirmed live 2026-09-03: the default cut the manual trigger off after
+// only 3 of the seed list's ~9+ street tiles wrote successfully (Sunset
+// Park's tiles never ran), because the old refreshOverpassPrecache() did two
+// full collection scans (cleanups, city_requests) up front, then fetched
+// each tile sequentially against Overpass mirrors that are still measurably
+// unstable (429s and aborted requests observed in the same run — see
+// LEDGER_INBOX.md). 1800s (30 min) gives real headroom; kept for both the
+// (now much cheaper) weekly roster-rebuild function and the drip batches
+// below, since a generous ceiling on a low-frequency background job with no
+// user waiting on it costs nothing.
+const PRECACHE_TIMEOUT_SECONDS = 1800;
+
+// Persisted street-tile roster: precache_meta/nyc_street_roster holds the
+// full deduped tile list (Brooklyn hand-picks + all 312 NYC neighborhoods +
+// cleanup-promoted tiles) plus a rolling `cursor`. No Firestore rules entry
+// needed — this collection has no client reader, and the default-deny
+// catch-all at the bottom of firestore.rules already blocks it; only the
+// Admin SDK (this file) ever touches it.
+const PRECACHE_ROSTER_DOC = db.collection('precache_meta').doc('nyc_street_roster');
+
+// RECONCILED 2026-09-05 (follow-up pass, same day as the design above)
+// against the OSM wiki's actual published Overpass fair-use text — the
+// previous value (15 tiles/batch) was picked from a single field
+// observation (110 calls in one run produced real 429s), not checked
+// against any real documented policy. The real text draws TWO tiers:
+//   - general/shared-instance guidance: "less than 10,000 queries per day
+//     and less than 1GB/day" — 15 tiles/batch x 2 calls/tile x 6 runs/day
+//     (every 4 hours) = 180 calls/day comfortably clears this (1.8% of the
+//     query ceiling; response payloads here are tens of KB, nowhere near
+//     the 1GB/day data ceiling either).
+//   - STRICTER guidance the wiki specifically scopes to "regular
+//     applications": "less than 100 queries ... fetching less than 10MB of
+//     data per day." This drip job — a shipped app's unattended, recurring,
+//     indefinite background sync — is exactly what "regular application"
+//     describes, not the occasional/interactive shared-instance case the
+//     looser 10k/day number is really aimed at. 180/day clears the general
+//     ceiling but MISSES the tier that actually applies to us.
+// Brought down to 8 tiles/batch = 16 calls/run x 6 runs/day = 96 calls/day
+// — under the 100/day bar with a small margin, at the same every-4-hours
+// cadence (kept rather than changed, since batch size was already the
+// documented pacing lever — see runPrecacheDripBatch's comment). Real cost:
+// full-roster coverage (1,225 tiles) goes from ~82 runs/~13.6 days to
+// ceil(1,225/8)=154 runs / 6 runs/day ≈ 25.7 days (~26 days) — for both
+// first rollout and the ongoing refresh cycle (PRECACHE_STALENESS_MS bumped
+// again below to match).
+//
+// Two things flagged for Jake rather than resolved silently:
+//   1. `refreshBoundariesOnce` (weekly, unchanged, "a handful of cells at
+//      most") also spends Overpass calls through this same shared client,
+//      on top of the drip's 96/day, on whichever one day/week it runs — a
+//      single-digit call count added to that one day only. It could push
+//      that specific day slightly over 100 (e.g. 96+9=105). Judged
+//      acceptable: it's guidance from a wiki, not an enforced hard cap,
+//      the mechanism is small, pre-existing, and unchanged by this pass —
+//      not re-architected here. A more conservative 7 tiles/batch (84
+//      calls/day, ~29.2 days full coverage) would clear 100/day even
+//      including that spillover, if Jake would rather have the bigger
+//      margin than the faster cycle.
+//   2. This is a genuine speed/compliance tradeoff, not a free win — nearly
+//      DOUBLING the full-coverage timeline (13.6 -> 25.7 days) to fit
+//      guidance explicitly scoped to apps like this one, rather than
+//      leaning on the general ceiling this app also technically clears.
+//      The rate-limit backoff fix (overpassClient.js's `enforceCooldown`,
+//      also 2026-09-05) is a separate, independent improvement — it closes
+//      a real gap in the ALREADY-DEPLOYED 429/406 handling (no pause
+//      before failover/next call existed at all), not a substitute for
+//      picking a compliant batch size.
+const PRECACHE_DRIP_BATCH_SIZE = 8;
+
+/** Street-tile roster: append-only on rebuild. A brand-new tile is added at
+ *  the END of the existing order, never by re-sorting the whole list, so a
+ *  weekly rebuild never shifts an already-scheduled tile's position — the
+ *  cursor's "position N" has to mean the same tile across rebuilds, or the
+ *  even-coverage design this enables silently breaks (a sort-by-key rebuild
+ *  would scramble which tiles are "next" every Monday). Makes NO Overpass
+ *  calls itself: it only merges tile lists computed elsewhere
+ *  (STREET_SEED_POINTS, deriveNycNeighborhoodTiles, cleanup-promoted).
+ *
+ *  The candidate tiles are computed OUTSIDE a transaction (real network
+ *  calls — a GeoJSON fetch, a `cleanups` scan — have no place inside one),
+ *  then merged into the roster INSIDE a short transaction that only reads
+ *  and writes precache_meta/nyc_street_roster. That matters because this
+ *  function can take several seconds (the GeoJSON fetch alone), and
+ *  scheduledOverpassPrecacheDrip can tick concurrently and advance
+ *  `cursor` mid-run — reading `cursor` once up front and writing it back
+ *  unchanged later would silently clobber the drip's progress. The
+ *  transaction re-reads the roster at write time and Firestore retries it
+ *  automatically if the doc changed since the read, so the cursor a
+ *  concurrent drip run wrote is preserved either way. */
+async function rebuildStreetTileRoster() {
+  const candidates = new Map(); // key -> { lat, lon, label }
+  const addAll = (entries) => {
+    for (const [key, point] of entries) {
+      if (!candidates.has(key)) candidates.set(key, point);
     }
-  }
-  for (const [key, point] of await promotedStreetTilesFromCleanups()) {
-    if (!streetTiles.has(key)) streetTiles.set(key, point);
-  }
-
-  const boundaryCells = await promotedBoundaryCellsFromCityRequests();
-
-  const results = {
-    streets: { attempted: 0, ok: 0, failed: 0, failedKeys: [] },
-    boundaries: { attempted: 0, ok: 0, failed: 0, failedKeys: [] },
   };
 
-  async function runStreetPass(entries) {
+  // Original hand-picked Brooklyn list (unchanged, radius 1 — see STREET_SEED_POINTS).
+  const brooklynTiles = new Map();
+  for (const seed of STREET_SEED_POINTS) {
+    for (const [key, point] of gridKeysAround(seed.lat, seed.lon, SEED_GRID_RADIUS_CELLS)) {
+      brooklynTiles.set(key, { ...point, label: seed.label });
+    }
+  }
+  addAll(brooklynTiles);
+
+  // All 312 real NYC neighborhoods, derived live — this task's actual ask.
+  addAll(await deriveNycNeighborhoodTiles());
+
+  // Real-usage growth signal, unchanged from the 2026-09-03 design (decision 3, spec §5).
+  addAll(await promotedStreetTilesFromCleanups());
+
+  let added = 0;
+  let total = 0;
+  await db.runTransaction(async (tx) => {
+    const snap = await tx.get(PRECACHE_ROSTER_DOC);
+    const existing = snap.exists ? snap.data() : null;
+    const tiles = Array.isArray(existing && existing.tiles) ? existing.tiles.slice() : [];
+    const seen = new Set(tiles.map((t) => t.key));
+    added = 0;
+    for (const [key, point] of candidates) {
+      if (seen.has(key)) continue;
+      seen.add(key);
+      tiles.push({ key, lat: point.lat, lon: point.lon, ...(point.label ? { label: point.label } : {}) });
+      added++;
+    }
+    const cursor = existing && Number.isFinite(existing.cursor) ? existing.cursor : 0;
+    total = tiles.length;
+    tx.set(PRECACHE_ROSTER_DOC, { tiles, cursor, updatedAt: Date.now() });
+  });
+
+  const summary = { total, added, generatedAt: Date.now() };
+  await db.collection('precache_status').doc('roster').set(summary);
+  console.log(`precache: roster rebuilt — ${total} total tiles (${added} new this run)`);
+  return summary;
+}
+
+/** Refresh a small, fixed-size batch of the roster per run instead of the
+ *  whole thing at once — the actual throttling mechanism this section
+ *  exists to add. Runs every 4 hours (scheduledOverpassPrecacheDrip below),
+ *  reusing scheduledPublicStats's existing cadence rather than inventing a
+ *  new one. The cursor wraps: once it reaches the end of the roster it
+ *  starts back at 0, so this doubles as the ongoing "keep tiles fresh"
+ *  refresh once the initial rollout finishes — at PRECACHE_DRIP_BATCH_SIZE
+ *  8 (RECONCILED 2026-09-05 against the OSM wiki's real fair-use text — see
+ *  that constant's own comment for the 100-calls/day "regular application"
+ *  reasoning; was 15 in the first design pass) and the current merged
+ *  roster (1,225 tiles total, measured 2026-09-05 — the 312 real
+ *  neighborhoods' bbox cells alone are already 1,225; the existing 55-tile
+ *  Brooklyn hand-pick turns out to be a strict subset of that, contributing
+ *  0 net-new tiles, since it sits entirely inside real Brooklyn
+ *  neighborhoods the new derivation already covers — see the
+ *  design-decision comment above), that's ceil(1225/8)=154 runs, ~25.7
+ *  days, for one full cycle — both the first full rollout AND every refresh
+ *  after that. streetSegments.ts's PRECACHE_STALENESS_MS was bumped again
+ *  to match (2x this cycle time, same ratio the original value used) — see
+ *  that file's own comment. A failure
+ *  on one tile never blocks the rest of its batch or advancing the cursor —
+ *  a permanently-failing tile (e.g. one that's mostly open water) would
+ *  otherwise stall the whole roster behind it forever. */
+async function runPrecacheDripBatch() {
+  const snap = await PRECACHE_ROSTER_DOC.get();
+  const roster = snap.exists ? snap.data() : null;
+  const tiles = Array.isArray(roster && roster.tiles) ? roster.tiles : [];
+  if (!tiles.length) {
+    console.log('precache: drip run skipped — roster is empty (rebuild has not run yet?)');
+    return { attempted: 0, ok: 0, failed: 0, rosterSize: 0 };
+  }
+
+  const rawCursor = Number.isFinite(roster.cursor) ? roster.cursor : 0;
+  const cursor = ((rawCursor % tiles.length) + tiles.length) % tiles.length;
+  const batchSize = Math.min(PRECACHE_DRIP_BATCH_SIZE, tiles.length);
+  const batch = [];
+  for (let i = 0; i < batchSize; i++) batch.push(tiles[(cursor + i) % tiles.length]);
+
+  async function attemptBatch(entries) {
     const failed = [];
-    for (const [key, point] of entries) {
+    for (const t of entries) {
       try {
-        await refreshStreetTile(key, point.lat, point.lon);
-        results.streets.ok++;
+        await refreshStreetTile(t.key, t.lat, t.lon);
       } catch (e) {
-        failed.push([key, point]);
-        console.warn(`precache: street tile ${key} failed: ${(e && e.message) || e}`);
+        failed.push(t);
+        console.warn(`precache: drip tile ${t.key} failed: ${(e && e.message) || e}`);
       }
     }
     return failed;
   }
+
+  let failed = await attemptBatch(batch);
+  if (failed.length) {
+    // Same cooldown-then-retry convention as the boundary refresh below —
+    // confirmed live 2026-09-03 that a tile failing mid-run often succeeds
+    // on a later attempt once the burst of prior calls has had a moment to
+    // clear.
+    await sleep(RETRY_COOLDOWN_MS);
+    failed = await attemptBatch(failed);
+  }
+
+  // Advance the cursor inside a transaction, re-reading the roster's
+  // current length at write time rather than trusting the `tiles.length`
+  // read at the top of this function — a concurrent weekly rebuild could
+  // have appended tiles mid-batch, and computing `% tiles.length` against a
+  // stale length could land the cursor on a since-shifted index. Firestore
+  // retries this transaction automatically if the doc changed since the
+  // read (the same guarantee rebuildStreetTileRoster's transaction relies
+  // on), so this and a concurrent rebuild can't silently clobber each
+  // other's write.
+  let nextCursor = cursor;
+  await db.runTransaction(async (tx) => {
+    const freshSnap = await tx.get(PRECACHE_ROSTER_DOC);
+    const freshData = freshSnap.exists ? freshSnap.data() : null;
+    const freshLen = Array.isArray(freshData && freshData.tiles) ? freshData.tiles.length : tiles.length;
+    nextCursor = freshLen ? (cursor + batch.length) % freshLen : 0;
+    tx.update(PRECACHE_ROSTER_DOC, { cursor: nextCursor });
+  });
+
+  const result = {
+    attempted: batch.length,
+    ok: batch.length - failed.length,
+    failed: failed.length,
+    failedKeys: failed.map((t) => t.key),
+    rosterSize: tiles.length,
+    cursorBefore: cursor,
+    cursorAfter: nextCursor,
+    generatedAt: Date.now(),
+  };
+  await db.collection('precache_status').doc('drip').set(result);
+  console.log(
+    `precache drip: refreshed ${result.ok}/${result.attempted} tiles ` +
+    `(roster ${tiles.length}, cursor ${cursor} -> ${nextCursor})`
+  );
+  return result;
+}
+
+/** Boundary-cell refresh — unchanged in behavior from the 2026-09-03
+ *  design, kept synchronous on the weekly cadence. NOT part of what this
+ *  section scales: city_requests-driven boundary cells are a handful at
+ *  most (order of single digits), nothing like the 312 NYC neighborhoods,
+ *  so the burst risk that motivated the roster/drip split above doesn't
+ *  apply here. */
+async function refreshBoundariesOnce() {
+  const boundaryCells = await promotedBoundaryCellsFromCityRequests();
+  const results = { attempted: boundaryCells.size, ok: 0, failed: 0, failedKeys: [] };
 
   async function runBoundaryPass(entries) {
     const failed = [];
     for (const [key, cell] of entries) {
       try {
         await refreshBoundaryCell(key, cell.lat, cell.lon, cell.city);
-        results.boundaries.ok++;
+        results.ok++;
       } catch (e) {
         failed.push([key, cell]);
         console.warn(`precache: boundary cell ${key} failed: ${(e && e.message) || e}`);
@@ -1465,61 +1835,43 @@ async function refreshOverpassPrecache() {
     return failed;
   }
 
-  results.streets.attempted = streetTiles.size;
-  results.boundaries.attempted = boundaryCells.size;
-
-  let failedStreets = await runStreetPass([...streetTiles]);
   let failedBoundaries = await runBoundaryPass([...boundaryCells]);
-
-  if (failedStreets.length || failedBoundaries.length) {
-    console.log(
-      `precache: ${failedStreets.length} street tile(s) and ${failedBoundaries.length} ` +
-      `boundary cell(s) failed the first pass — retrying after ${RETRY_COOLDOWN_MS}ms cooldown`
-    );
+  if (failedBoundaries.length) {
     await sleep(RETRY_COOLDOWN_MS);
-    failedStreets = await runStreetPass(failedStreets);
     failedBoundaries = await runBoundaryPass(failedBoundaries);
   }
-
-  results.streets.failed = failedStreets.length;
-  results.streets.failedKeys = failedStreets.map(([key]) => key);
-  results.boundaries.failed = failedBoundaries.length;
-  results.boundaries.failedKeys = failedBoundaries.map(([key]) => key);
-
-  console.log(
-    `precache: refreshed ${results.streets.ok}/${results.streets.attempted} street tiles, ` +
-    `${results.boundaries.ok}/${results.boundaries.attempted} boundary cells`
-  );
+  results.failed = failedBoundaries.length;
+  results.failedKeys = failedBoundaries.map(([key]) => key);
 
   const summary = { generatedAt: Date.now(), ...results };
-  // Status doc so coverage/health is visible without a manual Firestore
-  // query — a single small doc, not a growing collection, so this adds no
-  // meaningful read/write cost of its own.
-  await db.collection('precache_status').doc('latest').set(summary);
+  await db.collection('precache_status').doc('boundaries').set(summary);
+  console.log(`precache: refreshed ${results.ok}/${results.attempted} boundary cells`);
   return summary;
 }
 
-// Both precache functions need a much longer timeout than the 60s default —
-// confirmed live 2026-09-03: the default cut the manual trigger off after
-// only 3 of the seed list's ~9+ street tiles wrote successfully (Sunset
-// Park's tiles never ran), because refreshOverpassPrecache() does two full
-// collection scans (cleanups, city_requests) up front, then fetches each
-// tile sequentially against Overpass mirrors that are still measurably
-// unstable (429s and aborted requests observed in the same run — see
-// LEDGER_INBOX.md). 540s was enough for the original 3-seed-point/28-tile
-// list but still cut the job short once the seed list grew to 5 points plus
-// a same-run retry pass (confirmed live: the run made real progress —
-// Firestore doc count went up — but never reached the final status-doc
-// write). 1800s (30 min) gives real headroom; this is a low-frequency
-// (weekly) background job with no user waiting on it, so a generous ceiling
-// costs nothing.
-const PRECACHE_TIMEOUT_SECONDS = 1800;
-
-/** Weekly — matches the city_requests digest cadence (decision 2, spec §5). */
+/** Weekly — matches the city_requests digest cadence (decision 2, spec §5).
+ *  Rebuilds the street-tile roster (no Overpass calls — see
+ *  rebuildStreetTileRoster) and refreshes boundary cells (small, unchanged
+ *  volume — see refreshBoundariesOnce). The NYC-wide Overpass load itself is
+ *  spread across scheduledOverpassPrecacheDrip's 4-hourly batches below, not
+ *  done here — this function no longer touches Overpass for streets at all. */
 exports.scheduledOverpassPrecacheRefresh = onSchedule(
   { schedule: 'every monday 07:00', timeoutSeconds: PRECACHE_TIMEOUT_SECONDS },
   async () => {
-    await refreshOverpassPrecache();
+    await rebuildStreetTileRoster();
+    await refreshBoundariesOnce();
+  }
+);
+
+/** Every 4 hours, matching scheduledPublicStats's existing cadence — refreshes
+ *  one small, fixed batch off the street-tile roster. This is the actual
+ *  pacing mechanism for NYC-wide coverage; see PRECACHE_DRIP_BATCH_SIZE and
+ *  the design-decision comment above (and LEDGER_INBOX.md's 2026-09-05
+ *  entry) for the full reasoning and cost math. */
+exports.scheduledOverpassPrecacheDrip = onSchedule(
+  { schedule: 'every 4 hours', timeoutSeconds: PRECACHE_TIMEOUT_SECONDS },
+  async () => {
+    await runPrecacheDripBatch();
   }
 );
 
@@ -1527,16 +1879,29 @@ exports.scheduledOverpassPrecacheRefresh = onSchedule(
 // CITY_REQUESTS_DIGEST_KEY/ADOPTION_TRIGGER_KEY above (a hardcoded shared
 // secret checked as a query param, following this file's existing pattern
 // rather than inventing a differently-shaped one). Change this value if
-// it's ever shared. Lets Jake force a refresh right after this ships,
-// without waiting for the next Monday.
+// it's ever shared.
 const PRECACHE_REFRESH_KEY = 'pick-precache-9k3p';
 
+// Default behavior changed 2026-09-05: this used to force the FULL
+// synchronous refresh (every seed tile, one HTTP request) — exactly the
+// burst pattern the roster/drip split above exists to avoid, and now much
+// more dangerous to invoke by habit at NYC-wide scale. It now runs ONE
+// bounded drip batch by default, same as a normal scheduled tick. Pass
+// ?rebuildRoster=1 to force a roster rebuild (+ boundary refresh) on demand
+// instead of waiting for Monday — still no street-side Overpass calls of
+// its own, only the boundary refresh's small, pre-existing volume.
 exports.runOverpassPrecacheRefresh = onRequest(
   { timeoutSeconds: PRECACHE_TIMEOUT_SECONDS },
   async (req, res) => {
     if (req.query.key !== PRECACHE_REFRESH_KEY) { res.status(403).send('forbidden'); return; }
     try {
-      res.json({ ok: true, ...(await refreshOverpassPrecache()) });
+      if (req.query.rebuildRoster === '1') {
+        const roster = await rebuildStreetTileRoster();
+        const boundaries = await refreshBoundariesOnce();
+        res.json({ ok: true, roster, boundaries });
+        return;
+      }
+      res.json({ ok: true, drip: await runPrecacheDripBatch() });
     } catch (e) {
       res.status(500).json({ ok: false, error: String((e && e.message) || e) });
     }

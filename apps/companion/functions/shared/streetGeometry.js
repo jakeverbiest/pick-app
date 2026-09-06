@@ -108,8 +108,12 @@ function chopWaysIntoSegments(json, split = false) {
  *  centerlines) around a point — the exact pipeline
  *  src/services/streetSegments.ts's getSegmentsAround() uses on a live
  *  fetch, reused here so the scheduled precache refresh writes the identical
- *  shape a client fetch would have produced. */
-async function fetchStreetGeometry(lat, lon) {
+ *  shape a client fetch would have produced.
+ *  `opts` is forwarded to both `runOverpass()` calls unchanged — see
+ *  overpassClient.js's `enforceCooldown` doc comment. Default `{}` (no
+ *  cooldown enforcement) preserves today's exact client behavior for the
+ *  many client call sites that don't pass a third argument. */
+async function fetchStreetGeometry(lat, lon, opts = {}) {
   // SIDEWALKS, not road centerlines — pickers walk the sidewalk, and NYC OSM
   // maps each side of the street as its own footway=sidewalk way.
   const sidewalkQuery = `
@@ -128,9 +132,26 @@ async function fetchStreetGeometry(lat, lon) {
   `;
   // Fired together, not sequentially — see streetSegments.ts for the full
   // reasoning (the road query doesn't depend on the sidewalk result).
+  //
+  // Judgment call, checked against the OSM wiki's "no parallel running of
+  // multiple scripts" fair-use line (2026-09-05 reconciliation): read as
+  // "don't run multiple independent copies/instances of your scraper
+  // concurrently" (e.g. two people each running a full-sweep script at
+  // once), not "never issue more than one HTTP request at a time from your
+  // one script." This is one logical fetch for one tile, done by ONE
+  // running job (the drip's single scheduled invocation, or one live client
+  // screen), asking two complementary questions (sidewalks vs. roads) it
+  // needs together before it can proceed — not two independent scripts. The
+  // project runs exactly one drip job on a fixed non-overlapping schedule,
+  // not several concurrent instances of it, which is what that guidance
+  // most plausibly targets. (The one real, if narrow, way this project
+  // COULD violate the literal "parallel scripts" reading is the manual HTTP
+  // trigger `runOverpassPrecacheRefresh` being hit while the scheduled drip
+  // is also mid-run — a rare, human-triggered edge case, not fixed here,
+  // worth knowing about rather than silently ignoring.)
   const [sidewalkJson, roadJson] = await Promise.all([
-    runOverpass(sidewalkQuery),
-    runOverpass(roadQuery),
+    runOverpass(sidewalkQuery, opts),
+    runOverpass(roadQuery, opts),
   ]);
   let segments = chopWaysIntoSegments(sidewalkJson);
 

@@ -117,14 +117,17 @@ function osmCellKey(lat, lon) {
 
 /** Named administrative boundaries inside a bbox, straight from OSM — reuses
  *  runOverpass's mirror-failover/timeout. `out geom` on a relation query
- *  embeds each member way's geometry inline, so one round trip is enough. */
-async function fetchOsmBoundariesInBox(minLat, minLon, maxLat, maxLon) {
+ *  embeds each member way's geometry inline, so one round trip is enough.
+ *  `opts` is forwarded to `runOverpass()` unchanged — see
+ *  overpassClient.js's `enforceCooldown` doc comment. Default `{}` preserves
+ *  today's exact client (neighborhoods.ts) behavior. */
+async function fetchOsmBoundariesInBox(minLat, minLon, maxLat, maxLon, opts = {}) {
   const query = `
     [out:json][timeout:25];
     relation["boundary"="administrative"]["admin_level"~"${OSM_ADMIN_LEVELS}"](${minLat},${minLon},${maxLat},${maxLon});
     out geom;
   `;
-  const json = await runOverpass(query);
+  const json = await runOverpass(query, opts);
   const elements = json?.elements ?? [];
   const out = [];
   const seenNames = new Set();

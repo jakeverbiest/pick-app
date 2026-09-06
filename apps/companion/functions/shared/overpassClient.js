@@ -54,10 +54,49 @@ const HEDGE_DELAY_MS = 6000;
 // session/instance.
 let preferredOverpass = null;
 
+// Real fair-use gap fixed 2026-09-05, found reconciling the NYC precache
+// drip design against the OSM wiki's actual Overpass API fair-use text
+// (previously only inferred from one incident, not checked against the
+// published policy): "On a 429 [Too Many Requests] or 406 [Not Acceptable]
+// ... please pause for 30 seconds before making a new request." Before this
+// fix, a 429/406 from one mirror just triggered the pre-scheduled hedge
+// fallback to the next mirror (or, at the caller level — a batch loop
+// moving to its next tile — an immediate brand-new runOverpass() call) with
+// NO delay at all. `cooldownUntil` is shared, instance-local state (same
+// lifetime semantics as `preferredOverpass` above): set whenever ANY mirror
+// returns 429/406, checked by any NEW `runOverpass()` call that opts in via
+// `{ enforceCooldown: true }`.
+//
+// Deliberately opt-in, not global-default: this file is imported by BOTH
+// the live client (map loads, ring-precache activation — interactive, human
+// paced, already field-tuned via HEDGE_DELAY_MS) and the Cloud Functions
+// precache drip (automated, unattended, the thing that actually racks up
+// day-long call volume this policy targets). Forcing every client call to
+// block up to 30s after any 429 would silently regress already-tuned,
+// already-shipped map-load UX as a side effect of a server-side compliance
+// fix — out of scope here. Only the Cloud Functions precache paths
+// (`refreshStreetTile`, `refreshBoundaryCell` in functions/index.js) opt in.
+const RATE_LIMIT_COOLDOWN_MS = 30000;
+let cooldownUntil = 0;
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 /** Run an Overpass QL query against the mirror pool, hedge-failover style.
  *  Shared by the client (street geometry, OSM boundary fallback) and the
- *  Cloud Functions precache refresh job — see the module doc comment. */
-function runOverpass(query) {
+ *  Cloud Functions precache refresh job — see the module doc comment.
+ *  `opts.enforceCooldown` (default false): if true, and a prior call from
+ *  this instance got a 429/406 within the last 30s, wait out the remainder
+ *  of that 30s before firing any request at all — see RATE_LIMIT_COOLDOWN_MS
+ *  above for why this is opt-in rather than always-on. */
+async function runOverpass(query, opts = {}) {
+  const { enforceCooldown = false } = opts;
+  if (enforceCooldown) {
+    const wait = cooldownUntil - Date.now();
+    if (wait > 0) await sleep(wait);
+  }
+
   const endpoints = preferredOverpass
     ? [preferredOverpass, ...OVERPASS_ENDPOINTS.filter((u) => u !== preferredOverpass)]
     : OVERPASS_ENDPOINTS;
@@ -77,16 +116,28 @@ function runOverpass(query) {
         method: 'POST',
         // Overpass mirrors explicitly rate-limit harder without a real
         // User-Agent (confirmed live 2026-08-13 — a 429 response's own body
-        // said so directly).
+        // said so directly). Contact reference added 2026-09-05, reconciling
+        // against the OSM wiki's fair-use text, which asks for a "meaningful"
+        // UA — the original string names the app but had no way for an OSM
+        // operator to reach us if they wanted to flag a problem before
+        // blocking. Not changed elsewhere (e.g. neighborhoods.ts's Nominatim
+        // calls use their own copy of this convention) — out of scope for
+        // this Overpass-specific reconciliation pass.
         headers: {
           'Content-Type': 'application/x-www-form-urlencoded',
-          'User-Agent': 'PICK-cleanup-app/1.0 (street + boundary geometry)',
+          'User-Agent': 'PICK-cleanup-app/1.0 (+https://pickglobal.org; street + boundary geometry)',
         },
         body: `data=${encodeURIComponent(query)}`,
         signal: ctrl.signal,
       })
         .then(async (res) => {
-          if (!res.ok) throw new Error(`Overpass error ${res.status}`);
+          if (!res.ok) {
+            if (res.status === 429 || res.status === 406) {
+              // Per OSM wiki fair-use text — see RATE_LIMIT_COOLDOWN_MS above.
+              cooldownUntil = Date.now() + RATE_LIMIT_COOLDOWN_MS;
+            }
+            throw new Error(`Overpass error ${res.status}`);
+          }
           const json = await res.json();
           if (!settled) {
             settled = true;
@@ -121,4 +172,5 @@ module.exports = {
   OVERPASS_ENDPOINTS,
   OVERPASS_TIMEOUT_MS,
   HEDGE_DELAY_MS,
+  RATE_LIMIT_COOLDOWN_MS,
 };
