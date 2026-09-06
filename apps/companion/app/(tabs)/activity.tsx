@@ -192,6 +192,13 @@ export default function ActivityScreen() {
         pace_median_mps: cleanup.pace_median_mps ?? null,
         pace_slow_share: cleanup.pace_slow_share ?? null,
         pace_low_confidence: cleanup.pace_low_confidence ?? null,
+        // Stratification keys, stored from 2026-09-06 on. A walk's count is
+        // only comparable to another walk's if you know where the phone rode
+        // and what phone it was — carry position alone moves median gyro 4.6x.
+        // 'not recorded' rather than null so an older export is obviously a
+        // pre-field walk, not a walk where classification failed.
+        carry_mode: cleanup.carry_mode ?? 'not recorded',
+        device_model: cleanup.device_model ?? 'not recorded',
         bags_est: cleanupBags(cleanup),
         team: cleanup.team,
         location: { lat: cleanup.location_lat, lon: cleanup.location_lon },

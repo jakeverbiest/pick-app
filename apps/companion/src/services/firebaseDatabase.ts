@@ -71,6 +71,26 @@ export interface Cleanup {
   pace_slow_share?: number;
   /** True when the walk was mostly a stroll, so the count needs human review. */
   pace_low_confidence?: boolean;
+  /**
+   * 'pocket' | 'hand' — where the phone rode, per the detector's own auto
+   * classification (`MotionDetector.getCarryMode()`). Omitted when the walk
+   * was too short for a verdict.
+   *
+   * NOT `session_mode`, which is the power path ('background'/'foreground').
+   * Added 2026-09-06: carry position is a measured 4.6x swing in median gyro
+   * (pocket 6.21 vs cross-body 1.65) and collapses the acceleration range to
+   * 23% of the detection band, so a walk without it can't be compared to any
+   * other walk. Without this field a multi-tester cohort is unstratifiable —
+   * you cannot tell a gait problem from a pocket-vs-bag problem.
+   */
+  carry_mode?: string;
+  /**
+   * Hardware + OS the walk was recorded on, e.g.
+   * `"iPhone14,3 (iPhone 13 Pro) / iOS 18.5"`. See
+   * `deviceInfo.getDeviceModelString()`. Hardware identity only — never the
+   * user-set device name. Omitted if unavailable.
+   */
+  device_model?: string;
   /** @deprecated legacy — weight was dropped from the product in favor of bags. */
   weight_lb?: number;
   duration_seconds: number;

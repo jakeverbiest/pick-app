@@ -52,6 +52,14 @@ export interface Cleanup {
   pace_slow_share?: number;
   /** True when the walk was mostly a stroll, so the count needs human review. */
   pace_low_confidence?: boolean;
+  /** 'pocket' | 'hand' — where the phone rode, per the detector's own auto
+   *  classification. Omitted when the walk was too short for a verdict.
+   *  Distinct from `session_mode` (power path). See the fuller note on
+   *  `Cleanup` in services/firebaseDatabase.ts. */
+  carry_mode?: string;
+  /** Hardware + OS the walk was recorded on, e.g. "iPhone14,3 / iOS 18.5".
+   *  Hardware identity only — never the user-set device name. */
+  device_model?: string;
   /** @deprecated legacy — weight was dropped in favor of bags. */
   weight_lb?: number;
   duration_seconds: number;

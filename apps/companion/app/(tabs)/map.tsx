@@ -26,6 +26,7 @@ import { computeNeed, parseRoute, needColor, needTileKey, type NeedTile } from '
 import { syncWorkoutToHealth, isHealthSyncEnabled } from '../../src/services/healthService';
 import { simplifyRoute, simplifyCoordPairs, privacyTrimRoute } from '../../src/services/routeUtils';
 import { walkPaceProfile } from '../../src/services/motionEvaluation';
+import { getDeviceModelString } from '../../src/services/deviceInfo';
 import { getFitnessService } from '../../src/services/fitnessService';
 import { getDatabase } from '../../src/services/database';
 import { getAuthService } from '../../src/services/authService';
@@ -1871,6 +1872,19 @@ export default function MapScreen() {
       // by hand, and used ONLY to invite a correction — never to suppress a count.
       const pace = walkPaceProfile(MotionDetector.getSessionEvents());
 
+      // Carry position + phone model. Both exist for exactly one reason: to
+      // make another person's walk comparable to Jake's. A 2026-09-06 audit of
+      // the live collection found the detector has only ever been validated at
+      // n=1 — one tester, one phone, one carry position — and that the only
+      // substantial outside tester's 28 walks predate items_detected/pace_*
+      // entirely, so they are unusable. Carry position alone is a 4.6x swing in
+      // median gyro, so a cohort walk without these two fields cannot separate
+      // a gait problem from a phone problem from a pocket-vs-bag problem.
+      // Read BEFORE the awaits below: getCarryMode() survives stopListening()
+      // by design, but nothing downstream should depend on that ordering.
+      const carryMode = MotionDetector.getCarryMode();
+      const deviceModel = getDeviceModelString();
+
       const db = await getDatabase();
       const userService = getAuthService();
       const currentUser = userService.getCurrentUser();
@@ -1915,6 +1929,11 @@ export default function MapScreen() {
         pace_median_mps: pace.medianMps,
         pace_slow_share: pace.slowShare,
         pace_low_confidence: pace.lowConfidence,
+        // Optional fields are OMITTED rather than written null, matching
+        // createPost()'s challengeId. 'unknown' carries no information and
+        // would only make a short walk look like a classified one.
+        ...(carryMode !== 'unknown' ? { carry_mode: carryMode } : {}),
+        ...(deviceModel ? { device_model: deviceModel } : {}),
         bag_qty: bagCount,
         bag_size: bagReported ? bagSize : '',
         bag_fullness: bagFullness,

@@ -652,6 +652,27 @@ class MotionDetector {
     return [...this.sessionEvents];
   }
 
+  /**
+   * Where the phone was actually riding this walk, as the detector decided it.
+   *
+   * This is the value the run itself used — `lastAutoCarry` is what gates the
+   * pocket-only low-rotation filter above (`pocketActive`), so persisting
+   * anything else would record a different number from the one that shaped the
+   * count. It is the last CONFIDENT classification: `classifyCarryMode()`
+   * returns 'unknown' under 3 events and the assignment above ignores that, so
+   * a short walk that never got a verdict stays 'unknown' rather than
+   * defaulting to a guess.
+   *
+   * Lifecycle matches `getSessionEvents()` — reset in `startListening()`, NOT
+   * in `stopListening()` — so the save path can still read it after Stop, from
+   * the summary sheet. (See the `session_mode` bug fixed in `ae3f028`: a field
+   * cleared on finish read 'unresolved' on every walk for weeks.)
+   */
+  getCarryMode(): 'pocket' | 'hand' | 'unknown' {
+    if (this.carryMode !== 'auto') return this.carryMode;
+    return this.lastAutoCarry;
+  }
+
   /** Latest GPS fix from this service's watcher — lets the map screen reuse
    *  it instead of requesting its own fixes (one GPS stream, not three). */
   getLastLocation() {
