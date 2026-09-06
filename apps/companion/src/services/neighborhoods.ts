@@ -179,6 +179,250 @@ const CITY_SOURCES: CitySource[] = [
     // Atlanta does. (This is the opposite of NYC — do not copy NYC's `true`.)
     basemapLabels: false,
   },
+  // ---- 2026-09-04 additions ----
+  // Sourced against `docs/GLOBAL_CITY_EXPANSION_TARGETS.md`'s "Map coverage
+  // validation" section (~/pick-app), which live-Overpass-tested this
+  // project's own admin_level 6-9 range against 21 candidate cities and
+  // flagged 8 with a real gap at their own city core. Each entry below
+  // documents the real open-data source found (all confirmed live via a
+  // direct fetch + point-in-polygon check, not just "the URL returns 200")
+  // and, where relevant, why the OSM fallback specifically fails there.
+  // `basemapLabels` is defaulted to `false` (draw our own labels) for all
+  // eight, matching Atlanta/SF's precedent for a city CARTO doesn't already
+  // print hood names for — unlike NYC's/SF's `basemapLabels` values, this
+  // was NOT independently re-confirmed against real rendered CARTO tiles
+  // this pass; worth a direct visual check before relying on it.
+  {
+    id: 'sea',
+    // Seattle proper, held tight to the Neighborhood Map Atlas's own extent
+    // (same reasoning as SF's box comment above: a padded box would
+    // silently claim Bellevue/Kirkland/Mercer Island, which have no polygon
+    // in this layer at all, and — because hasNeighborhoods() would then read
+    // true for a point with no actual coverage — no OSM fallback either).
+    inBox: (lat, lon) => lat >= 47.49 && lat <= 47.74 && lon >= -122.44 && lon <= -122.23,
+    // OSM's admin_level 6-9 has no coverage of Seattle's own core — every
+    // shape returned is a neighboring suburb (Bellevue, Kirkland, Mercer
+    // Island, Shoreline...). admin_level=10 was checked specifically per the
+    // validation pass's own flag (Seattle's neighborhoods are sometimes
+    // tagged there): it exists, but only for 3 shapes citywide (Chinatown-
+    // International District's Little Saigon/Chinatown/Japantown
+    // sub-areas) — sparse, single-mapper tagging, not a systematic
+    // per-neighborhood convention the way 6-9 is documented to be elsewhere
+    // in this file. NOT a clean widen: unlike the already-calibrated 6-9
+    // range, level 10 usage has no consistent cross-city meaning, so
+    // widening OSM_ADMIN_LEVELS to include it would risk pulling in noise
+    // (arbitrary sub-parcel detail some other mapper tagged at 10) rather
+    // than reliably surfacing more real neighborhoods — left unwidened.
+    // Real source instead: the City of Seattle's own GIS "Neighborhood Map
+    // Atlas Neighborhoods" (derived from the City Clerk's Geographic
+    // Indexing Atlas), served live from the City's own ArcGIS FeatureServer
+    // — the same live-fetch-no-static-copy pattern as Atlanta. 94 real named
+    // sub-neighborhoods, confirmed by point-in-polygon: downtown Seattle ->
+    // Central Business District, Ballard -> Ballard, Capitol Hill's Broadway
+    // -> Broadway; a Bellevue point correctly falls outside every shape.
+    // maxAllowableOffset (~30m tolerance, same trick as Atlanta) takes the
+    // payload from 1.65MB full-resolution to 59KB for all 94 shapes.
+    url: 'https://services.arcgis.com/ZOyb2t4B0UYuYNYH/arcgis/rest/services/nma_nhoods_sub/FeatureServer/0/query?where=1%3D1&outFields=S_HOOD,L_HOOD&outSR=4326&maxAllowableOffset=0.0003&f=geojson',
+    file: FileSystem.documentDirectory + 'sea-hoods.json',
+    // S_HOOD is the finest sub-neighborhood name on each feature (the real
+    // analog of NYC's Pediacities/Atlanta's 248/SF's 117); L_HOOD is the
+    // coarser district the same shape rolls up to, tried only when S_HOOD is
+    // empty on that feature.
+    nameKeys: ['S_HOOD', 'L_HOOD'],
+    basemapLabels: false,
+  },
+  {
+    id: 'la',
+    // LA proper, held tight to the Neighborhood Council layer's own extent
+    // (same reasoning as Seattle above — Culver City/Beverly Hills/Burbank
+    // etc. have no polygon in this layer).
+    inBox: (lat, lon) => lat >= 33.7 && lat <= 34.34 && lon >= -118.67 && lon <= -118.15,
+    // OSM's admin_level 6-9 returns only separate neighboring cities in LA's
+    // query cell (Culver City, Beverly Hills, West Hollywood, Burbank,
+    // Vernon, Glendale, La Cañada Flintridge) — none reach Downtown/
+    // Hollywood/central LA, LA's own boundary never appears (too large for
+    // MAX_SHAPE_DIAGONAL_KM and filtered). Real source: LA GeoHub's official
+    // Neighborhood Councils (Certified) layer, served live from the City's
+    // own ArcGIS MapServer — same city-GIS pattern as Atlanta. 99 councils,
+    // confirmed by point-in-polygon: Downtown LA -> DOWNTOWN LOS ANGELES,
+    // Hollywood -> CENTRAL HOLLYWOOD NC, Silver Lake -> SILVER LAKE NC.
+    // maxAllowableOffset takes the payload from 2.58MB to 95KB for all 99
+    // shapes.
+    url: 'https://maps.lacity.org/lahub/rest/services/Boundaries/MapServer/18/query?where=1%3D1&outFields=NAME&outSR=4326&maxAllowableOffset=0.0003&f=geojson',
+    file: FileSystem.documentDirectory + 'la-hoods.json',
+    nameKeys: ['NAME'],
+    basemapLabels: false,
+  },
+  {
+    id: 'chi',
+    // Chicago proper, held tight to the Community Areas layer's own extent.
+    inBox: (lat, lon) => lat >= 41.64 && lat <= 42.03 && lon >= -87.95 && lon <= -87.52,
+    // OSM's query point for central Chicago resolves to "South Chicago
+    // Township" (admin_level 7) — a real shape, but a legal/tax township,
+    // not a name any Chicagoan uses for their neighborhood. Real source: the
+    // Chicago Data Portal's official 77 Community Areas — an unusually clean
+    // fit, the actual colloquial taxonomy Chicagoans use (the Loop, Wicker
+    // Park's community area is really "West Town", Rogers Park, etc).
+    // TRAP, same failure mode as SF's pty2-tcw4 (see that comment above):
+    // the resource id you find first, `cauq-8yn6` ("Boundaries - Community
+    // Areas - Map"), is a dead husk — a Socrata "map" resource type, not a
+    // "dataset" — that returns the right shape count but
+    // `"geometry":null` and empty `properties` for every feature. The real,
+    // usable id is `igwz-8jzy` ("Boundaries - Community Areas", type
+    // "dataset"). Confirmed by point-in-polygon: the Loop -> LOOP, Wicker
+    // Park -> WEST TOWN (correct — Wicker Park is a sub-area within the West
+    // Town community area, not its own), and the OSM-only "South Chicago
+    // Township" point -> SOUTH CHICAGO (the real community area name).
+    // SoQL's simplify_preserve_topology (same trick as SF) takes the payload
+    // from 2.07MB to 78KB for all 77 areas.
+    url: 'https://data.cityofchicago.org/resource/igwz-8jzy.geojson?$select=community,simplify_preserve_topology(the_geom,0.0003)%20as%20the_geom&$limit=500',
+    file: FileSystem.documentDirectory + 'chi-hoods.json',
+    nameKeys: ['community'],
+    basemapLabels: false,
+  },
+  {
+    id: 'bos',
+    // Boston proper, held tight to the BPDA layer's own extent — a padded
+    // box would claim Cambridge/Somerville/Brookline, which have no polygon
+    // here (confirmed: a Cambridge point correctly falls outside this box's
+    // data below).
+    inBox: (lat, lon) => lat >= 42.22 && lat <= 42.4 && lon >= -71.2 && lon <= -70.92,
+    // OSM's admin_level 6-9 never returns Boston itself in this cell — every
+    // shape is a neighboring Massachusetts municipality (Cambridge,
+    // Somerville, Brookline, Newton, Everett...), either filtered by the
+    // 25km size cap or a genuine OSM tagging gap (not conclusively
+    // determined by the validation pass — Overpass 504'd on both mirrors on
+    // the follow-up query). Real source: the Boston Planning & Development
+    // Agency's official "Boston Neighborhood Boundaries" (published via
+    // Analyze Boston / data.boston.gov), served live from BPDA's own ArcGIS
+    // FeatureServer — same live-fetch city-GIS pattern as Atlanta/LA/
+    // Seattle. Note the FeatureServer's layer id is 5, not 0 — the service
+    // only exposes one layer, named "BPDA Neighborhoods". 26 official
+    // neighborhoods, confirmed by point-in-polygon: Faneuil Hall -> Downtown,
+    // Back Bay -> Back Bay, Jamaica Plain -> Jamaica Plain; a Cambridge
+    // point correctly falls outside every shape. maxAllowableOffset takes
+    // the payload from 1.32MB to 30KB for all 26 shapes.
+    url: 'https://gis.bostonplans.org/hosting/rest/services/Hosted/Boston_Neighborhood_Boundaries/FeatureServer/5/query?where=1%3D1&outFields=name&outSR=4326&maxAllowableOffset=0.0003&f=geojson',
+    file: FileSystem.documentDirectory + 'bos-hoods.json',
+    nameKeys: ['name'],
+    basemapLabels: false,
+  },
+  {
+    id: 'sd',
+    // San Diego proper, held tight to the Community Planning Areas layer's
+    // own extent (a Chula Vista point correctly falls outside this box's
+    // data below).
+    inBox: (lat, lon) => lat >= 32.53 && lat <= 33.12 && lon >= -117.29 && lon <= -116.9,
+    // Same failure mode as LA/Boston: all 6 OSM shapes in the query cell are
+    // neighboring cities (Chula Vista, El Cajon, La Mesa, Lemon Grove,
+    // National City, Coronado) — central San Diego itself is inside none of
+    // them. Real source: the City of San Diego's own Community Planning
+    // Areas layer (the layer behind the City's official "Community Planning
+    // Areas" web map, published under the City's own sandiego.gov ArcGIS
+    // account — SANDAG's regional portal did not turn up a matching dataset
+    // under its own name; this is the City's layer, not SANDAG's, despite
+    // both being name-checked as candidates in the validation pass), served
+    // live from the City's own ArcGIS MapServer. 61 real planning areas,
+    // confirmed by point-in-polygon: the Gaslamp Quarter -> DOWNTOWN, La
+    // Jolla -> LA JOLLA, North Park -> NORTH PARK; a Chula Vista point
+    // correctly falls outside every shape. maxAllowableOffset takes the
+    // payload to 73KB for all 61 areas.
+    url: 'https://webmaps.sandiego.gov/arcgis/rest/services/Planning/PLN_LongRangePlanning/MapServer/3/query?where=1%3D1&outFields=CPNAME&outSR=4326&maxAllowableOffset=0.0003&f=geojson',
+    file: FileSystem.documentDirectory + 'sd-hoods.json',
+    nameKeys: ['CPNAME'],
+    basemapLabels: false,
+  },
+  {
+    id: 'mia',
+    // Miami proper, held tight to the Police Neighborhoods layer's own
+    // extent (a Miami Beach point correctly falls outside this box's data
+    // below — Miami Beach is its own city).
+    inBox: (lat, lon) => lat >= 25.7 && lat <= 25.87 && lon >= -80.33 && lon <= -80.13,
+    // Matches this file's own OSM-fallback code comment exactly: Miami's
+    // admin_level-8 relation IS the whole city, no finer boundary=
+    // administrative relation exists there at all. Real source found
+    // 2026-09-04: the City of Miami Police Department's own "Police
+    // Neighborhoods" layer (`PDNETNAME` field) — despite the name, these
+    // boundaries ARE the City's official NET (Neighborhood Enhancement
+    // Team) areas, real colloquial names (Wynwood, Little Havana, Little
+    // Haiti, Coconut Grove, Overtown, Edgewater, Brickell/Roads...), not
+    // police-jurisdiction jargon. Only 13 areas — Miami proper is genuinely
+    // coarser-grained than NYC/Atlanta/SF/the other cities above; this is
+    // the whole city's real breakdown, not a partial/truncated result.
+    // Rejected: "Miami Neighborhoods (Zillow)", a third-party crowd-sourced
+    // boundary layer with no City/County authority behind it. Confirmed by
+    // point-in-polygon: Wynwood -> Wynwood, Downtown Miami -> Downtown,
+    // Coconut Grove -> Coconut Grove. 126KB unsimplified for all 13 shapes —
+    // small enough that server-side simplification wasn't worth adding.
+    url: 'https://services1.arcgis.com/CvuPhqcTQpZPT9qY/arcgis/rest/services/Police_Neighborhoods/FeatureServer/0/query?where=1%3D1&outFields=PDNETNAME&outSR=4326&f=geojson',
+    file: FileSystem.documentDirectory + 'mia-hoods.json',
+    nameKeys: ['PDNETNAME'],
+    basemapLabels: false,
+  },
+  {
+    id: 'ams',
+    // Amsterdam proper (city, not metro — matches Jake's own population
+    // figure for this city in GLOBAL_CITY_EXPANSION_TARGETS.md), held tight
+    // to the wijken layer's own extent.
+    inBox: (lat, lon) => lat >= 52.27 && lat <= 52.43 && lon >= 4.72 && lon <= 5.11,
+    // OSM's admin_level 6-9 never returns Amsterdam itself — all 8 shapes in
+    // the query cell are neighboring Dutch municipalities (Amstelveen,
+    // Diemen, Ouder-Amstel...). Real source: data.amsterdam.nl's own
+    // "gebieden/wijken" (wards) API, the city's official open-data
+    // platform. 110 real named wards (Jordaan, Oude Pijp/Nieuwe Pijp,
+    // Grachtengordel-West, Bellamybuurt...) — deliberately NOT the finer
+    // "buurten" layer on the same API (a much larger set, closer to
+    // census-block granularity than a neighborhood a resident would
+    // recognize — the same "too fine to be useful" problem NYC's merged-NTA
+    // alternative had, just in the other direction). Confirmed by
+    // point-in-polygon: Dam Square -> Burgwallen-Nieuwe Zijde, De Pijp
+    // (Ferdinand Bolstraat) -> Oude Pijp, central Jordaan -> Jordaan.
+    //
+    // REAL BUG FOUND while adding this entry: this API strictly
+    // content-negotiates and returned HTTP 406 for `_format=geojson`
+    // combined with loadHoods()'s previous bare `Accept: 'application/json'`
+    // header — every other registered city (old and new) tolerates that
+    // header, so the bug was invisible until Amsterdam. A 406 falls into the
+    // same `if (res.ok)` branch as any other failure, so this would have
+    // silently produced permanent empty hoods here with no visible error,
+    // not a crash. Fixed by widening the Accept header in loadHoods() below
+    // to `'application/geo+json, application/json'` — confirmed live this
+    // does not break NYC/Atlanta/SF or any other entry in this file.
+    //
+    // No maxAllowableOffset-equivalent on this REST API (it isn't ArcGIS) —
+    // left unsimplified. 661KB for 110 shapes, same order of magnitude as
+    // NYC's ~1.5MB unsimplified set.
+    url: 'https://api.data.amsterdam.nl/v1/gebieden/wijken/?_format=geojson&_pageSize=200',
+    file: FileSystem.documentDirectory + 'ams-hoods.json',
+    nameKeys: ['naam'],
+    basemapLabels: false,
+  },
+  {
+    id: 'bri',
+    // Bristol proper, held tight to the Council's own Wards layer extent.
+    inBox: (lat, lon) => lat >= 51.39 && lat <= 51.55 && lon >= -2.73 && lon <= -2.5,
+    // The one genuine OSM dead zone the 2026-09-04 validation pass found:
+    // ALL 4 raw admin_level-6 elements in Bristol's query cell were filtered
+    // out by MAX_SHAPE_DIAGONAL_KM (the 25km size cap) — nothing renders at
+    // any tested level, not even a single "this is just the city" shape the
+    // way Miami/Copenhagen degrade to elsewhere. Real source: Bristol City
+    // Council's own GIS "Wards" layer, served live from the Council's own
+    // ArcGIS server (maps2.bristol.gov.uk) — same live-fetch city-GIS
+    // pattern as Atlanta/LA/Seattle/Boston/San Diego. These are political
+    // ward boundaries, not a purpose-built neighbourhood layer, but
+    // Bristol's 34 wards carry genuinely colloquial names (Clifton,
+    // Bedminster, Cotham, Redland, Southville, Hotwells & Harbourside...) —
+    // a materially better naming fit than the Toronto-electoral-riding and
+    // Dublin-1986-census-geography data-quality problems the same
+    // validation pass documented for those two cities. Confirmed by
+    // point-in-polygon: the Clifton Suspension Bridge -> Clifton, College
+    // Green (city centre) -> Central. maxAllowableOffset takes the payload
+    // from 1.34MB to 29KB for all 34 wards.
+    url: 'https://maps2.bristol.gov.uk/server2/rest/services/ext/ll_boundaries/MapServer/4/query?where=1%3D1&outFields=NAME&outSR=4326&maxAllowableOffset=0.0003&f=geojson',
+    file: FileSystem.documentDirectory + 'bri-hoods.json',
+    nameKeys: ['NAME'],
+    basemapLabels: false,
+  },
 ];
 
 /** True when we should draw our own neighborhood name labels because the
@@ -228,7 +472,16 @@ async function loadHoods(city: CitySource): Promise<any[]> {
       }
     } catch {} // no file yet — first run
     try {
-      const res = await fetch(city.url, { headers: { Accept: 'application/json' } });
+      // Accepts BOTH application/geo+json and application/json — NYC/Atlanta/
+      // SF/every ArcGIS+Socrata source below tolerate either, but Amsterdam's
+      // data.amsterdam.nl strictly content-negotiates and returns HTTP 406
+      // for a bare `application/json` Accept header when `_format=geojson`
+      // is requested (confirmed live 2026-09-04 while adding the `ams`
+      // entry below). A 406 hits the `if (res.ok)` branch below as false, so
+      // this would have silently produced permanent empty hoods for
+      // Amsterdam with no visible error, not a crash — widened here so
+      // every registered city, old or new, actually gets its data.
+      const res = await fetch(city.url, { headers: { Accept: 'application/geo+json, application/json' } });
       if (res.ok) {
         const fc: any = await res.json();
         const features = fc?.features ?? [];
