@@ -1029,10 +1029,27 @@ export default function MapScreen() {
   };
 
   // "Map grows as you explore": when you pan/zoom the map (and aren't mid-
-  // cleanup), load coverage for the area you moved to. The neighborhood name +
-  // boundary deliberately do NOT update here — they're anchored to your real
-  // location (below) so the outline stays put instead of flipping as the map
-  // center crosses hoods. Debounced; skips very zoomed-out views.
+  // cleanup), load coverage for the area you moved to. The neighborhood name
+  // (the header label) deliberately does NOT update here — it's anchored to
+  // your real location (below) so it stays put instead of flipping as the map
+  // center crosses hoods. Debounced.
+  //
+  // The two redraws below are gated on zoom DIFFERENTLY, on purpose:
+  //   - loadStreetCoverage fires a live Overpass geometry fetch (on a cold
+  //     grid cell) plus a Firestore statuses query on every call — real
+  //     network/read cost per pan, worth skipping when zoomed out too far to
+  //     usefully see individual streets anyway. Kept behind the zoom<14 floor.
+  //   - loadHoodsInView is cheap regardless of zoom: the curated-city path
+  //     (getHoodsInBounds) is an in-memory point-in-polygon filter over a
+  //     GeoJSON payload fetched once per city and cached forever; the OSM
+  //     fallback (getOsmHoodsInBounds) is keyed to a fixed ~20km cell
+  //     (independent of viewport size) and also cached. Gating this on zoom
+  //     was the root cause of a real bug (2026-09-06): panning across low
+  //     zoom between curated cities (e.g. Brooklyn <-> Amsterdam) meant the
+  //     boundary redraw never fired on the return leg, and nothing else
+  //     re-triggers it short of a full app restart (coverageLoadedRef, which
+  //     gates the mount-effect redraw, was already true). Fires on every
+  //     settle regardless of zoom now.
   const handleMapMessage = (event: any) => {
     try {
       const msg = JSON.parse(event.nativeEvent.data);
@@ -1047,10 +1064,10 @@ export default function MapScreen() {
       }
       if (msg.type !== 'moveend' || isListening) return;
       if (activeLevelRef.current) return; // level is locked to its hood — don't grow/rename
-      if (typeof msg.zoom === 'number' && msg.zoom < 14) return;
+      const zoomedInEnoughForStreets = !(typeof msg.zoom === 'number' && msg.zoom < 14);
       if (panLoadRef.current) clearTimeout(panLoadRef.current);
       panLoadRef.current = setTimeout(() => {
-        loadStreetCoverage(msg.lat, msg.lon);
+        if (zoomedInEnoughForStreets) loadStreetCoverage(msg.lat, msg.lon);
         if (Array.isArray(msg.b)) loadHoodsInView(msg.b);
       }, 600);
     } catch {}
