@@ -1476,7 +1476,60 @@ async function promotedStreetTilesFromCleanups() {
 // mirrors the spec's own "3-5 unique requesters, tunable" language. Note:
 // city_requests is empty at the time this shipped (spec §1) — this makes
 // the mechanism real, not a guarantee there's anything to promote yet.
+//
+// MEASURED 2026-09-07, and the note above turned out to understate it:
+// city_requests is STILL empty, so `precache_boundaries` has never held a
+// single document — every client read of it (neighborhoods.ts's
+// getPrecachedBoundaryFeatures) is a guaranteed Firestore miss followed by
+// a live Overpass call, which is the ~20-27s wait on the boundary path.
+// Against real data that is not a rare edge: 46 of 206 cleanups (22%) are
+// OUTSIDE every curated CITY_SOURCES city and therefore on that path, 39 of
+// them in one cell (Pawleys Island / Murrells Inlet / Georgetown County, SC).
+//
+// Root cause is a bootstrapping deadlock, not a bug in this function: the
+// only way in was three unique requesters tapping "request my city" for the
+// same city, and that card only appears in the narrow
+// isFallbackCityWithNoSubdivision case to begin with. At current user
+// numbers that gate is effectively unreachable. Streets never had this
+// problem because they seed from a static roster AND promote from real
+// cleanups (promotedStreetTilesFromCleanups); boundaries got no equivalent.
+// promotedBoundaryCellsFromCleanups below closes exactly that asymmetry.
 const CITY_REQUEST_PROMOTION_THRESHOLD = 3;
+
+/** Boundary cells to refresh because real cleanups happened there — the
+ *  boundary-side analog of promotedStreetTilesFromCleanups, same collection,
+ *  same 30-day window, same 3-cleanup threshold, just keyed by the ~20km
+ *  osmCellKey instead of the ~500m gridKey.
+ *
+ *  Deliberately NOT filtered against the curated CITY_SOURCES boxes
+ *  (NYC/Atlanta/SF/...). A client in a curated city never calls
+ *  getOsmHoodsInBounds at all, so those cells write docs nobody reads — but
+ *  duplicating the client's city registry here to skip them would cost one
+ *  Overpass call per week per curated cell (three today) and buy a real
+ *  drift risk between two copies of that list. Wrong trade at this volume;
+ *  revisit if the curated list grows a lot. */
+async function promotedBoundaryCellsFromCleanups() {
+  const since = Date.now() - CLEANUP_PROMOTION_WINDOW_MS;
+  const snap = await db.collection('cleanups').select('location_lat', 'location_lon', 'city', 'timestamp').get();
+  const counts = new Map(); // osmCellKey -> { count, lat, lon, city }
+  snap.forEach((doc) => {
+    const d = doc.data();
+    if (toMillis(d.timestamp) < since) return;
+    const lat = d.location_lat;
+    const lon = d.location_lon;
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+    const key = osmCellKey(lat, lon);
+    const c = counts.get(key) || { count: 0, lat, lon, city: d.city || '' };
+    c.count++;
+    if (!c.city && d.city) c.city = d.city;
+    counts.set(key, c);
+  });
+  const promoted = new Map();
+  for (const [key, c] of counts) {
+    if (c.count >= CLEANUP_PROMOTION_THRESHOLD) promoted.set(key, { lat: c.lat, lon: c.lon, city: c.city });
+  }
+  return promoted;
+}
 
 /** Forward-geocode a city name to a representative point via Nominatim —
  *  same client convention (User-Agent, endpoint) already used by the app's
@@ -1822,14 +1875,54 @@ async function runPrecacheDripBatch() {
   return result;
 }
 
-/** Boundary-cell refresh — unchanged in behavior from the 2026-09-03
- *  design, kept synchronous on the weekly cadence. NOT part of what this
- *  section scales: city_requests-driven boundary cells are a handful at
- *  most (order of single digits), nothing like the 312 NYC neighborhoods,
- *  so the burst risk that motivated the roster/drip split above doesn't
- *  apply here. */
+// Boundary cells, once promoted, are STICKY — persisted here and refreshed
+// forever after. This is the one place the boundary side must NOT copy the
+// street side's shape. rebuildStreetTileRoster keeps its own append-only
+// roster doc, so a street tile promoted by a cleanup cluster stays scheduled
+// after that cluster ages out of the 30-day window. refreshBoundariesOnce
+// recomputes its set from scratch on every run, so without this doc a cell
+// promoted by a real event (the SC cluster: 39 cleanups from an event that
+// ran 2026-08-14 -> 08-20) would drop out of the window around 2026-09-19,
+// stop being refreshed, cross the client's 14-day staleness ceiling two
+// weeks later, and put that area silently back on the 20-27s live-Overpass
+// path — with nothing in the logs saying anything had changed.
+//
+// Sticky is cheap and honest here: admin boundaries essentially never move,
+// the cost is one Overpass call per cell per week, and the whole point of
+// caching a cell is that someone was there once. Append-only, same as the
+// street roster.
+const PRECACHE_BOUNDARY_ROSTER_DOC = db.collection('precache_meta').doc('boundary_cells');
+
+/** Boundary-cell refresh. Sources, unioned: cells persisted by earlier runs
+ *  (sticky, see above), cells whose city crossed the city_requests threshold
+ *  (the original 2026-09-03 signal), and cells where real cleanups clustered
+ *  (added 2026-09-07 — the signal that actually makes this collection
+ *  non-empty; see promotedBoundaryCellsFromCleanups).
+ *
+ *  Still small and still safe to run synchronously on the weekly cadence:
+ *  cells are ~20km, so a whole metro is one call. Today's real union is a
+ *  single digit, nothing like the 312 NYC neighborhoods that motivated the
+ *  roster/drip split above. If this ever reaches tens of cells it should
+ *  move onto the drip. */
 async function refreshBoundariesOnce() {
-  const boundaryCells = await promotedBoundaryCellsFromCityRequests();
+  const boundaryCells = new Map();
+
+  const persisted = await PRECACHE_BOUNDARY_ROSTER_DOC.get();
+  const priorCells = persisted.exists && Array.isArray(persisted.data().cells) ? persisted.data().cells : [];
+  for (const c of priorCells) {
+    if (c && c.key && Number.isFinite(c.lat) && Number.isFinite(c.lon)) {
+      boundaryCells.set(c.key, { lat: c.lat, lon: c.lon, city: c.city || '' });
+    }
+  }
+
+  // Newly-promoted sources are merged in second so a fresh city label
+  // replaces an older blank one, but they never remove a persisted cell.
+  for (const [key, cell] of await promotedBoundaryCellsFromCityRequests()) boundaryCells.set(key, cell);
+  for (const [key, cell] of await promotedBoundaryCellsFromCleanups()) {
+    const existing = boundaryCells.get(key);
+    boundaryCells.set(key, { ...cell, city: cell.city || (existing && existing.city) || '' });
+  }
+
   const results = { attempted: boundaryCells.size, ok: 0, failed: 0, failedKeys: [] };
 
   async function runBoundaryPass(entries) {
@@ -1853,6 +1946,15 @@ async function refreshBoundariesOnce() {
   }
   results.failed = failedBoundaries.length;
   results.failedKeys = failedBoundaries.map(([key]) => key);
+
+  // Persist the union for next week. Written from `boundaryCells`, not from
+  // the successes, on purpose: a cell that failed both passes (a bad
+  // Overpass night) must stay on the roster so it is retried next week,
+  // exactly like a failing street tile never leaves the street roster.
+  await PRECACHE_BOUNDARY_ROSTER_DOC.set({
+    cells: [...boundaryCells].map(([key, c]) => ({ key, lat: c.lat, lon: c.lon, ...(c.city ? { city: c.city } : {}) })),
+    updatedAt: Date.now(),
+  });
 
   const summary = { generatedAt: Date.now(), ...results };
   await db.collection('precache_status').doc('boundaries').set(summary);
