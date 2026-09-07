@@ -19,6 +19,26 @@ the ledger's actual structure, not paste it verbatim.
   longer an open item.
 -->
 
+- 2026-09-07 — **Backlog cleared: 4 commits pushed to the public repo, and the signup/invite OTA
+  shipped to production.** The 13-day unpushed gap that caused the 2026-09-07 secret incident is
+  now zero — `0b9639f..cbb081c` pushed to `origin/main`, pre-push secret scan clean.
+  **OTA published** from a completely clean working tree (so the shipped bundle is exactly
+  `cbb081c`, not a working-tree variant — the hazard `publish-detector.sh` exists to prevent):
+  branch `production`, runtime 1.2.2, update group `c7ad7766-7795-414e-9d15-e3858bc43d1a`,
+  iOS+Android. Carries `339d9f0` only, in app terms — Sign in with Apple promoted to the primary
+  signup path with name/email/password collapsed behind "Use email instead," plus the
+  `Share.share()` challenge invite link. The three later commits are Cloud Functions and docs, so
+  they needed no OTA and were already deployed.
+  Pre-flight: `tsc --noEmit` clean, `test:hoods` 10/10, `test:recap` pass.
+  **CARTO key verified inlined in the shipped iOS Hermes bundle** — `key=undefined` occurs 0
+  times and the real 35-char key occurs once. Worth doing every time: this exact regression
+  shipped three times (31 Aug native, 1 Sep OTA x2), and `apps/companion/.env` does NOT exist —
+  the publish only works because `publish-detector.sh` falls back to the repo-root `.env`.
+  Adjacency in `strings` output is NOT evidence either way, since Hermes stores string literals
+  in a separate table; the positive check (grep for the actual key value) is the one that counts.
+  **Not yet field-verified:** nobody has force-quit and reopened the app to confirm the new bundle
+  is actually running, and the signup change is on the one screen a new tester sees first.
+
 - 2026-09-07 — **Neighborhood-outline slowness root-caused: `precache_boundaries` has been empty
   since it shipped. Fixed in `05de916`, COMMITTED BUT NOT DEPLOYED — the deploy was blocked by
   the tool classifier and is Jake's to run.**
