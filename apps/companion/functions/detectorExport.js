@@ -190,17 +190,42 @@ const exportDetectorTelemetry = onRequest(
         stream.end();
       });
 
-      const [signedUrl] = await file.getSignedUrl({
-        action: 'read',
-        expires: Date.now() + 60 * 60 * 1000, // 1 hour
-      });
+      // The signed URL is a CONVENIENCE, not the deliverable — the export is
+      // the object in Cloud Storage, and it is already written by this point.
+      // Signing must therefore never fail the request.
+      //
+      // Confirmed live on the first real invocation 2026-09-07: getSignedUrl
+      // needs `iam.serviceAccounts.signBlob` on the runtime service account,
+      // which the default compute account does NOT have, so this threw and
+      // took a perfectly good export down with it as an HTTP 500 — the file
+      // was sitting in the bucket the whole time. Granting
+      // roles/iam.serviceAccountTokenCreator would fix the signing, but that
+      // is a broad permission to hand a function purely for a download link,
+      // so the link is optional instead and the object path is always
+      // returned.
+      let signedUrl = null;
+      let signingError = null;
+      try {
+        [signedUrl] = await file.getSignedUrl({
+          action: 'read',
+          expires: Date.now() + 60 * 60 * 1000, // 1 hour
+        });
+      } catch (e) {
+        signingError = String((e && e.message) || e);
+        console.warn(`exportDetectorTelemetry: could not sign a download URL (export itself is fine): ${signingError}`);
+      }
 
       res.json({
         ok: true,
         object_path: objectPath,
         row_count: rowCount,
-        download_url: signedUrl,
-        expires_in_seconds: 3600,
+        ...(signedUrl
+          ? { download_url: signedUrl, expires_in_seconds: 3600 }
+          : {
+              download_url: null,
+              signing_error: signingError,
+              fetch_with: `gcloud storage cp gs://${bucket.name}/${objectPath} .`,
+            }),
       });
     } catch (e) {
       console.error('exportDetectorTelemetry failed', e);
