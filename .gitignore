@@ -61,3 +61,10 @@ _to_delete/
 # when this was added (2026-09-06).
 PICK Content/
 /youtube_banner_*.png
+
+# Detector telemetry exports (fetch-detector-export.js output).
+# Non-identifying by construction, but this repo is PUBLIC and these are
+# multi-MB telemetry dumps that should be pulled fresh, never committed.
+detector-corpus-*.ndjson
+detector-export-*.ndjson
+*.ndjson
