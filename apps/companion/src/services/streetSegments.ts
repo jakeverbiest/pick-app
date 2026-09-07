@@ -85,7 +85,16 @@ const SEGMENT_SAMPLE_STEP_M = 5; // sample the segment every ~5m to measure cove
 // both virtual sidewalks at once.
 // ROAD_SIDE_OFFSET_M is imported (see top of file) — re-exported for
 // geometryCoverage.test.ts, which asserted this invariant directly.
-const GEOMETRY_CACHE_PREFIX = '@pick_sidewalks_v3_'; // v3: split centerline fallbacks per-side
+// v4 (2026-09-07): forced invalidation, not a format change. Between
+// 2026-09-03 and today the server precache served 56 Brooklyn tiles whose
+// 600m fetch disc was centered ~539m from the cell they were filed under
+// (see functions/index.js's gridKeysAround comment). Every client that
+// opened the map over those cells wrote that wrong geometry into THIS cache,
+// which is read before the precache is ever consulted and holds for
+// GEOMETRY_CACHE_TTL_MS — 30 days. Fixing the server and deleting the bad
+// precache docs does nothing for a phone that already has the bad copy
+// locally; only a new key does. Same reason v3 was cut.
+const GEOMETRY_CACHE_PREFIX = '@pick_sidewalks_v4_'; // v4: drop client copies of the off-center precache tiles
 // MIN_SIDEWALK_SEGMENTS is imported — used below by fetchStreetGeometryForRing.
 const GEOMETRY_CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 const STATUS_COLLECTION = 'segment_status';
