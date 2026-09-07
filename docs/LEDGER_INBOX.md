@@ -19,6 +19,48 @@ the ledger's actual structure, not paste it verbatim.
   longer an open item.
 -->
 
+- 2026-09-07 — **REAL BUG, user-reported and root-caused: the precache served the wrong half of
+  its own cell, so the map overview showed almost no cleaned streets. Fixed in `d93873b`;
+  code NOT YET DEPLOYED and the data repair NOT YET RUN (both blocked by the tool classifier —
+  Jake's to run, in that order).**
+  Jake's report: "when I start the app, my neighborhood shows very little streets that have been
+  touched, when I click into my neighborhood it shows a huge amount of decaying streets."
+  **Those are two different geometry sources, and the overview was the wrong one.** The level view
+  runs a live whole-ring poly query that never consulted these tiles, so it was correct all along.
+  **Root cause:** `gridKeysAround()` stored the STEPPED point as each cell's representative fetch
+  point, preserving the original hand-picked seed's offset within its cell across the whole
+  generated block. Fort Greene's centroid sits ~539m from its cell center, so all 56 cells in that
+  block inherited the same corner-ward offset. `refreshStreetTile` fetches a 600m disc around that
+  point and files it under the cell key — a disc centered 539m off-center covers about half of its
+  own 1112m x 843m cell and spills the rest outside.
+  **Evidence (measured, not inferred), cell `40.67_-74.00`:** a live fetch at the true cell center
+  matched **196/202 (97%)** of that cell's `segment_status` docs; the cached off-center disc
+  matched **12/202 (6%)**. precache∩live was only 43%.
+  **Scope:** 56 of 1,226 roster tiles, worst offset 631m — and because they were the original
+  Brooklyn block they sat at the FRONT of the drip queue, so **all 56 were already written: 60% of
+  the 94 tiles cached**, centered on exactly where the app is used. It worsened as the drip
+  advanced, which is why it surfaced now rather than at rollout.
+  `deriveNycNeighborhoodTiles` (2026-09-05) already derived centers correctly; the roster is
+  append-only first-writer-wins, so the 2026-09-03 cells kept the wrong point.
+  `promotedStreetTilesFromCleanups` had the identical defect (stored the cleanup's own coordinate)
+  and is fixed too — it had never fired, so it never bit. Boundary cells are unaffected:
+  `refreshBoundaryCell` floors the cell to build its bbox, so the seed's position never reaches
+  the query.
+  **NOT a bug, checked separately:** that the history renders red is correct. 70% of the 547
+  `segment_status` docs are genuinely 20+ days old (range 4.2-87.8 days) and the gradient
+  saturates at 20. Only 9% are inside the 5-day green band.
+  **Order of operations matters:** deploy the `gridKeysAround` fix FIRST, then run
+  `functions/repair-precache-seeds.js --apply` — otherwise Monday's roster rebuild writes the bad
+  coordinates straight back. The repair recenters the 56 entries, deletes the 56 poisoned docs
+  (client fails OPEN on a miss, so those cells revert to the live path rather than serving wrong
+  geometry until the 52-day ceiling), and resets the cursor so Brooklyn re-warms in ~1.2 days
+  instead of ~25. Dry-run by default; safe to re-run.
+  **Three wrong theories worth not repeating**, all killed by measurement: (1) per-pan re-projection
+  cost — 0.8ms, fine; (2) the 600m disc vs the cell's 698m half-diagonal — only 4.6% of cell area,
+  and Overpass returns whole ways reaching 1331m; (3) the `MIN_SIDEWALK_SEGMENTS` road-centerline
+  fallback poisoning tiles — all 94 tiles contain sidewalk-id segments, and the worst-matching tile
+  is 99% sidewalk. The seed offset was the only theory the data supported.
+
 - 2026-09-07 — **Backlog cleared: 4 commits pushed to the public repo, and the signup/invite OTA
   shipped to production.** The 13-day unpushed gap that caused the 2026-09-07 secret incident is
   now zero — `0b9639f..cbb081c` pushed to `origin/main`, pre-push secret scan clean.
