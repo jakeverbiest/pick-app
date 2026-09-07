@@ -1,20 +1,31 @@
 /**
- * STAGED — NOT DEPLOYED, NOT WIRED IN.
+ * LIVE as of 2026-09-07 — wired into index.js and deployed on Jake's explicit
+ * instruction. Renamed from detectorExport.staged.js at that point: a deployed
+ * file called ".staged" is precisely the stale label this repo keeps getting
+ * caught by, so the name moved with the status.
  *
- * This file is not required or exported from index.js on purpose. Every export in index.js
- * deploys together on the next `firebase deploy --only functions`, and this repo has a real
- * history of that command running for unrelated reasons (Overpass precache work, team-stats
- * rebuilds). Wiring this in directly would mean the next unrelated functions deploy ships this
- * Cloud Function too, without anyone reviewing this diff specifically. See
- * docs/DETECTOR_EXPORT_SPEC.md ("Deliberately not wired in") for the full reasoning.
+ * The original "deliberately not wired in" reasoning (every export in index.js
+ * ships on any `firebase deploy --only functions`, and that command runs here
+ * for unrelated reasons) was about not shipping this WITHOUT review. It has now
+ * been reviewed and shipped on purpose. See docs/DETECTOR_EXPORT_SPEC.md.
  *
- * To activate (after Jake reviews docs/DETECTOR_EXPORT_SPEC.md and this file):
- *   1. `firebase functions:secrets:set DETECTOR_EXPORT_KEY` (one-time; picks the operator key)
- *   2. In index.js, near the other exports:
- *        const { exportDetectorTelemetry } = require('./detectorExport.staged');
- *        exports.exportDetectorTelemetry = exportDetectorTelemetry;
- *   3. `firebase deploy --only functions`
+ * WHY IT EXISTS: the detector is validated on exactly one person. Real org
+ * walkers generate telemetry that is otherwise unreadable in bulk, so without
+ * this the detector cannot move past n=1. Its value is privacy posture as much
+ * as access — analyzing a non-identifying derivative rather than routinely
+ * reading raw owner-scoped cleanup documents (which the admin SDK can already
+ * do, and which is the heavier thing to be in the habit of).
  *
+ * ---------------------------------------------------------------------------------------------
+ * OPEN POLICY QUESTION — READ BEFORE THE FIRST UNBOUNDED RUN.
+ *
+ * Called with no `since`, this exports EVERY cleanup ever written, including
+ * walks recorded before the 2026-09-06 privacy-policy amendment that disclosed
+ * detector R&D as a use. Whether a use disclosed on a date may be applied
+ * retroactively to data collected before it is a policy call, not an
+ * engineering one, and this file does not make it. Deploying the function does
+ * not decide it either — nothing is exported until someone invokes it. Pass
+ * `since=2026-09-06` to stay inside the disclosed window.
  * ---------------------------------------------------------------------------------------------
  * WHAT THIS DOES
  *
@@ -39,7 +50,7 @@
  * ---------------------------------------------------------------------------------------------
  */
 
-const { onRequest, HttpsError } = require('firebase-functions/v2/https');
+const { onRequest } = require('firebase-functions/v2/https');
 const { defineSecret } = require('firebase-functions/params');
 const { getFirestore } = require('firebase-admin/firestore');
 const { getStorage } = require('firebase-admin/storage');

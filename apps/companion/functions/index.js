@@ -2067,6 +2067,26 @@ exports.runOverpassPrecacheRefresh = onRequest(
 );
 
 // ==========================================================================
+// DETECTOR TELEMETRY EXPORT — see functions/detectorExport.js and
+// docs/DETECTOR_EXPORT_SPEC.md. Wired in and deployed 2026-09-07 on Jake's
+// explicit instruction; it had been deliberately left unwired so an unrelated
+// functions deploy couldn't ship it unreviewed.
+//
+// Kept in its own module rather than inlined here: this file is already ~2,100
+// lines, and the export's field allowlist is the security boundary — it is
+// much easier to review as one small self-contained file than as another block
+// in the middle of everything else.
+//
+// NOTE for whoever runs it: with no `since` it exports every cleanup ever,
+// including walks predating the 2026-09-06 disclosure of detector R&D as a
+// use. That retroactive question is unresolved policy — pass
+// `since=2026-09-06` to stay inside the disclosed window. Deploying decides
+// nothing; invoking it does.
+// ==========================================================================
+const { exportDetectorTelemetry } = require('./detectorExport');
+exports.exportDetectorTelemetry = exportDetectorTelemetry;
+
+// ==========================================================================
 // ADOPT A STREET — daily check: if an adopted spot has had no cleanup within
 // `radiusM` in the last `thresholdDays`, email the picker a nudge. Emails are
 // sent by the Firebase "Trigger Email" extension, which watches the `mail`
