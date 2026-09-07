@@ -4,7 +4,7 @@
  *  - fresh = cleaned within 5 days; freshPct / toGo math against that set
  * Run: npx -y tsx src/services/__tests__/polygonStats.test.ts
  */
-import { polygonStats, isFallbackCityWithNoSubdivision } from '../neighborhoods';
+import { polygonStats, isFallbackCityWithNoSubdivision } from '../hoodMetrics';
 
 let pass = 0;
 let fail = 0;

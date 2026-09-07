@@ -872,14 +872,13 @@ export function citySlug(city: string): string {
   );
 }
 
-/** Gate for the "request my city" card: true only for the genuine "OSM gave
- *  us one shape — the city itself, no real subdivision" case. False when
- *  nothing came back at all (empty hoods — a different, "we have nothing"
- *  case that isn't what this card is for) and false when real fine
- *  districts came back (hasFineSubdivision true — nothing to request). */
-export function isFallbackCityWithNoSubdivision(hoodCount: number, hasFineSubdivision: boolean): boolean {
-  return hoodCount > 0 && !hasFineSubdivision;
-}
+/* Re-exported from ./hoodMetrics so existing importers (app/(tabs)/map.tsx)
+ * are unaffected by the move. isFallbackCityWithNoSubdivision gates the
+ * "request my city" card: true only for the genuine "OSM gave us one shape —
+ * the city itself, no real subdivision" case. False when nothing came back at
+ * all (a different, "we have nothing" case that isn't what this card is for)
+ * and false when real fine districts came back — nothing to request. */
+export { isFallbackCityWithNoSubdivision, polygonStats } from './hoodMetrics';
 
 export interface OsmHoodsInBoundsResult {
   hoods: HoodShape[];
@@ -950,24 +949,9 @@ export async function getHoodsInBounds(
   return out;
 }
 
-/** % of segments inside a polygon that are fresh (cleaned ≤5d) — a hood's score. */
-export function polygonStats(
-  ring: [number, number][],
-  segments: { coords: [number, number][]; daysOld: number | null }[]
-): { total: number; fresh: number; freshPct: number; toGo: number } {
-  let total = 0;
-  let fresh = 0;
-  for (const s of segments) {
-    const c = s.coords;
-    if (!c.length) continue;
-    const m = c[Math.floor(c.length / 2)];
-    if (pointInPolygon(m[0], m[1], ring)) {
-      total++;
-      if (s.daysOld !== null && s.daysOld <= 5) fresh++;
-    }
-  }
-  return { total, fresh, freshPct: total > 0 ? Math.round((fresh / total) * 100) : 0, toGo: Math.max(0, total - fresh) };
-}
+/* polygonStats now lives in ./hoodMetrics (re-exported above) — see that file
+ * for why: it is pure, and this module's expo-file-system import made it
+ * impossible to load under the test runner. */
 
 /** The neighborhood (name + ring) containing a point — for auto-activating the
  *  level you're standing in when you start a cleanup. Works in any registered
