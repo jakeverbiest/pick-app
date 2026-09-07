@@ -1,0 +1,125 @@
+#!/usr/bin/env bash
+#
+# Blocks a push that would publish a secret.
+#
+# WHY THIS EXISTS (2026-09-07). github.com/jakeverbiest/pick-app is PUBLIC, and
+# this repo sat 52 commits ahead of origin for 13 days. Those unpushed commits
+# had three shared secrets in them as plaintext constants — the query-param
+# gates for runCityRequestsDigest, runOverpassPrecacheRefresh and
+# runAdoptionCheck. Publishing them would have let anyone trigger a precache
+# refresh and burn the Overpass fair-use budget. They were caught by hand,
+# rotated, and moved to Secret Manager. Nothing would have caught them
+# automatically, and "remember to check" is not a control.
+#
+# Scans ONLY what this push would add, not history — so it stays fast and
+# doesn't relitigate old commits.
+#
+# Installed via `git config core.hooksPath .githooks`, so it is version
+# controlled and survives a fresh clone (unlike .git/hooks/*). If you clone
+# this repo somewhere new, run that command once.
+#
+# To allow a specific line that legitimately looks like a secret (e.g. the
+# Firebase Web API key, which is designed to ship in the client bundle), put
+#     pragma: allowlist-secret
+# in a comment on the same line.
+#
+# Deliberate override for a false positive: git push --no-verify
+
+set -uo pipefail
+RED=$'\033[0;31m'; YEL=$'\033[0;33m'; NC=$'\033[0m'
+BAD=0
+
+scan_range() {
+  local range="$1"
+  local added
+  added=$(git diff "$range" --unified=0 --diff-filter=ACM 2>/dev/null | grep '^+' | grep -v '^+++' || true)
+  [ -z "$added" ] && return 0
+
+  # Lines that opt out explicitly are dropped before any pattern runs.
+  added=$(printf '%s\n' "$added" | grep -v 'pragma: allowlist-secret' || true)
+  [ -z "$added" ] && return 0
+
+  check() { # <label> <extended-regex>
+    local hits
+    # -e is required: several patterns start with '-', which grep would
+    # otherwise parse as an option.
+    hits=$(printf '%s\n' "$added" | grep -inE -e "$2" | head -5 || true)
+    if [ -n "$hits" ]; then
+      BAD=1
+      printf '%s BLOCKED: %s%s\n' "$RED" "$1" "$NC"
+      printf '%s\n' "$hits" | sed 's/^/      /'
+    fi
+  }
+
+  check "private key material" '-----BEGIN [A-Z ]*PRIVATE KEY-----'
+  check "service-account JSON (private_key field)" '"private_key"[[:space:]]*:'
+  check "AWS access key id" 'AKIA[0-9A-Z]{16}'
+  check "Slack token" 'xox[baprs]-[0-9A-Za-z-]{10,}'
+  check "bearer token literal" 'Bearer[[:space:]]+[A-Za-z0-9._~+/-]{24,}'
+  # Named secret assigned a QUOTED literal of real length. The quote and the
+  # length are what keep this usable: without them it fired on
+  # `{ secrets: [KEY], memory: '512MiB' }` and on the docs line
+  # `firebase functions:secrets:set DETECTOR_EXPORT_KEY` — neither of which is
+  # a secret. It still catches the real 2026-09-07 incident, verified against
+  # that exact commit range:
+  #     const PRECACHE_REFRESH_KEY = 'pick-precache-9k3p';
+  # and correctly ignores the Secret Manager form that replaced it:
+  #     const PRECACHE_REFRESH_KEY = defineSecret('PRECACHE_REFRESH_KEY');
+  # (bare identifier, no quoted 16+ char value).
+  check "hardcoded secret assignment" \
+    '(api[_-]?key|apikey|secret|password|passwd|auth[_-]?token|access[_-]?token|private[_-]?token|trigger[_-]?key|refresh[_-]?key|digest[_-]?key)[a-z0-9_]*[[:space:]]*[:=][[:space:]]*['"'"'"][A-Za-z0-9_./+-]{16,}['"'"'"]'
+}
+
+# Files that should never be committed at all, regardless of content.
+scan_filenames() {
+  local range="$1" files
+  files=$(git diff --name-only --diff-filter=ACM "$range" 2>/dev/null || true)
+  [ -z "$files" ] && return 0
+  local hits
+  hits=$(printf '%s\n' "$files" | grep -iE '(^|/)\.env($|\.)|serviceAccountKey|\.p8$|\.p12$|\.keystore$|\.mobileprovision$' || true)
+  if [ -n "$hits" ]; then
+    BAD=1
+    printf '%s BLOCKED: credential file staged for push%s\n' "$RED" "$NC"
+    printf '%s\n' "$hits" | sed 's/^/      /'
+  fi
+}
+
+while read -r _local_ref local_sha _remote_ref remote_sha; do
+  [ "$local_sha" = "0000000000000000000000000000000000000000" ] && continue   # branch delete
+  if [ "$remote_sha" = "0000000000000000000000000000000000000000" ]; then
+    # New branch on the remote: compare against origin/main if we have it,
+    # otherwise fall back to the last 50 commits rather than all of history.
+    if git rev-parse --verify -q origin/main >/dev/null; then
+      range="origin/main..$local_sha"
+    else
+      range="${local_sha}~50..$local_sha"
+    fi
+  else
+    range="$remote_sha..$local_sha"
+  fi
+  scan_range "$range"
+  scan_filenames "$range"
+done
+
+if [ "$BAD" -ne 0 ]; then
+  cat >&2 <<'MSG'
+
+  ────────────────────────────────────────────────────────────────
+  Push blocked. This repository is PUBLIC.
+
+  If it is a real secret: do NOT just delete the line. It is already
+  in the commits you are pushing, so the value ships in history
+  regardless. Rotate it, move it to Secret Manager (see
+  defineSecret in functions/index.js), and push the rotation.
+
+  If it is a false positive: add
+      pragma: allowlist-secret
+  as a comment on that line, or push once with --no-verify.
+  ────────────────────────────────────────────────────────────────
+
+MSG
+  exit 1
+fi
+
+printf '%s✓ pre-push secret scan clean%s\n' "$YEL" "$NC"
+exit 0
