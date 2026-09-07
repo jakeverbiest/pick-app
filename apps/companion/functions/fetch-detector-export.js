@@ -96,13 +96,24 @@ if (!user && !has('all-accounts')) {
   const fs = require('fs');
   const lines = fs.readFileSync(out, 'utf8').trim();
   const rows = lines ? lines.split('\n').map((l) => JSON.parse(l)) : [];
-  const withLog = rows.filter((r) => Array.isArray(r.motion_log)).length;
-  const withTruth = rows.filter((r) => Array.isArray(r.ground_truth)).length;
+  const withLog = rows.filter((r) => Array.isArray(r.motion_log) && r.motion_log.length > 0).length;
+  // LENGTH, not just Array.isArray. `ground_truth` is written on EVERY walk as
+  // "[]" when there were no watch taps, so an isArray check counts walks that
+  // recorded nothing. That exact mistake produced a "11 walks with
+  // ground_truth" report on 2026-09-07 when the true count was zero — and then
+  // this script repeated it, reporting 13 when 2 were real. Same bug twice in
+  // one day; hence the comment rather than a silent fix.
+  const withTruth = rows.filter((r) => Array.isArray(r.ground_truth) && r.ground_truth.length > 0).length;
+  // -1 is the "pace unknown" SENTINEL from motionEvaluation.ts (too few GPS
+  // samples), not a speed. 23% of paced walks carry it, and averaging without
+  // excluding it lands 47% low. Counted here so the number is visible at pull
+  // time rather than discovered inside an analysis.
+  const paceUnknown = rows.filter((r) => r.pace_median_mps === -1).length;
   const events = rows.reduce((n, r) => n + (Array.isArray(r.motion_log) ? r.motion_log.length : 0), 0);
 
   console.log(`\nSaved ${out} (${(fs.statSync(out).size / 1048576).toFixed(1)} MB)`);
-  console.log(`  ${rows.length} walks · ${withLog} with a motion_log · ${withTruth} with ground_truth`);
-  console.log(`  ${events} motion events`);
+  console.log(`  ${rows.length} walks · ${withLog} with a motion_log · ${withTruth} with REAL ground_truth (non-empty)`);
+  console.log(`  ${events} motion events · ${paceUnknown} walks have pace_median_mps = -1 (unknown, not a speed)`);
   if (rows.length) console.log(`  ${rows[0].date} -> ${rows[rows.length - 1].date}`);
   // ground_truth is the only field that makes a walk a VALIDATION case rather
   // than just telemetry — surfacing the count here because it is the number
