@@ -19,6 +19,40 @@ the ledger's actual structure, not paste it verbatim.
   longer an open item.
 -->
 
+- 2026-09-07 — **Neighborhood-outline slowness root-caused: `precache_boundaries` has been empty
+  since it shipped. Fixed in `05de916`, COMMITTED BUT NOT DEPLOYED — the deploy was blocked by
+  the tool classifier and is Jake's to run.**
+  Measured, not inferred: `precache_boundaries` holds **zero documents and always has**, so every
+  client read of it (`neighborhoods.ts` `getPrecachedBoundaryFeatures`) is a guaranteed Firestore
+  miss followed by a live Overpass call — the ~20-27s wait on the outline path. **46 of 206
+  cleanups (22%) sit outside every curated `CITY_SOURCES` city** and so take that path, 39 of them
+  in one cell (Pawleys Island / Murrells Inlet / Georgetown County, SC — the Litchfield area).
+  **Root cause was a bootstrapping deadlock, not a defect in the refresh job.** The only entry
+  point was three unique requesters tapping "request my city" for the same city, and that card
+  only appears in the narrow `isFallbackCityWithNoSubdivision` case. `city_requests` is still
+  empty, so the gate is unreachable at current user numbers. Streets never hit this because they
+  seed from a static roster *and* promote from real cleanups; boundaries had no equivalent.
+  Fix mirrors the street side (`promotedBoundaryCellsFromCleanups`, same collection/window/
+  threshold, keyed by the ~20km `osmCellKey`), plus one deliberate divergence: promoted cells are
+  **sticky** (`precache_meta/boundary_cells`, append-only). `refreshBoundariesOnce` recomputes its
+  set every run, so without persistence the SC cell would drop out of the 30-day window around
+  2026-09-19, go stale 14 days later, and fall back to live Overpass silently.
+  Dry-run against production: **2 cells, 2 Overpass calls/week** (SC, plus a Brooklyn cell that
+  writes a doc nobody reads — curated cities never call `getOsmHoodsInBounds`; accepted rather
+  than duplicating the client's city registry into `functions/`).
+  **Timing note:** today IS Monday and the 07:00 run already fired on the old code, so nothing
+  warms until **2026-09-14** unless `runOverpassPrecacheRefresh?rebuildRoster=1` is triggered by
+  hand (needs `PRECACHE_REFRESH_KEY` out of Secret Manager).
+  **Two negative results worth not re-investigating.** (1) The curated-city per-pan cost is NOT a
+  problem: `getHoodsInBounds` re-projects and bbox-tests all 312 NYC hoods on every pan, which
+  looked like an obvious win, but it **measures 0.8ms** for 32,315 vertices — `map.tsx`'s existing
+  "cheap regardless of zoom" comment is correct, and the 1.5MB GeoJSON is one-time-per-install.
+  (2) The street-tile roster is **already demand-ordered** — all nine seeded Brooklyn
+  neighborhoods sit at indices 0-49 and are done; Astoria (idx 137) lands ~2026-09-08 and Jackson
+  Heights (idx 762) ~2026-09-21, matching what the ledger already predicted. Reordering it buys
+  nothing. Street precache is at **94/1,226 tiles (7.7%)**, cursor 96, full cycle ~2026-10-01 —
+  on plan, not a bug.
+
 - 2026-09-07 — **Loose ends tied up: three files left uncommitted across two sessions are now
   in, and a direct contradiction between two committed docs is resolved.**
   **`docs/PUBLIC_BETA_GONOGO.md`** (another session's edit) rewrote the draft Beta App
