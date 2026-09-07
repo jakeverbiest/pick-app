@@ -1260,13 +1260,48 @@ const SEED_GRID_RADIUS_CELLS = 1;
  *  the shape of src/services/streetSegments.ts's private gridNeighborhood()
  *  (radius 1 there), generalized to a configurable radius. Returns a Map so
  *  a repeated key (seed points whose blocks overlap) only fetches once. */
+// The representative point MUST be the cell's own center, not the stepped
+// point that landed in it.
+//
+// BUG FIXED 2026-09-07, and it was a bad one. This used to store the stepped
+// point itself (`lat + dLat * 0.01`), which preserves the ORIGINAL seed's
+// offset within its cell across every cell in the block. STREET_SEED_POINTS
+// are hand-picked neighborhood centroids, so they sit wherever they sit
+// inside their cell — Fort Greene's landed ~539m from its cell center, and
+// every one of the 56 cells generated from that block inherited the same
+// ~539m corner-ward offset.
+//
+// refreshStreetTile fetches a FETCH_RADIUS_M (600m) disc around whatever
+// point it is given and files the result under the cell key. A 600m disc
+// centered 539m off-center covers roughly half of its own 1112m x 843m cell
+// and spills the rest outside it. The client (getPrecachedStreetSegments)
+// then serves that disc to anyone standing anywhere in the cell.
+//
+// Measured impact before the fix, on Jake's own Brooklyn cell 40.67_-74.00:
+// a LIVE fetch at the true cell center matched 196/202 (97%) of that cell's
+// recorded segment_status docs; the precached off-center disc matched
+// 12/202 (6%). Symptom was "my neighborhood shows very little streets that
+// have been touched" on the overview, while tapping into the neighborhood
+// (a whole-ring live poly query, which never used these tiles) showed the
+// full history. 56 of 1,226 roster tiles were affected — and because those
+// were the original hand-picked Brooklyn block, they sat at the FRONT of the
+// drip queue, so all 56 were already written: 60% of everything cached.
+//
+// deriveNycNeighborhoodTiles (added two days later) already did this
+// correctly; the roster is append-only and first-writer-wins, so these cells
+// kept the wrong point. Both paths now agree.
 function gridKeysAround(lat, lon, radiusCells) {
   const cells = new Map(); // gridKey -> representative {lat, lon} to fetch from
   for (let dLat = -radiusCells; dLat <= radiusCells; dLat++) {
     for (let dLon = -radiusCells; dLon <= radiusCells; dLon++) {
-      const cLat = lat + dLat * 0.01;
-      const cLon = lon + dLon * 0.01;
-      cells.set(gridKey(cLat, cLon), { lat: cLat, lon: cLon });
+      const key = gridKey(lat + dLat * 0.01, lon + dLon * 0.01);
+      // gridKey's format is the cell's floored SW corner, so splitting it
+      // back out and adding half a step gives the center — the same
+      // derivation deriveNycNeighborhoodTiles uses. Correct for negative
+      // longitudes too, since Math.floor takes -73.9914 to -74.00 and the
+      // cell genuinely spans -74.00 .. -73.99.
+      const [cLat, cLon] = key.split('_').map(Number);
+      cells.set(key, { lat: cLat + NEIGHBORHOOD_GRID_DEG / 2, lon: cLon + NEIGHBORHOOD_GRID_DEG / 2 });
     }
   }
   return cells;
@@ -1455,13 +1490,23 @@ async function promotedStreetTilesFromCleanups() {
     const lon = d.location_lon;
     if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
     const key = gridKey(lat, lon);
-    const c = counts.get(key) || { count: 0, lat, lon };
+    const c = counts.get(key) || { count: 0 };
     c.count++;
     counts.set(key, c);
   });
   const promoted = new Map();
   for (const [key, c] of counts) {
-    if (c.count >= CLEANUP_PROMOTION_THRESHOLD) promoted.set(key, { lat: c.lat, lon: c.lon });
+    // Cell CENTER, not the cleanup's own coordinate — same bug as
+    // gridKeysAround had (see its comment). A cleanup logged near a cell
+    // edge would otherwise seed that cell's 600m fetch disc at the edge,
+    // leaving most of the cell it is filed under uncovered. This path was
+    // never the one that bit (no cleanup-promoted tile has been written
+    // yet), but it had the identical defect and would have produced the
+    // identical symptom the first time it fired.
+    if (c.count >= CLEANUP_PROMOTION_THRESHOLD) {
+      const [cLat, cLon] = key.split('_').map(Number);
+      promoted.set(key, { lat: cLat + NEIGHBORHOOD_GRID_DEG / 2, lon: cLon + NEIGHBORHOOD_GRID_DEG / 2 });
+    }
   }
   return promoted;
 }
