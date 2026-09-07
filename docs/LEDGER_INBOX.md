@@ -40,9 +40,25 @@ the ledger's actual structure, not paste it verbatim.
   Dry-run against production: **2 cells, 2 Overpass calls/week** (SC, plus a Brooklyn cell that
   writes a doc nobody reads — curated cities never call `getOsmHoodsInBounds`; accepted rather
   than duplicating the client's city registry into `functions/`).
-  **Timing note:** today IS Monday and the 07:00 run already fired on the old code, so nothing
-  warms until **2026-09-14** unless `runOverpassPrecacheRefresh?rebuildRoster=1` is triggered by
-  hand (needs `PRECACHE_REFRESH_KEY` out of Secret Manager).
+  **DEPLOYED AND VERIFIED 2026-09-07.** Jake ran the deploy; the manual trigger
+  (`runOverpassPrecacheRefresh?rebuildRoster=1`) returned HTTP 200 in 69s with
+  `boundaries: {attempted: 2, ok: 2, failed: 0}` and `roster: {total: 1226, added: 0}` — the
+  `attempted: 2` is itself the proof the new code was live, since the old code could only ever
+  report 0. `precache_boundaries` now holds **2 documents where it had held 0 since it shipped**,
+  and `precache_meta/boundary_cells` persisted both cells, so next Monday's run refreshes them
+  without re-deriving. The SC cell serves from cache now instead of a live Overpass call.
+  **Caveat found in the verification output, NOT fixed here and not caused by this change:** the
+  SC cell came back with only **2 shapes — "Garden City" and "Pawleys Island."** Murrells Inlet
+  and Georgetown County, both of which appear as `city` on real cleanups there, are absent. The
+  Brooklyn cell is more telling still: it returned Edgewater, West New York, Guttenberg, North
+  Bergen and Bronx County — **New Jersey municipalities and a county, no Brooklyn neighborhoods
+  at all.** This is the already-documented `admin_level=8` limitation (LAUNCH_BUGLIST.md: the
+  level means whole-municipality in most of the US, sub-city district elsewhere), not a
+  regression. Net effect of this fix on the OSM path is therefore **speed only — the same thin
+  outlines, ~20-27s sooner.** Real outline QUALITY outside the curated cities is a separate open
+  problem, and the honest path to it is the buglist's own answer: promote a city into
+  `CITY_SOURCES` with a curated source. Worth considering for the SC coastal strip given 39
+  cleanups and Jake's own testing there.
   **Two negative results worth not re-investigating.** (1) The curated-city per-pan cost is NOT a
   problem: `getHoodsInBounds` re-projects and bbox-tests all 312 NYC hoods on every pan, which
   looked like an obvious win, but it **measures 0.8ms** for 32,315 vertices — `map.tsx`'s existing
