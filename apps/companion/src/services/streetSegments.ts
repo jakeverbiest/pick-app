@@ -1018,6 +1018,24 @@ async function fetchParks(lat: number, lon: number): Promise<Park[]> {
 
 const parksInflight: Record<string, Promise<Park[]> | null> = {};
 
+// Parks are the one geometry layer with NO precache: streets have
+// precache_streets and boundaries have precache_boundaries, but every park
+// lookup goes straight to live Overpass. So in a city the precache doesn't
+// cover — which is all eight added 2026-09-05 — a park fetch is entirely at
+// the mercy of the public mirrors, and when all three time out the hedge
+// costs ~27s and three requests before failing.
+//
+// Without a backoff, the next map interaction repeats that immediately. That
+// quietly burns the fair-use budget the drip pacing was deliberately tuned
+// against (48 queries/day), for a layer that is decorative rather than
+// load-bearing. RATE_LIMIT_COOLDOWN_MS in overpassClient covers 429/406 but
+// not timeouts, and is opt-in per call.
+//
+// Remembered per grid cell, in memory only: a fresh launch retries, which is
+// the right behavior when the outage was transient.
+const PARK_FETCH_BACKOFF_MS = 10 * 60 * 1000;
+const parksFailedUntil: Record<string, number> = {};
+
 /** Cached parks around a point (fetches OSM on cache miss). */
 export async function getParksAround(lat: number, lon: number): Promise<Park[]> {
   const cacheKey = `${PARK_GEOMETRY_CACHE_PREFIX}${gridKey(lat, lon)}`;
@@ -1031,6 +1049,13 @@ export async function getParksAround(lat: number, lon: number): Promise<Park[]> 
     }
   } catch {}
 
+  // Recent total failure for this cell — skip straight to "no parks" rather
+  // than spending another full hedge cycle on mirrors that just failed.
+  // Returning empty rather than throwing is deliberate: every caller renders
+  // the same thing either way, and it keeps a known-bad cell from costing 27s
+  // of wall time on each pan.
+  if ((parksFailedUntil[cacheKey] || 0) > Date.now()) return [];
+
   if (parksInflight[cacheKey]) return parksInflight[cacheKey]!;
   parksInflight[cacheKey] = (async () => {
     const parks = await fetchParks(lat, lon);
@@ -1042,6 +1067,9 @@ export async function getParksAround(lat: number, lon: number): Promise<Park[]> 
   })();
   try {
     return await parksInflight[cacheKey]!;
+  } catch (error) {
+    parksFailedUntil[cacheKey] = Date.now() + PARK_FETCH_BACKOFF_MS;
+    throw error;
   } finally {
     parksInflight[cacheKey] = null;
   }
@@ -1125,7 +1153,12 @@ export async function getParkCoverage(lat: number, lon: number): Promise<RenderP
   try {
     parks = await getParksAround(lat, lon);
   } catch (error) {
-    console.error('Park coverage unavailable:', error);
+    // warn, not error: this is handled degradation, not a fault. Parks are a
+    // decorative layer with no precache, so a mirror outage legitimately means
+    // "no parks this time" — the map is fine without them. Logging it at error
+    // level made an expected external timeout read as an app bug (and surfaced
+    // a red LogBox screen in dev, 2026-09-06).
+    console.warn('Park coverage unavailable, rendering without parks:', error);
     return [];
   }
   let statuses = new Map<string, ParkStatus>();
