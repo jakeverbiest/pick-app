@@ -1263,7 +1263,14 @@ class FirebaseDatabase {
   ): Promise<UserStats[]> {
     try {
       const snapshot = await getDocs(query(collection(db, 'user_stats'), where('hidden', '==', false)));
-      const users = snapshot.docs.map((d) => d.data() as UserStats);
+      // Signed up but never picked anything up == not on the leaderboard. Filtered on
+      // total_pickups for every metric, not on the selected one: an account with zero
+      // pickups can still hold a nonzero active_days, so a per-metric test would let it
+      // back onto the "days" board. As of 2026-09-07 five of eight user_stats docs were
+      // zero-pickup accounts, which made the Ranks tab read as mostly dead.
+      const users = snapshot.docs
+        .map((d) => d.data() as UserStats)
+        .filter((u) => (u.total_pickups || 0) > 0);
       // Older user_stats docs predate total_bags — derive from pickups for them.
       const value = (u: UserStats): number =>
         metric === 'pickups' ? u.total_pickups || 0

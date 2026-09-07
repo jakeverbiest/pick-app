@@ -406,10 +406,16 @@ const shapeWeek = (a) => ({
   bags: Math.round(a.bagsWeek), hours: round1(a.secondsWeek / 3600), cleanups: a.cleanupsWeek,
 });
 
-/** Top pickers from an agg, limited to opted-in display names. */
+/** Top pickers from an agg, limited to opted-in display names.
+ *  Zero-pickup accounts are excluded at the source: signed up but never picked
+ *  anything up is not a leaderboard entry. Before this, `global_stats.topPickers`
+ *  carried real rows reading "Stinky Side — 0 pickups" straight onto
+ *  pickglobal.org/map, which is the page linked in org outreach. web/map.html and
+ *  web/city.html also filter client-side (2026-09-06) so the live site was already
+ *  clean; this stops the data being written that way at all. */
 function topPickers(a, namesById, limit) {
   return [...a.pickers.entries()]
-    .filter(([uid]) => namesById.has(uid))
+    .filter(([uid, p]) => namesById.has(uid) && Number(p.pickups) > 0)
     .map(([uid, p]) => ({ name: namesById.get(uid), pickups: p.pickups, bags: Math.round(p.bags) }))
     .sort((x, y) => y.pickups - x.pickups)
     .slice(0, limit);
