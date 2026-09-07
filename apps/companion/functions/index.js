@@ -44,6 +44,11 @@
 const { onDocumentWritten, onDocumentCreated, onDocumentDeleted } = require('firebase-functions/v2/firestore');
 const { onCall, HttpsError, onRequest } = require('firebase-functions/v2/https');
 const { onSchedule } = require('firebase-functions/v2/scheduler');
+// Secret Manager params. The three manual-trigger gates below used to be
+// hardcoded string constants in this file, which meant their values lived in
+// git — and this repository is public. Moved to Secret Manager 2026-09-07 so
+// the values are never committed; the old literals are rotated and dead.
+const { defineSecret } = require('firebase-functions/params');
 const { initializeApp } = require('firebase-admin/app');
 const { getFirestore, FieldValue } = require('firebase-admin/firestore');
 const { getAuth } = require('firebase-admin/auth');
@@ -1175,12 +1180,12 @@ exports.scheduledCityRequestsDigest = onSchedule('every monday 09:00', async () 
 // process.env for its gates, so this follows the existing pattern rather
 // than inventing a differently-shaped one). Change this value if it's ever
 // shared. Read-only — it only reports the current tally, never writes.
-const CITY_REQUESTS_DIGEST_KEY = 'pick-city-digest-9k3p';
+const CITY_REQUESTS_DIGEST_KEY = defineSecret('CITY_REQUESTS_DIGEST_KEY');
 
 /** External weekly job hits this (e.g. `curl`) to pull the ranked digest as
  *  JSON, gated by CITY_REQUESTS_DIGEST_KEY exactly like runAdoptionCheck. */
-exports.runCityRequestsDigest = onRequest(async (req, res) => {
-  if (req.query.key !== CITY_REQUESTS_DIGEST_KEY) { res.status(403).send('forbidden'); return; }
+exports.runCityRequestsDigest = onRequest({ secrets: [CITY_REQUESTS_DIGEST_KEY] }, async (req, res) => {
+  if (req.query.key !== CITY_REQUESTS_DIGEST_KEY.value()) { res.status(403).send('forbidden'); return; }
   try {
     res.json({ ok: true, ...(await buildCityRequestsDigest()) });
   } catch (e) {
@@ -1886,7 +1891,7 @@ exports.scheduledOverpassPrecacheDrip = onSchedule(
 // secret checked as a query param, following this file's existing pattern
 // rather than inventing a differently-shaped one). Change this value if
 // it's ever shared.
-const PRECACHE_REFRESH_KEY = 'pick-precache-9k3p';
+const PRECACHE_REFRESH_KEY = defineSecret('PRECACHE_REFRESH_KEY');
 
 // Default behavior changed 2026-09-05: this used to force the FULL
 // synchronous refresh (every seed tile, one HTTP request) — exactly the
@@ -1897,9 +1902,9 @@ const PRECACHE_REFRESH_KEY = 'pick-precache-9k3p';
 // instead of waiting for Monday — still no street-side Overpass calls of
 // its own, only the boundary refresh's small, pre-existing volume.
 exports.runOverpassPrecacheRefresh = onRequest(
-  { timeoutSeconds: PRECACHE_TIMEOUT_SECONDS },
+  { timeoutSeconds: PRECACHE_TIMEOUT_SECONDS, secrets: [PRECACHE_REFRESH_KEY] },
   async (req, res) => {
-    if (req.query.key !== PRECACHE_REFRESH_KEY) { res.status(403).send('forbidden'); return; }
+    if (req.query.key !== PRECACHE_REFRESH_KEY.value()) { res.status(403).send('forbidden'); return; }
     try {
       if (req.query.rebuildRoster === '1') {
         const roster = await rebuildStreetTileRoster();
@@ -2145,11 +2150,11 @@ exports.notifyNewSignup = onDocumentCreated('users/{uid}', async (event) => {
 // Secret gate for the manual adoption-check trigger below. Change this value if
 // it's ever shared. (This endpoint only sends the same nudge emails the daily
 // job sends — it never creates or deletes data.)
-const ADOPTION_TRIGGER_KEY = 'pick-adopt-check-2f7b';
+const ADOPTION_TRIGGER_KEY = defineSecret('ADOPTION_TRIGGER_KEY');
 
 /** Manual trigger for testing the adoption check (gated by its own secret). */
-exports.runAdoptionCheck = onRequest(async (req, res) => {
-  if (req.query.key !== ADOPTION_TRIGGER_KEY) { res.status(403).send('forbidden'); return; }
+exports.runAdoptionCheck = onRequest({ secrets: [ADOPTION_TRIGGER_KEY] }, async (req, res) => {
+  if (req.query.key !== ADOPTION_TRIGGER_KEY.value()) { res.status(403).send('forbidden'); return; }
   try {
     res.json({ ok: true, ...(await checkAdoptions()) });
   } catch (e) {
