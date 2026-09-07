@@ -199,12 +199,34 @@ pace and once at a stroll.
 
 ## 7a. Phase 2 revised — it is a walk, not a build (2026-09-06)
 
-**The original Phase 2 (an anonymized-export Cloud Function) is dropped.** Access was never
-the real constraint: the admin service account already reads every cleanup, which is how
-§8a's comparison was produced. A Cloud Function would automate a forty-line script, at data
-volumes where Firestore reads cost fractions of a cent, while adding infrastructure, a
-second copy of the data to disclose, and monthly cost. Against the "stays a fun project"
-constraint that is a bad trade.
+**The original Phase 2 was reframed here as unnecessary. That was half right, and the half
+it got wrong matters — corrected 2026-09-07 after reading `docs/DETECTOR_EXPORT_SPEC.md`,
+which the `code` subagent designed and staged in parallel.**
+
+What this section got right: **access was never the constraint.** The admin service account
+reads every cleanup regardless of the owner-only rule — that rule governs client SDK access,
+not admin. §8a's comparison was produced exactly that way, with a forty-line script, at read
+costs of fractions of a cent. Any claim that tester data is "unreadable" is imprecise, and
+that includes the framing in the export spec's own opening.
+
+What it got wrong: it judged the Cloud Function purely as an **access** tool and concluded it
+had no purpose. Its real purpose is **privacy posture**. Reading raw, identifiable,
+owner-scoped documents whenever a question comes up — which is what has actually been
+happening — is a heavier posture than analyzing a non-identifying derivative. Safety made
+this point independently on 2026-09-06 and declined to write "anonymized" into the privacy
+policy on the grounds that it "would describe a pipeline that doesn't exist yet," explicitly
+deferring a stronger claim until this function ships. That is a real reason to build it, and
+this section previously missed it.
+
+**Net: the export function is worth building, for privacy rather than for access.** But it is
+not a prerequisite for §7a's ground-truth walk, which needs no new infrastructure at all — so
+the sequencing in this plan stands even though the reasoning behind dropping Phase 2 does not.
+
+See `docs/DETECTOR_EXPORT_SPEC.md` for the design. Two of its open questions are genuine
+policy decisions rather than engineering ones, and neither should be answered by writing code:
+whether a use disclosed on 2026-09-06 may be applied retroactively to walks collected before
+it, and whether `carry_mode`/`device_model` — which received a *collection* disclosure but not
+a *use* disclosure — may enter the export at all.
 
 **What replaces it already exists and has never been used.** `groundTruthMode.ts` +
 `targets/watch/` ship a tester-only **LOG PICK button on the Apple Watch**, gated by a

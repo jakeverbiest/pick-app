@@ -19,6 +19,39 @@ the ledger's actual structure, not paste it verbatim.
   longer an open item.
 -->
 
+- 2026-09-07 — **Loose ends tied up: three files left uncommitted across two sessions are now
+  in, and a direct contradiction between two committed docs is resolved.**
+  **`docs/PUBLIC_BETA_GONOGO.md`** (another session's edit) rewrote the draft Beta App
+  Description to match the locked positioning line and marked the "one stale line, three places"
+  item RESOLVED. **That RESOLVED claim was verified rather than taken on trust** — `about.html`,
+  `support.html` and `index.html` still contain the words "over-count," but in the past tense
+  ("it used to over-count badly on a slow walk; an August fix brought a controlled test to 20
+  counted for 20 real"). The copy is corrected and notably honest, carrying "that's one tester on
+  one afternoon" and the screenshot-before-correcting instruction. Claim holds.
+  **`docs/DETECTOR_EXPORT_SPEC.md` + `functions/detectorExport.staged.js`** are a careful first
+  pass — staged, not deployed, not wired into `index.js`. The code enforces its privacy scope at
+  the *query* level (`.select()` over an `ALLOWED_TOP_LEVEL_FIELDS` allowlist) rather than
+  filtering after reading, which is stronger than the spec required.
+  **The contradiction, and the correction:** `DETECTOR_VALIDATION_PLAN.md` §7a (written
+  2026-09-06) declared the export Cloud Function unnecessary; this spec argues it is the top
+  priority. Both were partly wrong and both are now amended in place.
+  §7a was right that **access is not the constraint** — the owner-only rule governs client SDK
+  access, not the admin SDK, and the admin service account has read every cleanup repeatedly this
+  week. The spec's original "unreadable by Jake" framing was imprecise and is corrected.
+  But §7a was **wrong to conclude the function has no purpose**: it judged it as an access tool
+  when its real value is **privacy posture**. Routinely reading raw identifiable owner-scoped
+  documents is heavier than analyzing a non-identifying derivative — and Safety's 2026-09-06 pass
+  independently declined to write "anonymized" into the privacy policy on the grounds that the
+  pipeline did not exist yet, explicitly deferring the stronger claim until this function ships.
+  Net: **worth building, for privacy rather than access**, and not a prerequisite for the
+  ground-truth walk, which needs no new infrastructure.
+  **Two open questions in that spec are policy, not engineering, and should not be settled by
+  writing code:** (1) whether a use disclosed 2026-09-06 may be applied retroactively to walks
+  collected before it — the design as staged exports every cleanup ever written, including
+  anonymous public-tester walks predating any detector-R&D disclosure; and (2) whether
+  `carry_mode`/`device_model` may enter the export at all, given they received a *collection*
+  disclosure but not a *use* one. The spec correctly declines to answer both. Both need Jake.
+
 - 2026-09-07 — **Three bug-and-hygiene items closed. `test:hoods` runs again after eight weeks,
   so all six suites are green for the first time since 2026-07-14.**
   1. **`test:hoods` unrunnable since 2026-07-14 (`5609385`).** It died before a single assertion

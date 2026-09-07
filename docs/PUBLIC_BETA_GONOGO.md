@@ -73,21 +73,38 @@ open this up.
 
 ## Draft Beta App Description
 
+**Rechecked 7 Sep 2026 — was stale, updated in place.** The version below (written
+23 Aug) predated the detector hitting its "never systematically over" target
+(B7, 25 Aug: 12 real picks -> 10 counted, 0.83x, zero false positives — see
+`~/Desktop/pick-app/docs/LAUNCH_LEDGER.md`), still described counting as
+something that just happens to your motion data rather than something you
+confirm, and had never been checked against the locked positioning line
+("PICK counts your pickups as you walk, and you confirm the total before it
+saves" — do not describe counting as fully automatic). Rewritten below to
+match. Caveat carried forward honestly: the 0.83x result is still n=1 tester,
+so "tuned conservative" is a design target backed by one strong walk, not a
+guarantee — the ask for correction feedback stays load-bearing for exactly
+that reason.
+
 > PICK turns a walk into a measurable cleanup. Start a cleanup, put your phone
-> in your pocket, and walk — PICK counts pickups from your phone's motion and
-> paints the streets you cover green on a map you share with your neighbours.
+> in your pocket, and walk your neighbourhood — PICK counts your pickups as
+> you walk, and you confirm the total before it saves. The streets you cover
+> paint green on a map you share with your neighbours.
 >
 > What to test: start a cleanup and walk a normal route with the phone in your
-> front pocket, screen off. At the end you'll see a count. **Tell us whether it
-> matched what you actually picked up** — the end-of-walk screen lets you
-> correct it, and that correction is the single most useful thing you can send
-> us.
+> front pocket, screen off. At the end you'll see a count and a chance to
+> adjust it before it saves. **Tell us whether the count was close** — we've
+> tuned detection to run conservative rather than over-count, so a slightly
+> low number is expected; a number that's noticeably high, or off in either
+> direction by a lot, is exactly what we want to hear about.
 >
-> Known: automatic detection is still being calibrated. Requires an account.
-> iPhone only; Apple Watch companion optional.
+> Requires an account. iPhone only; Apple Watch companion optional.
 
-Edit freely — but keep the "tell us whether it matched" ask, because it is the
-only instruction that produces data.
+Edit freely — but keep the "tell us whether the count was close" ask, because
+it is the only instruction that produces data. Don't drop the "you confirm the
+total before it saves" phrasing without deliberately deciding to — it is the
+locked positioning line, chosen specifically so this listing never implies
+fully-automatic counting.
 
 ---
 
@@ -160,11 +177,13 @@ problems, moderation, and anything human.
 
 ### One stale line, three places
 
-`support.html`, `index.html` and `about.html` all still say detection
-over-counts on a slow stroll. That was true on 17 Aug. The relative pause gate
-shipped 19 Aug and B5 came back 20/20. **Fix this before you invite strangers**
-— it's the first thing a new tester reads about the core feature, and it's
-apologising for a bug you fixed.
+**RESOLVED — fixed on the website per the 5 Sep web-content-review pass, per
+the 7 Sep recheck below.** `support.html`, `index.html` and `about.html` all
+used to say detection over-counts on a slow stroll. That was true on 17 Aug.
+The relative pause gate shipped 19 Aug and B5 came back 20/20; the pages have
+since been corrected. Original note, kept for the record: this line was the
+first thing a new tester read about the core feature, and it was apologising
+for a bug that had already been fixed.
 
 ---
 
