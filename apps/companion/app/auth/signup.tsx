@@ -23,10 +23,32 @@ export default function SignupScreen() {
   // See login.tsx's identical check — degrades to email/password only on a
   // build that predates the applesignin entitlement (or on non-iOS).
   const [appleAvailable, setAppleAvailable] = useState(false);
+  // Email/password starts collapsed behind "Use email instead" whenever Apple
+  // is available. Apple is two taps and no password; the form is name + email
+  // + password + a 6-char rule. Having the slow path render first made the
+  // fast path something you had to scroll past to find, which is backwards for
+  // the case this screen actually has to serve — a group of people installing
+  // at the same time because their employer asked them to.
+  const [showEmailForm, setShowEmailForm] = useState(false);
 
   useEffect(() => {
     if (Platform.OS !== 'ios') return;
-    AppleAuthentication.isAvailableAsync().then(setAppleAvailable).catch(() => setAppleAvailable(false));
+    AppleAuthentication.isAvailableAsync()
+      .then((ok) => {
+        setAppleAvailable(ok);
+        // No Apple (Android, or a build predating the entitlement): the form is
+        // the only way in, so it must be visible rather than behind a toggle.
+        if (!ok) setShowEmailForm(true);
+      })
+      .catch(() => {
+        setAppleAvailable(false);
+        setShowEmailForm(true);
+      });
+  }, []);
+
+  // Non-iOS never runs the effect above, so open the form for it here.
+  useEffect(() => {
+    if (Platform.OS !== 'ios') setShowEmailForm(true);
   }, []);
 
   /** Shared post-auth routing for both email/password signup and Apple. */
@@ -119,6 +141,38 @@ export default function SignupScreen() {
 
         {/* Form */}
         <View style={styles.form}>
+          {/* Fastest path first. See the showEmailForm comment above. */}
+          {appleAvailable && (
+            <>
+              <AppleAuthentication.AppleAuthenticationButton
+                buttonType={AppleAuthentication.AppleAuthenticationButtonType.SIGN_UP}
+                buttonStyle={AppleAuthentication.AppleAuthenticationButtonStyle.BLACK}
+                cornerRadius={radius.button}
+                style={styles.appleBtn}
+                onPress={handleAppleSignup}
+              />
+              {!showEmailForm && (
+                <TouchableOpacity
+                  onPress={() => setShowEmailForm(true)}
+                  disabled={loading}
+                  style={styles.altToggle}
+                  accessibilityRole="button"
+                >
+                  <Text style={styles.altToggleText}>Use email instead</Text>
+                </TouchableOpacity>
+              )}
+            </>
+          )}
+
+          {showEmailForm && (
+          <>
+          {appleAvailable && (
+            <View style={styles.dividerRow}>
+              <View style={styles.dividerLine} />
+              <Text style={styles.dividerText}>or</Text>
+              <View style={styles.dividerLine} />
+            </View>
+          )}
           <Text style={styles.label}>Display Name</Text>
           <TextInput
             style={styles.input}
@@ -177,22 +231,7 @@ export default function SignupScreen() {
               <Text style={styles.signupButtonText}>Create Account</Text>
             )}
           </TouchableOpacity>
-
-          {appleAvailable && (
-            <>
-              <View style={styles.dividerRow}>
-                <View style={styles.dividerLine} />
-                <Text style={styles.dividerText}>or</Text>
-                <View style={styles.dividerLine} />
-              </View>
-              <AppleAuthentication.AppleAuthenticationButton
-                buttonType={AppleAuthentication.AppleAuthenticationButtonType.SIGN_UP}
-                buttonStyle={AppleAuthentication.AppleAuthenticationButtonStyle.BLACK}
-                cornerRadius={radius.button}
-                style={styles.appleBtn}
-                onPress={handleAppleSignup}
-              />
-            </>
+          </>
           )}
         </View>
 
@@ -323,6 +362,8 @@ const styles = StyleSheet.create({
   dividerLine: { flex: 1, height: 1, backgroundColor: C.border },
   dividerText: { fontFamily: Fonts.body, color: C.muted, fontSize: 12 },
   appleBtn: { height: 50, width: '100%' },
+  altToggle: { alignSelf: 'center', paddingVertical: 12, paddingHorizontal: 8 },
+  altToggleText: { fontFamily: Fonts.body, color: C.muted, fontSize: 14, textDecorationLine: 'underline' },
   footer: {
     flexDirection: 'row',
     justifyContent: 'center',

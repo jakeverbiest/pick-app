@@ -10,7 +10,7 @@
  * participant sees always includes their own latest walks.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Alert, Pressable, ScrollView, Share, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
@@ -264,6 +264,34 @@ export default function ChallengeScreen() {
           <Pressable style={styles.inviteBtn} onPress={() => setInviting(true)}>
             <Icon name="plus" size={17} color={C.primary} sw={2.2} />
             <Text style={styles.inviteBtnText}>Invite pickers</Text>
+          </Pressable>
+        )}
+
+        {/* "Invite pickers" above only reaches people who already have PICK —
+            inviteToChallenge() takes uids, so you have to be able to find them
+            in the app first. That is useless for the case this has to serve:
+            an organiser handing a link to a roomful of people who have never
+            heard of PICK. This shares a link anyone can open; join.html
+            deep-links straight in if the app is installed, and routes through
+            install-then-return if it isn't. */}
+        {challenge.status !== 'completed' && (
+          <Pressable
+            style={styles.inviteBtn}
+            onPress={async () => {
+              const url = `https://pickglobal.org/join?challenge=${encodeURIComponent(String(id))}`;
+              try {
+                await Share.share({
+                  message: `Join "${challenge.name}" on PICK — we're tracking our cleanup together.\n\n${url}`,
+                  url,
+                });
+              } catch {
+                // User dismissed the sheet, or it failed to open. Nothing to
+                // recover: the link is regenerated on the next tap.
+              }
+            }}
+          >
+            <Icon name="share" size={17} color={C.primary} sw={2.2} />
+            <Text style={styles.inviteBtnText}>Share invite link</Text>
           </Pressable>
         )}
 
