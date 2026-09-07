@@ -62,7 +62,11 @@ scan_range() {
   # `firebase functions:secrets:set DETECTOR_EXPORT_KEY` — neither of which is
   # a secret. It still catches the real 2026-09-07 incident, verified against
   # that exact commit range:
-  #     const PRECACHE_REFRESH_KEY = 'pick-precache-9k3p';
+  #     const PRECACHE_REFRESH_KEY = 'pick-precache-9k3p';   pragma: allowlist-secret
+  # (that example is the real rotated-and-dead value, kept because it is what
+  #  the pattern was written against — and the fact that this very line had to
+  #  be allowlisted before the hook's own commit could be pushed is the best
+  #  evidence available that it works.)
   # and correctly ignores the Secret Manager form that replaced it:
   #     const PRECACHE_REFRESH_KEY = defineSecret('PRECACHE_REFRESH_KEY');
   # (bare identifier, no quoted 16+ char value).
