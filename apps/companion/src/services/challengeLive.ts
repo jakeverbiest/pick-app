@@ -36,14 +36,16 @@ export interface LiveEvent {
  */
 export async function findMyLiveEvent(uid: string): Promise<LiveEvent | null> {
   try {
-    // `status` is written once at creation and never updated, so a challenge
-    // scheduled for a future day is stored as 'upcoming' and stays that way
-    // even after its start date arrives. Match both and let the date window
-    // below decide — that's the only source of truth (see challengeStatus).
-    const snap = await getDocs(
-      query(collection(db, 'challenges'), where('status', 'in', ['active', 'upcoming']))
-    );
+    // `status` is written once at creation and never updated, so it cannot be
+    // filtered on — a challenge stored as 'upcoming' stays that way forever,
+    // including long after it ends. Filter on end_date instead (the same source
+    // of truth challengeStatus uses) and let the window below decide the rest.
+    // The previous version matched on status and relied entirely on the JS
+    // filter, which meant fetching every challenge ever created.
     const now = Date.now() / 1000;
+    const snap = await getDocs(
+      query(collection(db, 'challenges'), where('end_date', '>=', now))
+    );
     for (const d of snap.docs) {
       const c = d.data() as Challenge;
       if (

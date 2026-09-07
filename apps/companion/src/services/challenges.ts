@@ -288,7 +288,12 @@ export async function createChallenge(input: NewChallengeInput): Promise<string>
     invited: [],
     visibility: input.visibility || 'public',
     ...(input.team ? { team: input.team } : {}),
-    status: challengeStatus({ start_date: start, end_date: end }),
+    // `status` is deliberately NOT stored. It is fully derivable from
+    // start_date/end_date, fromDoc() recomputes it on every read, and the
+    // stored copy was never updated after creation — so it drifted the moment
+    // a challenge started or ended, and anything that filtered on it (two
+    // queries here and in challengeLive, plus a since-deleted getChallenges)
+    // was reading a value that had been wrong for weeks.
   };
 
   const ref = await addDoc(collection(db, 'challenges'), docData);
@@ -349,10 +354,15 @@ export async function listChallenges(opts?: { team?: string }): Promise<Challeng
 export async function findMyActiveChallenge(uid: string): Promise<Challenge | null> {
   if (!uid) return null;
   try {
-    const snap = await getDocs(
-      query(collection(db, 'challenges'), where('status', 'in', ['active', 'upcoming']))
-    );
+    // Filter on end_date, not the stored `status` field. That field is written
+    // once at creation and never updated (see fromDoc, which recomputes status
+    // on read — the stored copy is not maintained), so filtering on it matched
+    // every challenge ever created regardless of whether it had ended. An
+    // end_date cutoff is both correct and narrower.
     const now = Date.now() / 1000;
+    const snap = await getDocs(
+      query(collection(db, 'challenges'), where('end_date', '>=', now))
+    );
     const live = snap.docs
       .map((d) => fromDoc(d.id, d.data()))
       .filter((c) => (c.participants || []).includes(uid) && c.start_date <= now && c.end_date >= now)

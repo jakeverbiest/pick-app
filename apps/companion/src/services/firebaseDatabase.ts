@@ -1559,34 +1559,12 @@ class FirebaseDatabase {
     }
   }
 
-  /**
-   * Get active challenges
-   */
-  async getChallenges(status: 'active' | 'completed' | 'all' = 'active'): Promise<Challenge[]> {
-    try {
-      let q;
-      if (status === 'all') {
-        q = query(collection(db, 'challenges'));
-      } else {
-        q = query(collection(db, 'challenges'), where('status', '==', status));
-      }
-
-      const snapshot = await getDocs(q);
-      const challenges: Challenge[] = snapshot.docs.map((doc) => ({
-        id: doc.id,
-        ...(doc.data() as any),
-        start_date: doc.data().start_date.toMillis ? doc.data().start_date.toMillis() / 1000 : doc.data().start_date,
-        end_date: doc.data().end_date.toMillis ? doc.data().end_date.toMillis() / 1000 : doc.data().end_date,
-        created_at: doc.data().created_at.toMillis ? doc.data().created_at.toMillis() / 1000 : doc.data().created_at,
-        updated_at: doc.data().updated_at.toMillis ? doc.data().updated_at.toMillis() / 1000 : doc.data().updated_at,
-      }));
-
-      return challenges;
-    } catch (error) {
-      console.error('Failed to get challenges:', error);
-      return [];
-    }
-  }
+  /* getChallenges() removed 2026-09-07: dead (no callers repo-wide) and broken.
+   * It queried `where('status','==',status)` against a stored field that is
+   * written once at creation and never updated, so asking for 'completed'
+   * returned nothing, ever. It was also a stale parallel implementation of what
+   * challenges.ts already does properly. Use listChallenges/findMyActiveChallenge
+   * there instead — those derive status from start_date/end_date. */
 
   /**
    * Join a challenge
