@@ -1,5 +1,17 @@
 # Pre-Launch Bug List
 
+> **⚠️ SUPERSEDED (as of 2026-09-07).** Stale since 2026-08-23 and overlapping
+> `docs/LAUNCH_LEDGER.md`, which is now the sole live status record (machine-maintained,
+> reconciled daily). Every row here was cross-checked against the ledger during the
+> consolidation: everything under "Fixed, needs field verify" and "Verified / done" was
+> already superseded by later ledger entries or subsequent shipped work (Build 35/36, the
+> Overpass/precache saga, the watch-staleness fixes, the adoption-email field-verify, the
+> keep-awake decision, etc.). Of the two genuinely open "Open / in progress" rows,
+> "Long-walk crash + map-memory fix" was already covered by the ledger's own newer
+> Launch-gates entry (a 2026-09-02 field data point this file never had), and "Pickup-detection
+> threshold tuning" had no equivalent elsewhere and was ported to a new Launch-gates row.
+> **Read `docs/LAUNCH_LEDGER.md` instead.** Left below for historical/archival reference only.
+
 A running backlog of known issues to close out before a real launch, plus the
 shipping rule that keeps fixing them cheap. Update this file directly instead
 of re-deriving the list from conversation each session — read it first.
