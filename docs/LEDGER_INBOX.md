@@ -19,6 +19,41 @@ the ledger's actual structure, not paste it verbatim.
   longer an open item.
 -->
 
+- 2026-09-07 — **Detector telemetry export DEPLOYED and verified live (`aeeade4`, `a62ab86`) — and
+  the first run surfaced the finding that actually matters: under the conservative privacy reading
+  the export is EMPTY.**
+  `exportDetectorTelemetry` is wired into `index.js`, `DETECTOR_EXPORT_KEY` created in Secret
+  Manager, deployed to `us-central1`. Verified: HTTP 200 / `ok:true`; auth gate returns 403 for
+  both a missing and a wrong key. `detectorExport.staged.js` renamed to `detectorExport.js` — a
+  deployed file called ".staged" is the exact stale-label trap this repo keeps hitting.
+  **THE FINDING — this is now the real gate, not the function.** Of 206 cleanups, **162 carry a
+  `motion_log`** (the actual detector payload). Cleanups **since 2026-09-06** (the date the privacy
+  policy disclosed detector R&D as a use): **1, and it has no `motion_log`.** So *every one* of the
+  162 usable detector records predates the disclosure. Run inside the disclosed window the export
+  returns **0 rows** — confirmed, not predicted. The retroactive-scope question is therefore not a
+  footnote to be settled later; it is the difference between having a corpus and having nothing.
+  **Jake's call, two options, both legitimate:** (1) decide the disclosed use reaches
+  pre-disclosure walks and export the full history, or (2) hold the line and build the corpus from
+  new walks only — which makes the still-outstanding ground-truth walk the critical path rather
+  than a nice-to-have. Nothing has been exported beyond the bounded `since=2026-09-06` probe, which
+  wrote a 0-row file. **No unbounded run has been made and none should be until Jake decides.**
+  **Bug found by testing, not review (`a62ab86`):** the first real invocation returned HTTP 500.
+  `getSignedUrl` needs `iam.serviceAccounts.signBlob`, which the default compute service account
+  lacks — the export had already completed and the object was in the bucket, but the throw reported
+  a successful export as a total failure. Signing is now best-effort: `object_path`/`row_count`
+  always returned, with a ready-to-run `gcloud storage cp` command when signing fails. Chose that
+  over granting `roles/iam.serviceAccountTokenCreator`, which would hand the function broad
+  impersonation rights purely to produce a download link.
+  **`carry_mode`/`device_model` remain excluded**, unchanged — policy discloses collecting them,
+  not using them for cross-tester analysis. Worth restating as a real cost rather than a clean win:
+  those are precisely the two fields that would stratify a multi-tester corpus by phone and carry
+  position. Unlocking them is a privacy-policy amendment, not a code change.
+  Privacy boundary verified by execution, not by reading the comment: `buildTelemetryRow` run
+  against a realistic doc carrying `location_lat/lon`, `city`, `team`, `carry_mode`,
+  `device_model`, `route_points` and `userId` — none survive, and the timestamp reduces to a day
+  bucket. The allowlist is enforced at the *query* level via Firestore `select()`, so excluded
+  fields are never read out of the database at all.
+
 - 2026-09-07 — **REAL BUG, user-reported and root-caused: the precache served the wrong half of
   its own cell, so the map overview showed almost no cleaned streets. Fixed in `d93873b`;
   code NOT YET DEPLOYED and the data repair NOT YET RUN (both blocked by the tool classifier —
