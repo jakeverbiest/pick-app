@@ -19,6 +19,45 @@ the ledger's actual structure, not paste it verbatim.
   longer an open item.
 -->
 
+- 2026-09-07 — **FIRST GROUND-TRUTH WALK EVER RECORDED. The watch LOG PICK -> Firestore chain is
+  proven end to end.** Cleanup `TVfzDQzgfOJ5vkfuZNRT`: 10 deliberate taps produced
+  `ground_truth: [13,17,24,35,41,47,50,53,56,62]` — ten entries, in walk-seconds, sensibly spaced.
+  Every prior walk carrying the field had an empty array.
+  **Correcting an error made earlier the same day:** an export summary reported "11 walks with
+  ground_truth." All 11 were **empty arrays** — `Array.isArray` was checked, `.length` was not.
+  `ground_truth` is written UNCONDITIONALLY on every walk (`"[]"` when there are no taps), so that
+  count only ever meant "walks recorded after the field was added," never "walks with usable
+  ground truth." True prior count was **zero**. Jake confirmed he had never used the feature.
+  **The reported failure was not a failure.** Jake's symptom was "I click the button and it
+  doesn't increase the pick count." That is the designed behavior, stated in
+  `groundTruthMode.ts`: the taps are deliberately not wired into the count, because "the moment
+  they also move the number they are measuring, they stop being a measurement." Worth recording
+  as a UX finding — the one tester who knows the codebase best still read correct behavior as a
+  bug, and the Settings sub-label ("It never changes your count") did not prevent it.
+  Ruled out along the way, each checked rather than assumed: build 36 (`fac45bb`, 2026-09-01) DOES
+  contain the native LOG PICK button and the `logPick` sender — verified by reading
+  `ContentView.swift`/`PhoneLink.swift` at that exact commit; the pending cache-v4 OTA is
+  irrelevant to it (native button, no OTA can add or fix one); and the JS cache that gates the
+  watch push is warmed on map mount (`map.tsx:346`).
+  **NOT a bug, checked before reporting: `items_detected: 2` while the motion log carries 4 events
+  flagged `counted: true`.** `trimRecentPickups(3500)` drops pickups in the final 3.5s because
+  pulling the phone out to hit Stop reads exactly like a pickup; t=63 and t=66 were trimmed.
+  **Analysis trap worth recording: `counted: true` in `motion_log` does NOT equal the final count.**
+  Anything scoring this corpus by counting those flags will over-count by whatever the tail guard
+  removed.
+  **This walk measures nothing about accuracy** and must not be read as if it does: Jake tapped 10
+  times without picking anything up, so the true reading is 0 real picks against 2 reported. What
+  it does show is the pause gate behaving — **25 of 40 events rejected for "still at own pace,"**
+  correctly noticing he never paused.
+  **Hypothesis to control for, deliberately NOT recorded as a finding:** 3 of the 4 counted events
+  landed 1-2s after a wrist tap, raising the worry that raising the wrist to tap reads as a pickup
+  and the measurement contaminates itself. **The evidence is weak and was sanity-checked rather
+  than reported as-is:** ten taps put a 3s shadow over ~55% of a 55-second walk, so chance alone
+  predicts ~2 of 4. Control for it on the real walk by tapping BEFORE bending, not after standing,
+  which separates the two motions in time.
+  **Real walk protocol:** 20-30 actual pickups, tap just before each, walk normally and pause
+  naturally, no other watch taps.
+
 - 2026-09-07 — **Detector telemetry export DEPLOYED and verified live (`aeeade4`, `a62ab86`) — and
   the first run surfaced the finding that actually matters: under the conservative privacy reading
   the export is EMPTY.**
