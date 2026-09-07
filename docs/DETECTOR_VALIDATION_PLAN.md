@@ -197,6 +197,67 @@ pace and once at a stroll.
 
 ---
 
+## 7a. Phase 2 revised — it is a walk, not a build (2026-09-06)
+
+**The original Phase 2 (an anonymized-export Cloud Function) is dropped.** Access was never
+the real constraint: the admin service account already reads every cleanup, which is how
+§8a's comparison was produced. A Cloud Function would automate a forty-line script, at data
+volumes where Firestore reads cost fractions of a cent, while adding infrastructure, a
+second copy of the data to disclose, and monthly cost. Against the "stays a fun project"
+constraint that is a bad trade.
+
+**What replaces it already exists and has never been used.** `groundTruthMode.ts` +
+`targets/watch/` ship a tester-only **LOG PICK button on the Apple Watch**, gated by a
+Settings toggle ("Log my picks on my watch"). Every tap records when a pickup *actually*
+happened. Confirmed present in the installed build: the button landed in `70d0eba`
+(2026-08-24) and the current native build `fac45bb` (EAS build 36, 2026-09-01) contains it.
+The toggle only controls visibility and ships OTA, so no TestFlight cycle is needed.
+
+Why it is the right instrument: taps are stored in **walk-seconds aligned to `motion_log.t`**,
+so the detector can be scored **per event** rather than per total; capture uses the watch's
+own timestamp rather than arrival time, because `transferUserInfo` is queued and a late tap
+would misalign by exactly the interval the analysis is trying to resolve; and the taps are
+deliberately not wired into the pickup count, so the measuring stick never moves the thing
+it measures. It was built for the exact ambiguity still blocking this work — walk B6 counted
+39 for 20 real picks, equally consistent with "every pick double-counted" and "twelve
+double-counts plus fifteen false positives," which demand opposite fixes.
+
+`ground_truth` is an empty array on all 205 cleanups. Nobody has ever switched it on.
+
+### The protocol
+
+**Before walking:** force-quit PICK, reopen, wait ~10s, force-quit and reopen again — this
+pulls the 2026-09-06 OTA (`bdebee8c`). Without it `carry_mode`/`device_model` won't record.
+Then Settings → **"Log my picks on my watch (testing)"** → on. Wear the watch; phone in a
+pocket (the carry position every prior result is based on).
+
+**During:** walk normally — the B-series pattern this app is actually designed around, walk →
+stop → pick → continue, at a normal pace rather than a deliberate stroll. **Tap LOG PICK once
+per real pickup, at the moment of the pickup.** Tap discipline is the whole measurement: a
+missed tap reads as a false positive, a double tap invents a pick. If a tap is fumbled, note
+roughly when — an annotated imperfection is far better than a silent one. Aim for **20–30 real
+pickups**; below ~20 the classification gets noisy.
+
+**After:** save the walk and **accept the count without correcting it.** The taps are the
+truth; leaving `items_detected` and `items_count` equal keeps the detector's raw output
+uncontaminated.
+
+### What one walk buys
+
+Matching each `counted: true` event against the nearest tap classifies every event as a true
+positive, a false positive, or a missed pick — which yields real precision and recall instead
+of a ratio, and **resolves the B6 ambiguity directly**. It simultaneously verifies two things
+that have never been exercised: that ground-truth capture works end to end, and that today's
+`carry_mode`/`device_model` instrumentation actually populates.
+
+### The limitation to be clear about
+
+**This requires an Apple Watch, so it does not transfer to recruited testers.** Community
+volunteers in Astoria will not have paired watches. This raises the *quality* of the n=1
+measurement to per-pick precision; it does not address the n=1 *problem*. Recruited testers
+still need the four-minute alternating-block protocol from §7 Phase 3, where truth is known
+per 30-second window rather than per pick.
+
 ## 8. What would change the plan
 
 - **Phase 1 shows non-Jake event distributions are indistinguishable from Jake's** ⇒
