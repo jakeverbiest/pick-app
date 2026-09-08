@@ -408,3 +408,35 @@ meant to travel. It is **not** acceptable for anything carrying data an org woul
 private, so: **no private or member-identifying data may appear behind a link-gated URL** until
 revocation exists. Aggregate totals, street coverage and participant display names are fine;
 anything more is not.
+
+### 11.6 Marker grid size is a privacy control, not only an aesthetic one — 2026-09-08
+
+§9.1 files marker grid size as a look-and-feel tradeoff to be settled against a rendered map.
+That is true and still the right way to pick the exact number, **but it is not the only
+constraint, and the aesthetic framing alone would let it be set too fine.**
+
+Markers are derived from individual participants' pickup locations (§5, §8.3). Three facts
+combine:
+
+1. A small event may have very few participants — sometimes one person covering one route.
+2. §11.5 settled that the shareable page is open to **anyone with the link, permanently, with
+   no revocation**.
+3. `cleanups` is owner-only read precisely because **a route reveals where someone lives**
+   (`firestore.rules:33`).
+
+So a grid fine enough to be visually satisfying on a two-person event can reconstruct an
+individual's walk — and publish it on an unrevocable public URL. That is the exact harm the
+owner-only rule exists to prevent, reached by a different path.
+
+**Therefore the grid has a floor, independent of how it looks:**
+
+- Pick the number against a rendered map as §9.1 says, **then apply the floor, and never go
+  below it because the map looks better.**
+- **Suppress the marker layer entirely below a minimum participant count.** The totals, the
+  street coverage and the identity line all still work; only the dot layer drops. A
+  three-person event still gets a real artifact.
+- Street coverage from `segment_status` is **not** subject to this — it is inherently
+  aggregate ("this street got cleaned") and carries no per-walk path.
+
+Both numbers — the grid floor and the minimum participant count — are still open and should be
+decided together, not separately, and not purely on appearance.
