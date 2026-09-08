@@ -1,0 +1,208 @@
+<meta charset="utf-8">
+<title>PICK frame renderer</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+  html,body{margin:0;padding:0;background:#061426;overflow:hidden}
+  canvas{display:block}
+</style>
+<canvas id="c"></canvas>
+<script id="payload" type="application/json">__DATA__</script>
+<script id="config" type="application/json">__CONFIG__</script>
+<script>
+/* Deterministic frame renderer for the PICK content pipeline.
+ *
+ * There is NO animation loop here on purpose. The driver (render-video.mjs)
+ * calls window.PICK.frame(t) with t in [0,1] and screenshots the result, so a
+ * render is reproducible frame-for-frame and never depends on wall-clock
+ * timing, dropped frames, or how busy the machine is. Anything time-based
+ * would make two renders of the same walk differ.
+ */
+(function(){
+  var D=JSON.parse(document.getElementById('payload').textContent);
+  var CFG=JSON.parse(document.getElementById('config').textContent);
+  var M=D.meta;
+  var W=CFG.width, H=CFG.height;
+
+  var cv=document.getElementById('c');
+  cv.width=W; cv.height=H; cv.style.width=W+'px'; cv.style.height=H+'px';
+  var ctx=cv.getContext('2d');
+
+  /* ---- layout: vertical social composition ---------------------------- */
+  var PAD=Math.round(W*0.068);
+  var HEAD=Math.round(H*0.150);          // title block
+  var FOOT=Math.round(H*0.212);          // stats + brand
+  var MAPY=HEAD, MAPH=H-HEAD-FOOT;
+  var MAPX=PAD, MAPW=W-PAD*2;
+
+  /* ---- fit geometry into the map area --------------------------------- */
+  // Fit to the WALK's frame (percentile-trimmed upstream), never to the extent
+  // of the fetched streets — those are pulled wider on purpose so the edges
+  // stay full of city, and fitting to them would zoom back out and waste the
+  // frame on empty ground. See render-video.mjs's framing comment.
+  var mnx=D.frame[0], mny=D.frame[1], mxx=D.frame[2], mxy=D.frame[3];
+  var inset=Math.round(W*0.028);
+  var sc=Math.min((MAPW-inset*2)/(mxx-mnx),(MAPH-inset*2)/(mxy-mny));
+  var ox=MAPX+(MAPW-(mxx-mnx)*sc)/2-mnx*sc, oy=MAPY+(MAPH-(mxy-mny)*sc)/2-mny*sc;
+  var T=function(p){return [p[0]*sc+ox,p[1]*sc+oy];};
+  var route=D.route.map(T), picks=D.pickups.map(T);
+  var streets=D.streets.map(function(s){return {r:s.r,c:s.c,g:s.g.map(T)};});
+  var MPU=D.mPerUnit||1;
+
+  /* GPS gaps are lifted, never bridged — see the artifact's note. */
+  var GAP=400/MPU;
+  var isGap=[false];
+  for(var i=1;i<D.route.length;i++){
+    var ax=D.route[i][0]-D.route[i-1][0], ay=D.route[i][1]-D.route[i-1][1];
+    isGap[i]=Math.sqrt(ax*ax+ay*ay)>GAP;
+  }
+
+  var TH=(28/MPU)*sc;
+  streets.forEach(function(s){
+    if(!s.c){s.at=Infinity;return;}
+    var best=Infinity;
+    for(var i=0;i<route.length&&best===Infinity;i++)
+      for(var j=0;j<s.g.length;j++){
+        var dx=s.g[j][0]-route[i][0], dy=s.g[j][1]-route[i][1];
+        if(dx*dx+dy*dy<TH*TH){best=i;break;}
+      }
+    s.at=best;
+  });
+
+  /* ---- static base, drawn once ---------------------------------------- */
+  var base=document.createElement('canvas'); base.width=W; base.height=H;
+  var bx=base.getContext('2d');
+  bx.fillStyle='#061426'; bx.fillRect(0,0,W,H);
+  bx.fillStyle='#0A1E36'; bx.fillRect(MAPX,MAPY,MAPW,MAPH);
+  bx.save(); bx.beginPath(); bx.rect(MAPX,MAPY,MAPW,MAPH); bx.clip();
+  var stepM=100, step=(stepM/MPU)*sc;
+  if(step>12){
+    bx.strokeStyle='#10314F'; bx.lineWidth=1;
+    for(var x=MAPX+(ox-MAPX)%step;x<MAPX+MAPW;x+=step){bx.beginPath();bx.moveTo(x,MAPY);bx.lineTo(x,MAPY+MAPH);bx.stroke();}
+    for(var y=MAPY+(oy-MAPY)%step;y<MAPY+MAPH;y+=step){bx.beginPath();bx.moveTo(MAPX,y);bx.lineTo(MAPX+MAPW,y);bx.stroke();}
+  }
+  var K=W/1080;
+  streets.forEach(function(s){
+    bx.strokeStyle = s.r===2 ? '#2E5B85' : '#22456B';
+    bx.lineWidth   = (s.r===2?1.6:s.r===1?1.15:0.7)*K;
+    bx.beginPath();
+    s.g.forEach(function(p,i){ i?bx.lineTo(p[0],p[1]):bx.moveTo(p[0],p[1]); });
+    bx.stroke();
+  });
+  bx.restore();
+  bx.strokeStyle='#173A5C'; bx.lineWidth=1; bx.strokeRect(MAPX+.5,MAPY+.5,MAPW-1,MAPH-1);
+
+  function ease(t){ return t<.5 ? 2*t*t : 1-Math.pow(-2*t+2,2)/2; }
+  function fmt(s){var m=Math.floor(s/60),x=Math.floor(s%60);return (m<10?'0':'')+m+':'+(x<10?'0':'')+x;}
+
+  /* ---- one frame ------------------------------------------------------ */
+  window.PICK={ frame:function(t){
+    // Beats: settle -> walk -> hold on the finished map.
+    var IN=0.06, OUT=0.86;
+    var walk = t<=IN ? 0 : t>=OUT ? 1 : ease((t-IN)/(OUT-IN));
+    var intro = Math.min(1, t/IN);
+
+    ctx.clearRect(0,0,W,H);
+    ctx.drawImage(base,0,0);
+
+    ctx.save(); ctx.beginPath(); ctx.rect(MAPX,MAPY,MAPW,MAPH); ctx.clip();
+
+    var head=walk*(route.length-1), hi=Math.floor(head);
+
+    ctx.lineCap='round';
+    var cleanedNow=0;
+    streets.forEach(function(s){
+      if(s.at>hi)return;
+      cleanedNow++;
+      var age=Math.min(1,(hi-s.at)/5);
+      ctx.strokeStyle='#2FB457'; ctx.globalAlpha=.55+.45*age;
+      ctx.lineWidth=(s.r===2?2.3:s.r===1?1.8:1.3)*K;
+      ctx.beginPath();
+      s.g.forEach(function(p,i){ i?ctx.lineTo(p[0],p[1]):ctx.moveTo(p[0],p[1]); });
+      ctx.stroke();
+    });
+    ctx.globalAlpha=1;
+
+    if(hi>0){
+      ctx.strokeStyle='#EFE3C2'; ctx.lineWidth=2.2*K; ctx.lineJoin='round';
+      ctx.beginPath(); ctx.moveTo(route[0][0],route[0][1]);
+      for(var i=1;i<=hi;i++){ isGap[i]?ctx.moveTo(route[i][0],route[i][1]):ctx.lineTo(route[i][0],route[i][1]); }
+      var f=head-hi;
+      if(hi+1<route.length&&!isGap[hi+1])
+        ctx.lineTo(route[hi][0]+(route[hi+1][0]-route[hi][0])*f, route[hi][1]+(route[hi+1][1]-route[hi][1])*f);
+      ctx.stroke();
+    }
+
+    var shown=0;
+    for(var k=0;k<picks.length;k++){
+      if(D.revealAt[k]>hi)continue;
+      shown++;
+      var pop=Math.min(1,(hi-D.revealAt[k])/3);
+      var r=(3.3+3.2*(1-pop))*K;
+      ctx.beginPath(); ctx.arc(picks[k][0],picks[k][1],r,0,6.2832);
+      ctx.fillStyle='#F2A20C'; ctx.globalAlpha=.55+.45*pop; ctx.fill();
+      if(pop<1){
+        ctx.beginPath(); ctx.arc(picks[k][0],picks[k][1],r+6*K*(1-pop),0,6.2832);
+        ctx.strokeStyle='#FFD166'; ctx.globalAlpha=(1-pop)*.85; ctx.lineWidth=1.5*K; ctx.stroke();
+      }
+    }
+    ctx.globalAlpha=1;
+
+    if(walk>0&&walk<1){
+      var hp=route[Math.min(hi+1,route.length-1)];
+      ctx.beginPath(); ctx.arc(hp[0],hp[1],5.6*K,0,6.2832); ctx.fillStyle='#FFF'; ctx.fill();
+      ctx.beginPath(); ctx.arc(hp[0],hp[1],11*K,0,6.2832);
+      ctx.strokeStyle='#EFE3C2'; ctx.globalAlpha=.42; ctx.lineWidth=1.4*K; ctx.stroke(); ctx.globalAlpha=1;
+    }
+    ctx.restore();
+
+    /* ---- header ---- */
+    ctx.globalAlpha=intro;
+    ctx.fillStyle='#E8E4D9';
+    ctx.font='800 '+Math.round(58*K)+'px Archivo, sans-serif';
+    ctx.textBaseline='alphabetic';
+    ctx.fillText((M.team||M.hood||'Cleanup').toUpperCase(), PAD, Math.round(H*0.072));
+    ctx.fillStyle='#8FA3B8';
+    ctx.font='500 '+Math.round(23*K)+'px "IBM Plex Mono", monospace';
+    ctx.fillText(M.hood+'  ·  '+M.date+'  ·  '+M.minutes+' MIN', PAD, Math.round(H*0.104));
+    ctx.globalAlpha=1;
+
+    /* ---- footer stats ---- */
+    var fy=MAPY+MAPH+Math.round(H*0.062);
+    var cols=[
+      ['PICKUPS', String(Math.round(M.items*walk)), '#FFD166'],
+      ['SIDEWALKS', String(cleanedNow), '#5BE087'],
+      ['BAGS', ((M.bags||0)*walk).toFixed(2), '#E8E4D9'],
+      ['ELAPSED', fmt(walk*M.minutes*60), '#E8E4D9']
+    ];
+    var cw=(W-PAD*2)/cols.length;
+    cols.forEach(function(c,i){
+      var cx=PAD+cw*i;
+      if(i){ ctx.strokeStyle='#173A5C'; ctx.lineWidth=1;
+        ctx.beginPath(); ctx.moveTo(cx-Math.round(14*K),fy-Math.round(30*K));
+        ctx.lineTo(cx-Math.round(14*K),fy+Math.round(16*K)); ctx.stroke(); }
+      ctx.fillStyle='#8FA3B8';
+      ctx.font='500 '+Math.round(17*K)+'px "IBM Plex Mono", monospace';
+      ctx.fillText(c[0], cx, fy-Math.round(34*K));
+      ctx.fillStyle=c[2];
+      ctx.font='700 '+Math.round(50*K)+'px Archivo, sans-serif';
+      ctx.fillText(c[1], cx, fy+Math.round(10*K));
+    });
+
+    /* ---- brand line, held for the outro ---- */
+    // The org is the hero and PICK is the byline (GROUP_IMPACT_MAP_SPEC §4b):
+    // a card that reads as PICK advertising does not get posted. Hence the
+    // crew name at 58px up top and this at 21px down here.
+    var by=H-Math.round(H*0.038);
+    ctx.font='800 '+Math.round(21*K)+'px Archivo, sans-serif';
+    ctx.fillStyle='#2FB457';
+    ctx.fillText('POWERED BY PICK', PAD, by);
+    ctx.fillStyle='#8FA3B8';
+    ctx.fillText('  ·  PICKGLOBAL.ORG', PAD+ctx.measureText('POWERED BY PICK').width, by);
+
+    return {cleaned:cleanedNow, pickups:shown};
+  }};
+
+  window.PICK.ready=true;
+  window.PICK.frame(0);
+})();
+</script>
