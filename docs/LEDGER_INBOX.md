@@ -240,3 +240,29 @@ the ledger's actual structure, not paste it verbatim.
   two walks by one person.
   Caveat on the modelling: `motion_log.t` is recorded in whole seconds, so sub-second gaps read as
   0 or 1. The numbers above are directional, not a precise setting.
+
+- 2026-09-08 — **Third ground-truth walk (`rv28ZzcKYHVE02DdnCCj`, 3.8 min, normal pace, no taps,
+  truth 30): detector 27 = 0.90x UNDER. The cooldown fix proposed one walk earlier is dead.**
+  | pace | slow share | condition | truth | detected | ratio |
+  |---|---|---|---|---|---|
+  | 0.70 | 0.74 | normal, no taps #1 | 30 | 37 | 1.23x over |
+  | 0.80 | 0.63 | normal, no taps #2 | 30 | 27 | 0.90x under |
+  | 1.27 | 0.23 | brisk, wrist taps | 35 | 15 | 0.43x under |
+  Ratio falls monotonically with pace across the three, which supports pace as the dominant
+  variable. **But the two walks Jake ran as the SAME condition — normal pace, 30 picks, no taps —
+  came back 1.23x and 0.90x, a 37% swing off a 0.1 m/s pace difference.** That is either extreme
+  sensitivity in that region or large run-to-run noise, and n=2 cannot separate them. Either way
+  the practical consequence is the same: **a single walk's count is not reliable**, even at the
+  pace where the detector is closest to right.
+  **The longer-stationary-cooldown fix is refuted.** Modelled on walk #1 alone it looked free —
+  37 to 31 against truth 30, brisk walk untouched. Across all three at T=2500 ms: #1 31 (good),
+  **#2 21 against truth 30 (far worse)**, brisk 15 (unchanged). A cooldown can only ever REMOVE
+  counts, so it cannot help a walk that already under-counts, and two of three walks under-count.
+  Recorded as a caution: that fix was proposed off a single walk and survived less than an hour of
+  additional data. Nothing here should be tuned on fewer than several walks per condition.
+  **PROCESS PROBLEM, second consecutive occurrence: the count was NOT corrected at save again**
+  (`items_count` 27 == `items_detected` 27; true value 30, reported in chat). Both walks since the
+  correction prompt shipped have saved uncorrected. Two for two means the prompt is not working —
+  wording, placement, or it is not being seen — and until it does, the corpus keeps recording
+  detector output as though it were confirmed truth. This needs diagnosis before more walks are
+  collected, or the walks are wasted.
