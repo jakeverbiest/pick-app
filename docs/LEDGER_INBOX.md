@@ -266,3 +266,37 @@ the ledger's actual structure, not paste it verbatim.
   wording, placement, or it is not being seen — and until it does, the corpus keeps recording
   detector output as though it were confirmed truth. This needs diagnosis before more walks are
   collected, or the walks are wasted.
+
+- 2026-09-08 — **Fourth ground-truth walk (`k3s8iTcyoTyNcsONkZvl`, 2.9 min, normal pace, no taps,
+  truth 30): detector 27 = 0.90x. Three walks now exist in one condition, and they change the
+  read.**
+  | pace | slow share | condition | truth | detected | ratio |
+  |---|---|---|---|---|---|
+  | 1.27 | 0.23 | brisk, wrist taps | 35 | 15 | 0.43x |
+  | 0.70 | 0.74 | normal, no taps #1 | 30 | 37 | 1.23x |
+  | 0.80 | 0.63 | normal, no taps #2 | 30 | 27 | 0.90x |
+  | 0.48 | 0.81 | normal, no taps #3 | 30 | 27 | 0.90x |
+  **The normal-pace condition averages 1.01x (sd 0.19, n=3).** Across three walks the detector is
+  essentially unbiased at normal walking pace — it is not systematically over-counting, which is
+  what the single 1.23x walk had suggested. The 95% interval on that mean is 0.54x-1.48x, so n=3
+  establishes "no detectable bias", not "accurate".
+  **The pace-monotonicity claim from the previous entry does not survive.** Walk #3 is the SLOWEST
+  of the four (0.48 m/s, slow share 0.81) and came back 0.90x, not the >1.23x a monotonic
+  pace-ratio curve predicts. Within the normal band the ordering is 0.48->0.90x, 0.70->1.23x,
+  0.80->0.90x: non-monotonic. Pace still separates the brisk walk (0.43x) from the normal band by
+  a wide margin, but it does not explain variation *inside* the band. That variation is run-to-run
+  noise, and it is +/-0.16 on the ratio, i.e. +/-5 picks on a 30-pick walk.
+  **Consequence for the over-count-preferred decision.** Shading toward over-count cannot be done
+  by shifting a threshold: the same nudge that pushes the normal band from 1.01x to ~1.2x pushes
+  the brisk walk from 0.43x to ~0.5x, still a severe under-count, while making the noisiest walks
+  overshoot badly. The gap between conditions (0.43x vs 1.01x) is 2.3x wide and no single
+  parameter closes it. This continues to point at a better discriminator, not a different number.
+  **PROCESS PROBLEM, third consecutive occurrence — and now diagnosed.** `items_count` 27 ==
+  `items_detected` 27, true value 30. Jake has confirmed the "Counted automatically - tap if we
+  missed any" line IS rendering on the summary card. So the OTA landed and the copy is visible;
+  the affordance simply does not compel. It reads as reassurance ("we counted it for you") with an
+  optional escape hatch, and an optional step at the end of a walk gets skipped. **Fix direction:
+  stop inviting and start asking** - the save flow should require confirming or entering the
+  number before it will write, at least while ground-truth collection is running. Until that
+  ships, every collected walk needs its truth value recorded in chat and reconciled here by hand,
+  which is what has happened for all four.
