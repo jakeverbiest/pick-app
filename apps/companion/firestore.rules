@@ -88,6 +88,25 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
+    // --- Challenge share tokens: the same forward-map + reverse-index pattern
+    //     one scope down, for the group impact map
+    //     (GROUP_IMPACT_MAP_SPEC.md §8.1). Written only by
+    //     createChallengeToken (Admin SDK); read only via getChallengeToken
+    //     (organizer-only) and the challengeImpact HTTPS endpoint — both also
+    //     Admin SDK. Clients never touch these directly, so both stay closed,
+    //     exactly like team_tokens above.
+    //
+    //     Closed rules are load-bearing here, not boilerplate: a readable
+    //     challenge_token_index would let any signed-in user enumerate every
+    //     share token in the system, and under the 2026-09-08 decision those
+    //     links open to anyone holding them, with no revocation. ---
+    match /challenge_tokens/{challengeId} {
+      allow read, write: if false;
+    }
+    match /challenge_token_index/{token} {
+      allow read, write: if false;
+    }
+
     // --- Team snapshots: weekly district-totals history for the civic-org
     //     dashboard's time-series view. Written only by
     //     scheduledOrgSnapshots (Admin SDK); read only via the orgDashboard

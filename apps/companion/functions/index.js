@@ -816,6 +816,92 @@ exports.getTeamToken = onCall(async (request) => {
   return { token: tokenSnap.data().token };
 });
 
+/* ───────────────────────────────────────────────────────────────────────────
+ * Challenge share tokens — GROUP_IMPACT_MAP_SPEC.md §8.1 / §11.7 step 1.
+ *
+ * The same forward-map + reverse-index pattern as team_tokens above, at
+ * challenge scope. Two things differ from the sponsor-team case, both
+ * deliberate:
+ *
+ *  1. A sponsor team mints its token at creation, because a sponsor team
+ *     exists ONLY to be reported on. A challenge is an ordinary in-app object
+ *     that most people never share, so minting is a SEPARATE, OPT-IN act by
+ *     the organizer. Jake's 2026-09-08 decision is that the link is open to
+ *     anyone who has it, permanently, with no revocation (§11.5) — so
+ *     creating one has to be something a person deliberately does, not a
+ *     side effect of creating a challenge.
+ *
+ *  2. Minting is idempotent. Calling twice returns the existing token rather
+ *     than rotating it, because a rotation would silently break links already
+ *     shared and there is no way to warn their holders.
+ *
+ * NOTE ON REVOCATION: there is deliberately no delete/rotate callable here.
+ * Adding one is easy; deciding what happens to already-shared links is not,
+ * and §11.5 records that gap as an accepted risk with a hard constraint —
+ * nothing private or member-identifying may sit behind one of these URLs.
+ * Build revocation before that constraint is relaxed, not after.
+ * ─────────────────────────────────────────────────────────────────────────── */
+
+/** Assert the caller created this challenge, and return its data. */
+async function challengeOwnedByCaller(challengeId, uid) {
+  const snap = await db.collection('challenges').doc(challengeId).get();
+  if (!snap.exists) throw new HttpsError('not-found', 'No such challenge.');
+  if (snap.data().created_by !== uid) {
+    throw new HttpsError(
+      'permission-denied',
+      'Only the challenge organizer can manage its share link.'
+    );
+  }
+  return snap.data();
+}
+
+/**
+ * Mint (or return) the shareable impact-map token for a challenge.
+ * Organizer-only. Idempotent — see note above.
+ */
+exports.createChallengeToken = onCall(async (request) => {
+  if (!request.auth) {
+    throw new HttpsError('unauthenticated', 'Sign in to create a share link.');
+  }
+  const challengeId = String((request.data && request.data.challengeId) || '').trim();
+  if (!challengeId) throw new HttpsError('invalid-argument', 'challengeId is required.');
+
+  await challengeOwnedByCaller(challengeId, request.auth.uid);
+
+  const existing = await db.collection('challenge_tokens').doc(challengeId).get();
+  if (existing.exists) return { token: existing.data().token, created: false };
+
+  const token = randomToken();
+  const now = Date.now();
+  await db.runTransaction(async (tx) => {
+    tx.set(db.collection('challenge_tokens').doc(challengeId), { token, created_at: now });
+    tx.set(db.collection('challenge_token_index').doc(token), { challengeId, created_at: now });
+  });
+  return { token, created: true };
+});
+
+/**
+ * Retrieve an existing challenge share token (e.g. the organizer lost the
+ * link). Organizer-only, mirroring getTeamToken. Does NOT mint one — an
+ * organizer who never created a link should be told so rather than silently
+ * publishing their event.
+ */
+exports.getChallengeToken = onCall(async (request) => {
+  if (!request.auth) {
+    throw new HttpsError('unauthenticated', 'Sign in to retrieve a share link.');
+  }
+  const challengeId = String((request.data && request.data.challengeId) || '').trim();
+  if (!challengeId) throw new HttpsError('invalid-argument', 'challengeId is required.');
+
+  await challengeOwnedByCaller(challengeId, request.auth.uid);
+
+  const tokenSnap = await db.collection('challenge_tokens').doc(challengeId).get();
+  if (!tokenSnap.exists) {
+    throw new HttpsError('not-found', 'This challenge has no share link yet.');
+  }
+  return { token: tokenSnap.data().token };
+});
+
 /**
  * District-scoped totals for one team's area — a pure geographic filter over
  * ALL cleanups, independent of who did them or what team they're on (spec
