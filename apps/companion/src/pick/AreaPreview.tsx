@@ -6,6 +6,7 @@
  * something to navigate.
  */
 import { useMemo } from 'react';
+import { BASEMAP_URL } from './basemap';
 import { StyleSheet, View } from 'react-native';
 import { WebView } from 'react-native-webview';
 import { radius } from './theme';
@@ -32,7 +33,7 @@ export function AreaPreview({
     dragging: false, touchZoom: false, scrollWheelZoom: false,
     doubleClickZoom: false, boxZoom: false, keyboard: false, tap: false
   });
-  L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png?key=${process.env.EXPO_PUBLIC_CARTO_API_KEY}', {
+  L.tileLayer('${BASEMAP_URL}', {
     subdomains: 'abcd', maxZoom: 19
   }).addTo(map);
   var poly = L.polygon(${JSON.stringify(ring)}, {

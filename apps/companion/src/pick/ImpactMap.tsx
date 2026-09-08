@@ -15,6 +15,7 @@
  * share flow on-device after any change here.
  */
 import React, { useMemo } from 'react';
+import { BASEMAP_URL } from './basemap';
 import { View, StyleSheet } from 'react-native';
 import { WebView } from 'react-native-webview';
 import type { ImpactCoverage } from '../services/firebaseDatabase';
@@ -84,7 +85,7 @@ export function ImpactMap({
     dragging: false, touchZoom: false, scrollWheelZoom: false,
     doubleClickZoom: false, boxZoom: false, keyboard: false, tap: false
   });
-  L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png?key=${process.env.EXPO_PUBLIC_CARTO_API_KEY}', {
+  L.tileLayer('${BASEMAP_URL}', {
     subdomains: 'abcd', maxZoom: 19
   }).addTo(map);
 
