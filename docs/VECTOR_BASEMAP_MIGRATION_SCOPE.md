@@ -114,7 +114,7 @@ not a find-and-replace.
 
 - **MapLibre is a heavier library than Leaflet** (several times the bundle). Against four
   on-demand WebViews this is likely unnoticeable, but it is not free.
-- **WebGL dependency** — see step 0.
+- ~~**WebGL dependency**~~ — retired as a risk 2026-09-08; the spike passed on iOS WebKit (§5a).
 - **Parity risk on `map.tsx`.** It is the app's primary screen and carries the follow-cam, the
   spotlight, tap-to-inspect and live route drawing. A partial port that regresses any of those
   is worse than staying on raster.
@@ -131,7 +131,9 @@ raster shutdown date, so this is directional, not urgent.
 
 ## 9. Open questions
 
-1. **Does the WebGL spike pass?** Everything else is moot until this is answered.
+1. ~~Does the WebGL spike pass?~~ **Answered 2026-09-08: yes.** See §5a. The remaining
+   verification is real-`WKWebView` behaviour and segment-count performance, both folded into
+   step 1 rather than kept as blockers.
 2. **Restyle to Civic Blueprint, or stay Positron?** Recommended yes, but as a separate change
    after parity (step 5), and it is a design call not a technical one.
 3. **Dark mode?** Vector makes it real theming rather than a style swap. Not currently requested;
