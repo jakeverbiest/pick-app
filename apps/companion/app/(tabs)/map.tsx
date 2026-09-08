@@ -183,6 +183,12 @@ export default function MapScreen() {
   const [gpsInterval, setGpsInterval] = useState(20000); // 20s base interval
   const lastPickupTimeRef = useRef(0);
   const highFrequencyEndRef = useRef(0);
+  // Last GPS fix accepted into the route, for the speed-plausibility gate in
+  // handleLocationUpdate. Kept in a ref, not state: the gate runs inside the
+  // location callback and must see the previous decision immediately, not a
+  // re-render later.
+  const lastFixRef = useRef<{ lat: number; lon: number; ts: number } | null>(null);
+  const jumpRejectsRef = useRef(0);
   const [historicalCleanups, setHistoricalCleanups] = useState<any[]>([]);
   const [showLayers, setShowLayers] = useState(true);
   const [mapReady, setMapReady] = useState(false);
@@ -902,6 +908,7 @@ export default function MapScreen() {
     setPickupCount(0);
     setElapsedSeconds(0);
     setSessionRoute([]);
+    lastFixRef.current = null; jumpRejectsRef.current = 0;
     setPickupLocations([]);
     setPhotoUri(null);
     if (activeLevelRef.current) exitLevel();
@@ -1240,6 +1247,67 @@ export default function MapScreen() {
 
       if (newPoints.length === 0) return;
 
+      // ---- GPS jump gate -------------------------------------------------
+      // ACCURACY_LIMIT_M above is necessary but not sufficient: a multipath fix
+      // between tall buildings reports a perfectly good accuracy figure and is
+      // still a hundred metres off. Those land as a diagonal leap across whole
+      // blocks.
+      //
+      // Real example, walk Ce61up9CKiKmm7UusSw7 (Brooklyn, 7 min, 10 stored
+      // points): consecutive steps of 168m, 311m, 137m and 161m, implying 3.0
+      // to 6.9 m/s. Brisk walking is ~1.4 m/s. Total came to 1,000m in 409s —
+      // 2.44 m/s average, i.e. the "walk" reads as a jog through walls.
+      //
+      // This matters well beyond a scruffy line. markRouteCleaned() snaps the
+      // route to sidewalk segments within SNAP_DISTANCE_M and credits any it
+      // covers, so a leap across three blocks can mark streets CLEANED that
+      // nobody walked — inventing coverage in shared data every other user
+      // sees. It also inflates the distance_m now being stored.
+      //
+      // The test is speed, not distance, so a legitimate gap (backgrounded,
+      // paused at a light, a tunnel) is unaffected: a long dt makes the implied
+      // speed small on its own.
+      const MAX_WALK_MPS = 3.0;      // above this is not walking, it is a jump
+      const REANCHOR_AFTER = 4;      // consecutive rejects before trusting again
+      const metresBetween = (aLat: number, aLon: number, bLat: number, bLon: number) => {
+        const toRad = (d: number) => (d * Math.PI) / 180;
+        const dLat = toRad(bLat - aLat), dLon = toRad(bLon - aLon);
+        const h = Math.sin(dLat / 2) ** 2 +
+          Math.cos(toRad(aLat)) * Math.cos(toRad(bLat)) * Math.sin(dLon / 2) ** 2;
+        return 2 * 6371000 * Math.asin(Math.sqrt(h));
+      };
+
+      // Oldest first: background-drained points can arrive out of order, and a
+      // gate that compares against a *later* fix would reject good points.
+      newPoints.sort((a, b) => a.timestamp - b.timestamp);
+
+      const accepted: typeof newPoints = [];
+      for (const p of newPoints) {
+        const prevFix = lastFixRef.current;
+        if (prevFix) {
+          const dt = Math.max(1, (p.timestamp - prevFix.ts) / 1000);
+          const d = metresBetween(prevFix.lat, prevFix.lon, p.lat, p.lon);
+          if (d / dt > MAX_WALK_MPS) {
+            jumpRejectsRef.current += 1;
+            // Don't strand the walk: if fixes keep disagreeing with our anchor,
+            // the anchor is probably the stale one (genuine transit, or a long
+            // outage), so re-anchor and carry on rather than dropping the rest
+            // of the session on the floor.
+            if (jumpRejectsRef.current < REANCHOR_AFTER) {
+              console.log(`📍 Rejected GPS jump: ${Math.round(d)}m in ${Math.round(dt)}s (${(d / dt).toFixed(1)} m/s)`);
+              continue;
+            }
+            console.log(`📍 Re-anchoring after ${jumpRejectsRef.current} rejected fixes`);
+          }
+        }
+        jumpRejectsRef.current = 0;
+        lastFixRef.current = { lat: p.lat, lon: p.lon, ts: p.timestamp };
+        accepted.push(p);
+      }
+      if (accepted.length === 0) return;
+      newPoints.length = 0;
+      newPoints.push(...accepted);
+
       setSessionRoute((prev) => {
         const updated = [...prev, ...newPoints];
         const now = Date.now();
@@ -1484,6 +1552,7 @@ export default function MapScreen() {
     setSegmentsCompleted(0);
     setElapsedSeconds(0);
     setSessionRoute([]);
+    lastFixRef.current = null; jumpRejectsRef.current = 0;
     setPickupLocations([]);
     PickupAggregator.resetSession();
 
@@ -1857,6 +1926,7 @@ export default function MapScreen() {
               setElapsedSeconds(0);
               setPhotoUri(null);
               setSessionRoute([]);
+              lastFixRef.current = null; jumpRejectsRef.current = 0;
               setPickupLocations([]);
               finishSession();
             },
@@ -3568,6 +3638,7 @@ Generated by Pick App - Share this with the development team
                           setElapsedSeconds(0);
                           setPhotoUri(null);
                           setSessionRoute([]);
+                          lastFixRef.current = null; jumpRejectsRef.current = 0;
                           setPickupLocations([]);
                         },
                       },
