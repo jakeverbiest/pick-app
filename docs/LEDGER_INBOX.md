@@ -332,3 +332,39 @@ the ledger's actual structure, not paste it verbatim.
   typing the number into chat. Until the save flow *requires* the number, that hand-reconciliation
   is the only thing keeping the corpus honest, and any analysis run straight off Firestore
   `items_count` will silently treat detector output as ground truth.
+
+- 2026-09-08 — **Sixth ground-truth walk (`1NEBdyuoA50RrRajsf9k`, 3.1 min, 150 m, truth 30):
+  detector 36 = 1.20x. The condition is BIMODAL, and the two previous readings of it were both
+  wrong.**
+  Five walks, identical condition (normal pace, no wrist taps, 30 picks each):
+  | id | pace | slow | dist | min | accepted events | detected | ratio |
+  |---|---|---|---|---|---|---|---|
+  | uyGqEUxN | 0.97 | 0.52 | 290 | 3.6 | 30 | 26 | 0.87x |
+  | rv28ZzcK | 0.80 | 0.63 | 370 | 3.8 | 33 | 27 | 0.90x |
+  | k3s8iTcy | 0.48 | 0.81 | 220 | 2.9 | 37 | 27 | 0.90x |
+  | 1NEBdyuo | 0.21 | 0.84 | 150 | 3.1 | 45 | 36 | 1.20x |
+  | IPbJKgiM | 0.70 | 0.74 | 300 | 4.1 | 51 | 37 | 1.23x |
+  **Two tight clusters — 26/27/27 and 36/37 — with nothing in between.** Not a continuum with
+  noise around it. Three walks land within 1 count of each other at ~0.89x and two land within 1
+  count of each other at ~1.21x. Whatever separates them is close to binary.
+  **Both prior readings are superseded.** The n=3 entry called it "essentially unbiased at 1.01x"
+  by averaging across the gap. The n=4 entry called 1.23x an outlier and the true behavior a "mild
+  ~10% under-count"; the sixth walk reproduces the high cluster and refutes that. The correct
+  statement is that a single walk's ratio is **unpredictable between 0.87x and 1.23x**, the spread
+  is real and reproducible, and n=5 does not identify the cause.
+  **Lead tested and REFUTED: peak amplitude does not separate the clusters.** The high-cluster
+  walks have slightly lower median accepted peak (1.38/1.40 vs 1.48/1.53/1.49), which suggested
+  they were admitting weaker motions. The full distributions say otherwise — p10/p25/p50/p75/p90
+  are near-identical across all five (p10 1.12-1.17, p50 1.38-1.53, p90 2.01-2.41). A threshold
+  sweep confirms it: raising the peak floor to 1.2 takes the walks to 0.77/0.67/0.80/0.87/1.07 and
+  to 1.3 takes them to 0.63/0.60/0.67/0.73/0.70 — it removes counts from every walk at roughly the
+  same rate and never widens the gap. The median difference was noise in overlapping distributions.
+  **What the clusters do track is raw accepted-event count** (30/33/37 low vs 45/51 high), i.e. the
+  detector genuinely fired more often on those two walks; the downstream count follows. So the
+  divergence happens at acceptance, not in post-filtering — but no logged feature explains why.
+  **Do not tune anything on this.** Five walks, one tester, one condition, and the dominant effect
+  is unexplained. The next informative experiment is the still-missing pause-at-each-pick walk,
+  which is the one condition that would test whether picking-while-in-motion is the split.
+  **PROCESS PROBLEM, sixth consecutive occurrence.** `items_count` 36 == `items_detected` 36,
+  truth 30; `ground_truth` is `"[]"`. Unchanged and now the longest-running open issue in this
+  ledger.
