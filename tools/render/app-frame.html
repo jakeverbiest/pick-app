@@ -160,11 +160,15 @@
     /* ---- chrome ---- */
     var ins=22*K, br=20*K, barY=44*K, barH=112*K;
     ctx.fillStyle='#0F2F66'; rr(ctx,ins,barY,W-ins*2,barH,br); ctx.fill();
-    var stats=[[fmt(walk*M.dur),'Time'],[String(Math.round(M.items*walk)),'Pickups'],
-               ['\u2014','Distance']];
+    // NO DISTANCE. The app shows one, but the cleanup document stores none and
+    // the thinned track cannot reproduce the app's live figure — an earlier
+    // pass here printed an invented "1.90 mi". A blank slot still implies the
+    // number should exist, so the stat is gone rather than empty. Do not add it
+    // back by summing the route.
+    var stats=[[fmt(walk*M.dur),'Time'],[String(Math.round(M.items*walk)),'Pickups']];
     ctx.textAlign='center';
     stats.forEach(function(st,i){
-      var cx=ins+(W-ins*2)*(i+.5)/3;
+      var cx=ins+(W-ins*2)*(i+.5)/stats.length;
       ctx.fillStyle='#fff'; ctx.font='700 '+Math.round(42*K)+'px Archivo, sans-serif';
       ctx.fillText(st[0],cx,barY+barH*.48);
       ctx.fillStyle='#A8B896'; ctx.font='500 '+Math.round(24*K)+'px Archivo, sans-serif';
