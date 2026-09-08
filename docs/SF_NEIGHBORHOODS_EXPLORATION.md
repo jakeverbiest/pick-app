@@ -1,7 +1,13 @@
 # San Francisco neighborhood boundaries
 
-Status: **entry written into the working tree, unpublished and uncommitted.** Typechecks clean.
-Needs one Metro session on a real device before it goes anywhere.
+> **SUPERSEDED 2026-09-08 — the status line below is stale; the work shipped.** SF is committed
+> (`528acbd`) and has been one of 11 curated cities live since the 2026-09-05 OTA. The only
+> thing still genuinely open here is §6's device-verification checklist, which is a `qa` task,
+> not unshipped work. Keep this doc for the DataSF source research (`gfpk-269f` validated, no
+> overlap, 287KB; `pty2-tcw4` is a dead husk) — do not cite its status.
+
+~~Status: **entry written into the working tree, unpublished and uncommitted.** Typechecks clean.
+Needs one Metro session on a real device before it goes anywhere.~~
 Written 24 Aug 2026. Related: `NEIGHBORHOOD_COMPLETION_SPEC.md` §3 / build-order item 4.
 Code: `apps/companion/src/services/neighborhoods.ts`.
 
