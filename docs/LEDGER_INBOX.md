@@ -152,3 +152,19 @@ the ledger's actual structure, not paste it verbatim.
   it. That is the documented `GROUP_IMPACT_MAP_SPEC` failure — strays blow out the bounding box and
   waste the frame — now occurring in the app's own recap, not just the renderer. A month with
   travel in it produces an unusable impact visual.
+
+- 2026-09-08 — **RESOLVED: the recap watermark is gone after the shared-basemap fix**
+  (`f51f2589-bf22-4223-8ac8-c728cb9c1538`), confirmed by Jake on device.
+  **Honest gap: I cannot fully explain why the old code failed.** `ImpactMap.tsx` already had
+  `?key=${process.env.EXPO_PUBLIC_CARTO_API_KEY}` inline inside a proper template literal, the
+  same form `map.tsx` uses — and `map.tsx` was rendering keyed tiles correctly the whole time.
+  Rendering `ImpactMap`'s exact tile config headless produced six keyed requests and a clean map.
+  Code, bundle and standalone render all looked correct, yet the device showed the watermark on
+  that one surface until the URL moved into `src/pick/basemap.ts`. The most likely explanation is
+  that the substitution was not being applied in that module and the standalone test could not
+  reproduce it because it hard-coded the key rather than exercising the module — but that is a
+  hypothesis, not a verified cause. Recorded as such: the symptom is fixed, the mechanism is not
+  proven, and if a fifth map is ever added the safe move is to import BASEMAP_URL rather than
+  assume the inline form works everywhere.
+  Cost of getting there: a ~10-minute production regression that stripped the key from all four
+  maps (logged above), caused by putting the env expression behind a variable.
