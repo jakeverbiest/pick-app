@@ -889,8 +889,85 @@ exports.createChallengeToken = onCall(async (request) => {
   } catch (e) {
     console.warn(`createChallengeToken: rollup seed failed for ${challengeId}`, e);
   }
+
+  // Warm the street geometry this event's map will need.
+  //
+  // WHY THIS IS HERE. The map's street layer joins segment_status to
+  // precache_streets by gridKey, and precache_streets is an NYC-only roster
+  // (1,226 tiles). Found 2026-09-08 building step 4: the Litchfield Litter
+  // Invitational is in South Carolina, so all 27 of its matched segments had
+  // nowhere to get coordinates from and the map came back completely empty —
+  // a 200 response with `streets: []`, which reads as "they cleaned nothing"
+  // rather than as a missing tile.
+  //
+  // Minting a token is the right moment: rare, human-driven, and the one point
+  // where we know which grids an event actually touches. Capped because
+  // Overpass is a shared courtesy service on a ~100-queries-a-day budget —
+  // a sprawling event warms the busiest tiles and the rest fill in later via
+  // the normal drip. refreshStreetTile already enforces the fair-use cooldown.
+  try {
+    await warmStreetTilesForChallenge(challengeId);
+  } catch (e) {
+    console.warn(`createChallengeToken: tile warm failed for ${challengeId}`, e);
+  }
   return { token, created: true };
 });
+
+/** How many uncached tiles one mint may pull from Overpass. */
+const CHALLENGE_TILE_WARM_CAP = 12;
+
+/**
+ * Fetch street geometry for any grid this challenge's coverage needs that
+ * isn't precached yet. Best-effort: a failure here costs map detail, never the
+ * token or the totals.
+ */
+async function warmStreetTilesForChallenge(challengeId) {
+  const snap = await db.collection('challenges').doc(challengeId).get();
+  if (!snap.exists) return 0;
+  const scope = challengeScope(challengeId, snap.data());
+  if (!scope.roster.length) return 0;
+
+  const segSnaps = await Promise.all(
+    chunkRoster(scope.roster).map((c) =>
+      db.collection('segment_status').where('last_user', 'in', c).get()
+    )
+  );
+  const grids = new Set();
+  for (const s of segSnaps) {
+    s.forEach((doc) => {
+      const d = doc.data();
+      const t = num(d.last_cleaned);
+      if (scope.from && t < scope.from) return;
+      if (scope.to && t > scope.to) return;
+      if (d.grid) grids.add(d.grid);
+    });
+  }
+  if (!grids.size) return 0;
+
+  const existing = await Promise.all(
+    [...grids].map((g) => db.collection(PRECACHE_STREETS_COLLECTION).doc(g).get())
+  );
+  const missing = [...grids].filter((_, i) => !existing[i].exists).slice(0, CHALLENGE_TILE_WARM_CAP);
+  if (!missing.length) return 0;
+
+  let warmed = 0;
+  // Sequential, not Promise.all: these are Overpass calls and refreshStreetTile
+  // enforces a cooldown between them. Firing them in parallel would defeat it.
+  for (const key of missing) {
+    const [lat, lon] = key.split('_').map(Number);
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+    try {
+      // Grid keys are the SW corner; fetch from the cell center, the same
+      // correction made for the precache seed-offset bug on 2026-09-07.
+      await refreshStreetTile(key, lat + NEIGHBORHOOD_GRID_DEG / 2, lon + NEIGHBORHOOD_GRID_DEG / 2);
+      warmed += 1;
+    } catch (e) {
+      console.warn(`warmStreetTilesForChallenge: tile ${key} failed`, e && e.message);
+    }
+  }
+  console.log(`warmStreetTilesForChallenge(${challengeId}): warmed ${warmed}/${missing.length} tiles`);
+  return warmed;
+}
 
 /* ───────────────────────────────────────────────────────────────────────────
  * Roster-scoped stats — GROUP_IMPACT_MAP_SPEC.md §8.2 / §11.2 / §11.7 step 2.
