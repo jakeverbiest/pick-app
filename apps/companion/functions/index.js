@@ -1460,6 +1460,133 @@ exports.scheduledOrgSnapshots = onSchedule('every monday 08:00', async () => {
  * somehow missing (shouldn't happen: createSponsorTeam seeds it at team
  * creation) so a broken rollup degrades to "slow" rather than "wrong."
  */
+/* ───────────────────────────────────────────────────────────────────────────
+ * challengeImpact — GROUP_IMPACT_MAP_SPEC.md §8.4 / §11.7 step 4.
+ *
+ * The public, token-gated JSON behind the shareable group impact page. Reads
+ * only pre-aggregated docs — never `cleanups` — so nothing here can leak a
+ * route, and the marker floor and suppression applied in gridPickups are
+ * already baked into what it serves.
+ *
+ * STREET COVERAGE (§11.3): segments where `last_user` is on the roster and
+ * `last_cleaned` falls in the window. `segment_status` carries no geometry, so
+ * it is joined to `precache_streets` via its `grid` field (both use the same
+ * 0.01° gridKey). A grid that has not been precached yet simply yields no
+ * lines for its segments — the page degrades to fewer streets, never to an
+ * error.
+ *
+ * Known and accepted: `segment_status` is last-writer-wins, so a street two
+ * groups cleaned is credited to whoever touched it last. Fine for "this street
+ * got cleaned"; it is why §11.3 forbids deriving any per-person standing from
+ * segment counts.
+ * ─────────────────────────────────────────────────────────────────────────── */
+exports.challengeImpact = onRequest(async (req, res) => {
+  // CORS is not optional here. Its absence silently broke every orgDashboard
+  // load from 2026-08-31 to 2026-09-03 while returning HTTP 200 throughout —
+  // the browser blocks the response before the body is ever read.
+  res.set('Access-Control-Allow-Origin', '*');
+
+  const token = String(req.query.token || '').trim();
+  if (!token) { res.status(403).json({ ok: false, error: 'missing token' }); return; }
+
+  try {
+    const idx = await db.collection('challenge_token_index').doc(token).get();
+    if (!idx.exists) { res.status(403).json({ ok: false, error: 'invalid token' }); return; }
+    const challengeId = idx.data().challengeId;
+
+    const [chSnap, statsSnap, markerSnap] = await Promise.all([
+      db.collection('challenges').doc(challengeId).get(),
+      db.collection('challenge_stats').doc(challengeId).get(),
+      db.collection('challenge_markers').doc(challengeId).get(),
+    ]);
+    if (!chSnap.exists) { res.status(404).json({ ok: false, error: 'challenge not found' }); return; }
+
+    const challenge = chSnap.data();
+    const scope = challengeScope(challengeId, challenge);
+    const stats = statsSnap.exists ? statsSnap.data() : null;
+    const markers = markerSnap.exists ? markerSnap.data() : { suppressed: true, reason: 'not_built', cells: [] };
+
+    // ---- street coverage -------------------------------------------------
+    let streets = [];
+    if (scope.roster.length) {
+      const chunks = chunkRoster(scope.roster);
+      const segSnaps = await Promise.all(
+        chunks.map((c) => db.collection('segment_status').where('last_user', 'in', c).get())
+      );
+      const byGrid = new Map(); // grid -> Set(segmentId)
+      for (const snap of segSnaps) {
+        snap.forEach((doc) => {
+          const d = doc.data();
+          const t = num(d.last_cleaned);
+          if (scope.from && t < scope.from) return;
+          if (scope.to && t > scope.to) return;
+          const g = d.grid;
+          if (!g) return;
+          if (!byGrid.has(g)) byGrid.set(g, new Set());
+          byGrid.get(g).add(doc.id);
+        });
+      }
+      const grids = [...byGrid.keys()];
+      const tiles = await Promise.all(
+        grids.map((g) => db.collection('precache_streets').doc(g).get())
+      );
+      tiles.forEach((tile, i) => {
+        if (!tile.exists) return; // not precached yet — fewer lines, not an error
+        const want = byGrid.get(grids[i]);
+        for (const seg of tile.data().segments || []) {
+          if (want.has(seg.id) && Array.isArray(seg.coords) && seg.coords.length >= 4) {
+            streets.push(seg.coords); // flat [lat,lon,lat,lon,…]
+          }
+        }
+      });
+    }
+
+    // ---- bounds ----------------------------------------------------------
+    let minLat = Infinity, minLon = Infinity, maxLat = -Infinity, maxLon = -Infinity;
+    const see = (la, lo) => {
+      if (!Number.isFinite(la) || !Number.isFinite(lo)) return;
+      if (la < minLat) minLat = la; if (la > maxLat) maxLat = la;
+      if (lo < minLon) minLon = lo; if (lo > maxLon) maxLon = lo;
+    };
+    for (const c of streets) for (let i = 0; i + 1 < c.length; i += 2) see(c[i], c[i + 1]);
+    const cells = Array.isArray(markers.cells) ? markers.cells : [];
+    for (let i = 0; i + 2 < cells.length; i += 3) see(cells[i], cells[i + 1]);
+    const bbox = Number.isFinite(minLat) ? [minLat, minLon, maxLat, maxLon] : null;
+
+    res.json({
+      ok: true,
+      challenge: {
+        name: challenge.name || 'Cleanup',
+        area_label: (challenge.area && challenge.area.label) || null,
+        // Seconds in Firestore (see challengeEpochMs); sent as ms so the page
+        // never has to know that.
+        start: scope.from,
+        end: scope.to,
+      },
+      stats: stats
+        ? {
+            cleanups: num(stats.cleanups), pickups: num(stats.pickups),
+            bags: num(stats.bags), hours: num(stats.hours),
+            participants: num(stats.participants),
+          }
+        : null,
+      markers: {
+        suppressed: !!markers.suppressed,
+        reason: markers.reason || null,
+        grid_deg: num(markers.grid_deg) || null,
+        // Pickup POINTS behind the cells, not items_count — see gridPickups.
+        points: num(markers.points),
+        cells,
+      },
+      streets,
+      bbox,
+    });
+  } catch (err) {
+    console.error('challengeImpact failed', err);
+    res.status(500).json({ ok: false, error: 'internal error' });
+  }
+});
+
 exports.orgDashboard = onRequest(async (req, res) => {
   // Public, token-gated JSON hit via client-side fetch() from pickglobal.org —
   // the only onRequest export in this file actually called from a browser, so
