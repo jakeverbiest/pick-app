@@ -122,3 +122,33 @@ the ledger's actual structure, not paste it verbatim.
   Also published as an artifact ("Sidewalk Ledger"). Multi-crew is the same renderer with N tracks
   over one shared street layer; the limiter is track density, not the renderer — 86 m median
   sampling makes any single route coarse.
+
+- 2026-09-08 — **I shipped a regression to production and caught it only after publishing.**
+  While investigating a CARTO "API KEY REQUIRED" watermark on the monthly recap, I centralised the
+  four hand-copied tile URLs into `src/pick/basemap.ts` — a good change — but wrote it as
+  `const KEY = process.env.EXPO_PUBLIC_CARTO_API_KEY` followed by a ternary. **Expo inlines
+  EXPO_PUBLIC_* by TEXTUAL SUBSTITUTION of the literal expression at build time; it is not a
+  runtime lookup.** Behind a variable it is never substituted, so KEY was undefined, the ternary
+  took the empty branch, and the published bundle carried a URL ending at `.png` with no key
+  parameter — removing the key from **all four maps at once**, in an OTA, while trying to fix a
+  watermark on one of them. Fixed and republished within ~10 minutes
+  (`f51f2589-bf22-4223-8ac8-c728cb9c1538`). The trap is now documented in the file itself.
+  **Two verification lessons, both mine, both worth keeping:**
+  (1) **Never grep a Hermes bundle for `key=undefined`.** An un-substituted env var becomes the
+  `undefined` KEYWORD, not that text, so the search returns zero whether or not the key is present.
+  I cited that non-result as proof twice.
+  (2) **`strings` output boundaries are arbitrary** — Hermes packs the string table so unrelated
+  constants run together, and template literals are split into fragments. A grep for a whole
+  interpolated log line, or for the key adjacent to the URL, returns nothing either way. The
+  reliable checks are: does `light_all/{z}/{x}/{y}.png?key=` exist as a constant, and does the key
+  appear anywhere in the bundle. Both must be 1.
+  **The original watermark is still unexplained.** The key is valid (a direct tile fetch with it
+  returns a clean PNG at both z5 and z16; without it, the watermarked one). `ImpactMap`'s exact
+  tile config rendered headless makes 6 tile requests, all keyed, and produces a clean map. The
+  code and the bundle both look right, yet build 81fb showed the watermark on the August recap.
+  Cache is the remaining hypothesis and is untested.
+  **Separately, visible in the same screenshot and arguably the bigger problem:** the August recap
+  map spans Brooklyn to South Carolina, so the "map" is the whole US East Coast with four dots on
+  it. That is the documented `GROUP_IMPACT_MAP_SPEC` failure — strays blow out the bounding box and
+  waste the frame — now occurring in the app's own recap, not just the renderer. A month with
+  travel in it produces an unusable impact visual.
