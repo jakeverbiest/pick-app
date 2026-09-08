@@ -1042,13 +1042,131 @@ async function rebuildChallengeStats(challengeId) {
   const snap = await db.collection('challenges').doc(challengeId).get();
   if (!snap.exists) return null;
   const scope = challengeScope(challengeId, snap.data());
-  const stats = statsFromScopedCleanups(await cleanupsForScope(scope));
-  await db.collection('challenge_stats').doc(challengeId).set({
-    ...stats,
-    roster_size: scope.roster.length,
-    updated_at: Date.now(),
-  });
+  const cleanups = await cleanupsForScope(scope);
+  const stats = statsFromScopedCleanups(cleanups);
+
+  // Markers are derived from the SAME scoped set, in the same pass — so they
+  // can never disagree with the totals shown beside them, and the suppression
+  // test uses the same participant count the artifact displays.
+  const markers = gridPickups(cleanups, stats.participants);
+
+  const now = Date.now();
+  await Promise.all([
+    db.collection('challenge_stats').doc(challengeId).set({
+      ...stats,
+      roster_size: scope.roster.length,
+      updated_at: now,
+    }),
+    db.collection('challenge_markers').doc(challengeId).set({
+      suppressed: markers.suppressed,
+      reason: markers.reason,
+      grid_deg: MARKER_GRID_DEG,
+      cell_count: markers.cells.length / 3,
+      cells: markers.cells, // flat [lat,lon,count,…] — Firestore rejects nested arrays
+      updated_at: now,
+    }),
+  ]);
   return stats;
+}
+
+/* ───────────────────────────────────────────────────────────────────────────
+ * Marker aggregation — GROUP_IMPACT_MAP_SPEC.md §5 / §11.6 / §11.7 step 3.
+ *
+ * Every cleanup stores `pickups`: a JSON string of [lat, lon] pairs. This
+ * grids them into aggregate cells for the shareable artifact.
+ *
+ * THE PRIVACY RULES ARE ENFORCED HERE, NOT IN THE RENDERER. §11.6 requires a
+ * grid floor and suppression below a minimum participant count. Both belong
+ * server-side: a renderer-side filter means the precise coordinates still
+ * left the server, to a page §11.5 opened to anyone holding the link, with no
+ * revocation. Once it has been sent, it has been published.
+ *
+ * §5 is emphatic that this is NOT the all-time public hotspot layer removed on
+ * 2026-09-06. That layer was unbounded; this is bounded in time (the event
+ * window), space (the event area), participation (people who joined), and is
+ * aggregated to cells. Do not let a future change erode any of those four.
+ * ─────────────────────────────────────────────────────────────────────────── */
+
+/**
+ * Grid cell size in degrees. ~33m of latitude; at NYC's latitude ~25m of
+ * longitude. Chosen to be coarser than a doorstep while staying fine enough to
+ * read as "a field of pickups" rather than one blob — §5 warns explicitly
+ * against inheriting the ~1km public-tile coarseness, which would destroy the
+ * visual.
+ *
+ * §9.1/§11.6: this number is meant to be re-tuned against a REAL RENDERED MAP.
+ * That is expected. MARKER_GRID_MIN_DEG below is not — it is the privacy floor
+ * and tuning must not cross it, however much better the map looks.
+ */
+const MARKER_GRID_DEG = 0.0003;
+const MARKER_GRID_MIN_DEG = 0.0002; // ~22m lat. Hard floor. Do not lower.
+
+/**
+ * Below this many CONTRIBUTING participants the marker layer is suppressed
+ * entirely (§11.6, Jake's decision 2026-09-08). Street coverage, totals,
+ * identity line and photo strip all still render — a small cleanup still gets
+ * a real artifact, just without the dot layer, because on a two-person event
+ * a field of dots is one person's route.
+ *
+ * Still an open number (§11.6): pick it together with the grid size, not
+ * separately.
+ */
+const MARKER_MIN_PARTICIPANTS = 3;
+
+/** Keeps the stored doc well inside Firestore's 1MB limit and the page light. */
+const MARKER_MAX_CELLS = 3000;
+
+/** Parse a cleanup's `pickups` field. Stored as a JSON string of [lat,lon]. */
+function pickupPoints(cleanup) {
+  const raw = cleanup && cleanup.pickups;
+  if (typeof raw !== 'string' || raw.length < 4) return [];
+  let parsed;
+  try { parsed = JSON.parse(raw); } catch { return []; }
+  if (!Array.isArray(parsed)) return [];
+  const out = [];
+  for (const p of parsed) {
+    if (!Array.isArray(p) || p.length < 2) continue;
+    const lat = Number(p[0]), lon = Number(p[1]);
+    if (Number.isFinite(lat) && Number.isFinite(lon) && (lat !== 0 || lon !== 0)) out.push([lat, lon]);
+  }
+  return out;
+}
+
+/**
+ * Grid a scope's pickup coordinates into aggregate cells.
+ *
+ * Returns `{ suppressed, reason, cells }` where `cells` is FLAT —
+ * [lat, lon, count, lat, lon, count, …]. Flat because Firestore rejects
+ * nested arrays outright; this codebase already stores polylines and polygon
+ * rings the same way, so it is the established shape, not a new one.
+ */
+function gridPickups(cleanups, participantCount, gridDeg = MARKER_GRID_DEG) {
+  if (participantCount < MARKER_MIN_PARTICIPANTS) {
+    return { suppressed: true, reason: 'too_few_participants', cells: [] };
+  }
+  // Enforce the floor here rather than trusting the caller — this is the
+  // single choke point every marker passes through.
+  const g = Math.max(Number(gridDeg) || MARKER_GRID_DEG, MARKER_GRID_MIN_DEG);
+
+  const counts = new Map();
+  for (const c of cleanups) {
+    for (const [lat, lon] of pickupPoints(c)) {
+      // Snap to cell CENTER, not corner: a corner-snapped marker still sits on
+      // a real intersection of the grid and reads as more precise than it is.
+      const cLat = (Math.floor(lat / g) + 0.5) * g;
+      const cLon = (Math.floor(lon / g) + 0.5) * g;
+      const key = `${cLat.toFixed(6)}_${cLon.toFixed(6)}`;
+      const cur = counts.get(key);
+      if (cur) cur.n += 1;
+      else counts.set(key, { lat: cLat, lon: cLon, n: 1 });
+    }
+  }
+  // Densest cells first, so truncation drops the sparsest rather than an
+  // arbitrary slice — the visual keeps its shape.
+  const cells = [...counts.values()].sort((a, b) => b.n - a.n).slice(0, MARKER_MAX_CELLS);
+  const flat = [];
+  for (const c of cells) flat.push(Number(c.lat.toFixed(6)), Number(c.lon.toFixed(6)), c.n);
+  return { suppressed: false, reason: null, cells: flat };
 }
 
 /**

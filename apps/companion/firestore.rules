@@ -122,6 +122,24 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    // --- Challenge markers: gridded, aggregate pickup cells for the event
+    //     artifact (GROUP_IMPACT_MAP_SPEC.md §5). Server-computed from
+    //     `cleanups.pickups`, which clients cannot read.
+    //
+    //     Read is signed-in on the same basis as challenge_stats (§11.4). What
+    //     makes that acceptable is that the coordinates here are ALREADY
+    //     degraded before they are written: snapped to a grid with a hard
+    //     floor, and suppressed entirely below a minimum participant count
+    //     (§11.6). Precise pickup coordinates never reach this collection.
+    //
+    //     This is NOT the all-time public hotspot layer removed 2026-09-06.
+    //     That was unbounded; this is bounded in time, space and
+    //     participation. Do not relax those bounds here. ---
+    match /challenge_markers/{challengeId} {
+      allow read: if signedIn();
+      allow write: if false;
+    }
+
     // --- Team snapshots: weekly district-totals history for the civic-org
     //     dashboard's time-series view. Written only by
     //     scheduledOrgSnapshots (Admin SDK); read only via the orgDashboard
