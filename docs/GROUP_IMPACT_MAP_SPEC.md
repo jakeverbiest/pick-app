@@ -440,3 +440,48 @@ owner-only rule exists to prevent, reached by a different path.
 
 Both numbers — the grid floor and the minimum participant count — are still open and should be
 decided together, not separately, and not purely on appearance.
+
+### 11.7 Plan of record — decided 2026-09-08
+
+Three decisions from Jake, plus the resulting sequence. **This is the section to start from.**
+
+**1. v1 is CHALLENGE ONLY.** The team (ongoing-roster) view does not ship in the first release.
+§11.2's requirement still holds and is what makes this cheap: **the roster is a parameter from
+the first line of code**, not read inline from participants. The team view is then a second
+caller, not a rewrite. Do not shortcut this — hardcoding participants into the query is the one
+mistake that turns the follow-on into a rebuild.
+
+**2. Sequencing: GREENFIELD FIRST, then migrate.** The new web page is built in MapLibre from
+the start rather than in Leaflet and ported later. The reasoning is risk placement: the renderer
+patterns (GeoJSON source + style layers, the layer-insertion anchor from
+`VECTOR_BASEMAP_MIGRATION_SCOPE.md` §5a, data-driven paint) get worked out on a page with no
+users, instead of inside `map.tsx` — the app's primary screen, carrying the follow-cam,
+spotlight, tap-to-inspect and live route drawing.
+
+**3. Small events get a map with NO markers**, not a withheld artifact. Below a minimum
+participant count the dot layer is suppressed; street coverage, totals, identity line and photo
+strip all still render. Rationale in §11.6 — street coverage from `segment_status` is inherently
+aggregate and carries no per-walk path, so it is safe at any group size. A three-person cleanup
+still gets something worth posting.
+
+**Also decided, by default rather than debate:** §9.3 (an organizer-only exact-precision view) is
+**not being built.** One artifact. Revisit only if a real organizer asks.
+
+#### The combined order of work
+
+| # | work | notes |
+|---|---|---|
+| 1 | Challenge token + shareable link (§8.1) | backend, copies `createSponsorTeam` |
+| 2 | Challenge-scoped stats rollup (§8.2) | rides `onCleanupWrite`, no full scans |
+| 3 | Marker aggregation (§8.3) | admin-side; **apply the §11.6 floor + suppression here, not in the renderer** |
+| 4 | **The new web page, built in MapLibre** (§8.4) | greenfield. **Set `Access-Control-Allow-Origin`** — the identical omission broke `org.html` for three days at HTTP 200 |
+| 5 | Photo strip (§8.5) | reuses shipped Tier 1 |
+| 6 | Consent copy (§8.6) | user-facing — staged for Jake's approval before it ships |
+| 7 | Migrate `web/map.html` + `web/org.html` | web, low-risk, reuses step 4's patterns |
+| 8 | Migrate the four app maps | separate effort — see `VECTOR_BASEMAP_MIGRATION_SCOPE.md` §5 |
+| 9 | Team-roster view | the second caller of step 2's roster parameter |
+
+Steps 1-3 and 5 are mechanical and need nothing from Jake. Step 6 is gated on his approval as
+user-facing copy. **The marker grid floor and the minimum participant count are still open
+numbers** (§11.6) and must be picked together against a rendered map — they are the one thing in
+step 3/4 that cannot be decided in advance.
