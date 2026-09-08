@@ -553,3 +553,45 @@ be re-scoped: the mechanism exists, so the work is a `revokeChallengeToken` / `r
 callable plus a button — organizer-only, mirroring `getChallengeToken`'s ownership check. That is
 a much smaller job than it has been carried as, and it should be sized accordingly rather than
 deferred as though it were foundational.
+
+### 11.10 Consent is a PREREQUISITE, not step 6 — and auto-join breaks its assumption (2026-09-08)
+
+Two findings from building steps 4-5. Both change §8's build order.
+
+**1. §8 sequences consent last. That is wrong, and §6 already says why.**
+
+§6: *"No backfill. Events that ended before this ships have no consented participants."* That
+applies to the whole artifact, not only to photos — §6's other bullets scope *walks*, not just
+images. So **no share link may be minted for any event that ran before the consent copy ships.**
+
+This was not theoretical. While verifying step 4 a token was minted for the Litchfield Litter
+Invitational — an August event, every participant of whom joined before any consent sentence
+existed — and a public page rendering their totals and street coverage was generated. It was
+revoked immediately (`challenge_token_index` doc deleted; the URL returns 403, which also
+demonstrates §11.9's correction). **Nothing was shared, but it should not have been minted.**
+
+Corrected order: **consent copy ships BEFORE the first real token is minted.** Steps 1-4 can be
+built and tested as they were, but only against tokens that are torn down. Step 5 (photos)
+depends on consent doubly, since §6 requires photos to be opt-in *per photo* on top of event
+membership.
+
+**2. Auto-join removes the moment §6 puts consent in.**
+
+`app/challenge/[id].tsx:125-141` auto-joins a user who arrives via a deep-link invite, with no
+confirmation step — deliberately, and the code says so: *"Auto-join removes the explicit
+confirmation step, so say so."* It compensates with a "You're in" alert.
+
+§6's design — *"one plain sentence on the screen where someone joins"* — assumes a join the
+person performs. On the auto-join path there is no such screen. So consent has **two** surfaces,
+not one:
+
+| surface | today | needs |
+|---|---|---|
+| explicit join button (`toggleJoin`) | joins silently | the §6 sentence before joining |
+| deep-link auto-join | joins, then shows a "You're in" alert | the §6 sentence **in that alert** — it is the only moment the person sees |
+
+Putting it only on the join button would leave every invited participant — the common path for a
+group event, and precisely the people an artifact is built from — never having seen it.
+
+Draft copy for both surfaces is staged in `docs/CHALLENGE_CONSENT_COPY.md` for Jake's approval.
+Nothing ships until he signs off, per the standing gate on user-facing copy.
