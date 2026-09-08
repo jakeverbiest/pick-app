@@ -205,3 +205,38 @@ the ledger's actual structure, not paste it verbatim.
      it needs a multi-tester corpus that does not exist yet.
   Still n=1: one walk, one person, one phone, one pocket. Everything above could change with a
   second walker; nothing above should be treated as settled.
+
+- 2026-09-08 — **THE DETECTOR'S ERROR IS BIDIRECTIONAL AND PACE-DEPENDENT. Second ground-truth
+  walk reverses the sign.** Walk `IPbJKgiMztZyTngisBMS` (4.1 min, natural/slow pace, no wrist
+  taps, Jake counted 30 in his head): **detector 37 against a truth of 30 — 1.23x OVER.**
+  Against the brisk walk `LIEYG6ezcsDcQpxIIOF2` earlier the same day: 15 against 35 — 0.43x UNDER.
+  | walk | pace median | slow share | truth | detected | ratio |
+  |---|---|---|---|---|---|
+  | brisk, wrist taps | 1.27 m/s | 0.23 | 35 | 15 | **0.43x under** |
+  | slow, no taps | 0.70 m/s | 0.74 | 30 | 37 | **1.23x over** |
+  This confirms the long-standing A7/C6/C7 finding — pace is the dominant variable — and the
+  comment already in `types/index.ts` that "the detector runs well over on a slow stroll". There
+  is no single bias to correct for; the sign flips with pace.
+  **DATA-QUALITY WARNING: that walk saved with `items_count` 37 == `items_detected` 37 — the
+  count was NOT corrected at save, so the stored record asserts 37.** The true figure is 30,
+  reported by Jake in chat. Anything scoring this walk from Firestore alone will read it as a
+  perfect detection. First real-world instance of exactly the inheritance problem the new summary
+  prompt exists to prevent, on the first walk after shipping it.
+  **Over-count mechanism, precisely identified.** `COOLDOWN.stationaryMs` is 800 ms, deliberately
+  short so a stationary picking spree registers every grab. Counted events on this walk had a
+  median speed of 0.04 m/s — effectively stationary — so the short cooldown applied, and a slow
+  bend-and-straighten produced two counted events. **10 of 36 gaps between counted picks were
+  under 4 s**, including pairs at t=78/79, 159/160 and 241/241.
+  **Modelled fix, and why it is NOT being applied.** Merging counted events within T:
+  T=2500 ms takes the slow walk from 37 to 31 (1.03x, near perfect) and leaves the brisk walk
+  completely unchanged at 15 — it looks like a free win. It is not. `detectorRegression.ts:178`
+  encodes field data that **real picking sprees run 1.7-2.1 s apart**, which is precisely the
+  interval a 2500 ms cooldown would swallow. The slow-bend echo and a genuine rapid spree overlap
+  in time, so no threshold separates them.
+  **Same shape as the under-count finding: the fix is a better discriminator, not a different
+  number.** `countDistinctPeaks()` already exists for related work and is the plausible starting
+  point — deciding whether a second event inside the cooldown is one motion's echo or a distinct
+  pick, by morphology rather than by elapsed time. That is real R&D and must not be attempted on
+  two walks by one person.
+  Caveat on the modelling: `motion_log.t` is recorded in whole seconds, so sub-second gaps read as
+  0 or 1. The numbers above are directional, not a precise setting.
