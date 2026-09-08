@@ -522,3 +522,34 @@ value of 3, **every existing challenge is suppressed** — the platform has 5 us
 logged a cleanup and the largest challenge roster is 2. Recommendation is to keep 3 and let the
 layer light up at the first real multi-person event rather than weaken a floor that cannot be
 un-published; recorded here so that is a decision rather than a surprise.
+
+### 11.9 Correction — revocation is possible today, just not self-serve (2026-09-08)
+
+§11.5 and the `createChallengeToken` header both say there is "no revocation." **That
+overstates it and should be read as corrected here.**
+
+Deleting `challenge_token_index/{token}` kills a link **immediately**. `challengeImpact` resolves
+every request through that reverse index and returns 403 when the lookup misses — verified
+repeatedly while building step 4, where test tokens were minted and torn down several times.
+The same is true of `team_token_index/{token}` for sponsor dashboards.
+
+So the accurate statement is:
+
+| | today |
+|---|---|
+| Can a shared link be killed? | **Yes** — delete the index doc. Takes effect on the next request. |
+| Can the organizer do it themselves? | **No.** There is no callable and no UI. |
+| Can it be done without Jake? | **No.** Admin SDK access is required. |
+| Does killing it break the artifact permanently? | No — minting again issues a *new* token. The old URL stays dead. |
+
+**What actually stands from §11.5 is the constraint, not the impossibility:** no private or
+member-identifying data may sit behind a link-gated URL. That still holds, for a different
+reason — revocation is manual and reactive, so it cannot be relied on as a control. By the time
+anyone asks for a link to be killed, it has already been seen.
+
+**Consequence for the backlog.** "Build revocation" was listed as a hard prerequisite
+(`ORG_ONBOARDING_RUNBOOK.md` called it the item most likely to embarrass the project). It should
+be re-scoped: the mechanism exists, so the work is a `revokeChallengeToken` / `revokeTeamToken`
+callable plus a button — organizer-only, mirroring `getChallengeToken`'s ownership check. That is
+a much smaller job than it has been carried as, and it should be sized accordingly rather than
+deferred as though it were foundational.
