@@ -121,10 +121,24 @@ not a find-and-replace.
 
 ## 8. Recommendation on timing
 
-**Do not run this as its own project.** `GROUP_IMPACT_MAP_SPEC.md` §8 will rebuild map rendering
+> **SUPERSEDED 2026-09-08 by Jake's sequencing decision. See `GROUP_IMPACT_MAP_SPEC.md` §11.7.**
+>
+> The paragraph below said to fold this migration into the group impact map work because that
+> work "rebuilds map rendering anyway." **That was wrong** — reading `GROUP_IMPACT_MAP_SPEC.md`
+> §8 properly, steps 1-3 are backend, step 4 is a *brand-new web page*, and steps 5-6 are photos
+> and consent. **None of it touches the four app maps.** The two efforts are far less coupled
+> than this section claimed.
+>
+> **The decided order is greenfield first, then migrate:** build the new group-impact page in
+> MapLibre from the start (no users, nothing to regress), then `web/map.html` + `web/org.html`,
+> then the four app maps last. Renderer patterns flow one way — proven on greenfield code before
+> they reach `map.tsx`, which carries the follow-cam, spotlight, tap-to-inspect and live route
+> drawing.
+
+~~**Do not run this as its own project.** `GROUP_IMPACT_MAP_SPEC.md` §8 will rebuild map rendering
 anyway (roster-filtered coverage, participant coloring, the export frame). Doing the renderer
-swap then means **one rewrite instead of two**, and it is the only point on the roadmap where
-touching all four maps is already justified.
+swap then means one rewrite instead of two, and it is the only point on the roadmap where
+touching all four maps is already justified.~~
 
 Nothing is gated on the API key — the same key covers both services. There is no announced
 raster shutdown date, so this is directional, not urgent.
