@@ -68,3 +68,10 @@ PICK Content/
 detector-corpus-*.ndjson
 detector-export-*.ndjson
 *.ndjson
+
+# Render output. replay.mjs writes its MP4 into the working directory by
+# default, so a render run from the repo root drops multi-MB video here.
+# Root-anchored on purpose: a bare `*.png` plus a negation for app assets
+# un-ignored a splash-icon backup that was already correctly excluded.
+/*.mp4
+/*.png
