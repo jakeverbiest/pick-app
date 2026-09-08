@@ -389,3 +389,22 @@ approval). Under this decision that is acceptable for a *view* — a stranger wh
 group totals, which is low harm. It remains **not** acceptable as the basis of a funder-facing
 report, so if a team's numbers are ever exported as an org's official impact, enrollment needs
 a real gate first. §9 items 1, 3 and 4 are unaffected.
+
+### 11.5 §9 open decisions — resolved 2026-09-08
+
+Jake decided three of the four §9 items. **§9 should now be read through this section.**
+
+| §9 item | decision |
+|---|---|
+| 2. Who can open the shareable link | **Anyone with the link.** The token in the URL is the credential, matching the sponsor dashboard. This is what makes the artifact postable, which §1 calls the whole point. Accepted consequence: a forwarded link cannot be withdrawn — see below. |
+| 4. Pricing posture | **Free for the first cohort**, as case-study generation. No billing infrastructure is to be built. Revisit once a rendered artifact exists that orgs ask for by name. |
+| 1. Marker grid size | **Deferred, not decided.** It cannot be picked in the abstract; it needs a real rendered map to look at. Blocked on §8, not on Jake. |
+| 3. Organizer's private exact-precision view | **Still open. Recommendation: don't build it** — one artifact is less to build and less to explain. Not asked, not decided; revisit only if a real organizer asks. |
+
+**The revocation gap is now a known, accepted risk rather than an oversight.** No token in this
+system — sponsor or group — can be revoked, rotated, or expired today. Under "anyone with the
+link," a shared URL is permanent. That is acceptable for a public impact artifact, which is
+meant to travel. It is **not** acceptable for anything carrying data an org would consider
+private, so: **no private or member-identifying data may appear behind a link-gated URL** until
+revocation exists. Aggregate totals, street coverage and participant display names are fine;
+anything more is not.
