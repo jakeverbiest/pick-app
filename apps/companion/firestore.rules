@@ -107,6 +107,21 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
+    // --- Challenge stats: the roster-scoped rollup behind the group impact
+    //     map (GROUP_IMPACT_MAP_SPEC.md §8.2). Server-computed only, from
+    //     cleanups the client cannot read. Readable by any signed-in user —
+    //     these are aggregate event totals, and §11.4 settled that joining a
+    //     challenge grants access to its numbers; the existing contrib docs
+    //     are already signed-in-readable on the same basis.
+    //
+    //     Writes stay closed: a client-writable total on a funder-facing
+    //     artifact would be trivially inflatable, which is exactly the
+    //     weakness the self-reported contrib docs already carry. ---
+    match /challenge_stats/{challengeId} {
+      allow read: if signedIn();
+      allow write: if false;
+    }
+
     // --- Team snapshots: weekly district-totals history for the civic-org
     //     dashboard's time-series view. Written only by
     //     scheduledOrgSnapshots (Admin SDK); read only via the orgDashboard

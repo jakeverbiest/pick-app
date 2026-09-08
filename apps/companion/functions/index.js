@@ -324,6 +324,7 @@ exports.onCleanupWrite = onDocumentWritten('cleanups/{cleanupId}', async (event)
   if (before && before.team) ops.push(applyTeamDelta(before.team, before, -1));
   if (after && after.team) ops.push(applyTeamDelta(after.team, after, +1));
   ops.push(applyOrgDeltaForCleanup(before, after));
+  ops.push(applyChallengeStatsForCleanup(before, after));
 
   await Promise.all(ops);
 });
@@ -877,8 +878,227 @@ exports.createChallengeToken = onCall(async (request) => {
     tx.set(db.collection('challenge_tokens').doc(challengeId), { token, created_at: now });
     tx.set(db.collection('challenge_token_index').doc(token), { challengeId, created_at: now });
   });
+
+  // Seed the rollup immediately, mirroring createSponsorTeam's backfill: an
+  // organizer who shares the link straight after minting it must not land on
+  // an empty page for work already done. Cheap here — bounded by roster size,
+  // not a full scan. Deliberately not fatal: the token is the thing that must
+  // exist, and onCleanupWrite will build the rollup on the next walk anyway.
+  try {
+    await rebuildChallengeStats(challengeId);
+  } catch (e) {
+    console.warn(`createChallengeToken: rollup seed failed for ${challengeId}`, e);
+  }
   return { token, created: true };
 });
+
+/* ───────────────────────────────────────────────────────────────────────────
+ * Roster-scoped stats — GROUP_IMPACT_MAP_SPEC.md §8.2 / §11.2 / §11.7 step 2.
+ *
+ * THE SCOPE OBJECT IS THE POINT. §11.7 requires the roster to be a parameter
+ * from the first line of code, because v1 ships challenges only and the team
+ * view is meant to be a second caller rather than a rewrite. Everything below
+ * takes a `scope`, never a challenge:
+ *
+ *   { id, kind, roster: string[], from: ms|null, to: ms|null, area: obj|null }
+ *
+ * A team view is then `{ kind:'team', roster: <member uids>, from:null,
+ * to:null, area:null }` and needs no new query code. Do not "simplify" this
+ * by reading challenge.participants inline.
+ *
+ * WHY THIS IS NOT INCREMENTAL, deviating from §8.2. That section says to
+ * maintain the rollup incrementally "rather than by full scans." The reason
+ * given is cost, and the cost being avoided is the FULL SCAN — org_stats has
+ * to scan every cleanup because a geographic filter can match anyone. A
+ * roster is different: it names the users, so the query is bounded by roster
+ * size and never touches anyone else's data. A full rebuild for one challenge
+ * is already cheap, so this recomputes exactly instead of accumulating deltas
+ * — which also removes the drift class org_stats needs a weekly self-heal to
+ * bound, and handles roster changes correctly for free (someone joining
+ * mid-event gets their in-window walks counted, which a delta scheme would
+ * silently miss).
+ *
+ * WHY THE WINDOW IS FILTERED IN MEMORY, not in the query. `cleanups.timestamp`
+ * is a Firestore Timestamp on current records, but Firestore orders by TYPE
+ * before value — so a range filter silently drops any legacy doc that stored
+ * a number instead. That exact bug nulled the date on all 172 rows of the
+ * detector export on 2026-09-07 and broke its since/until filters. Roster
+ * chunks are small; filtering in JS is cheap and cannot mis-sort.
+ * ─────────────────────────────────────────────────────────────────────────── */
+
+/**
+ * ⚠️ `challenges` MIXES TIME UNITS WITHIN ONE DOCUMENT. Verified against live
+ * data 2026-09-08:
+ *
+ *     start_date  1785200688      SECONDS
+ *     end_date    1785729599      SECONDS
+ *     created_at  1785200689272   MILLISECONDS
+ *     updated_at  1785201184876   MILLISECONDS
+ *
+ * The `Challenge` interface types all four as plain `number`, so nothing warns
+ * you. Seconds is the deliberate convention for the window — the app does
+ * `new Date(challenge.start_date * 1000)` (`app/challenge/[id].tsx:323`) and
+ * `challengeStatus()` compares against `Date.now() / 1000` — while everything
+ * else in this codebase, including `cleanups.timestamp`, is milliseconds.
+ *
+ * Reading the window as milliseconds does NOT throw. It silently yields a 1970
+ * window, every cleanup falls after it, and every challenge reports zero. That
+ * is precisely what the first dry run of this code produced across all six
+ * live challenges before this normalization existed.
+ */
+function challengeEpochMs(v) {
+  const n = num(v);
+  if (!n) return null;
+  // A millisecond timestamp for any plausible date is > 1e11; a seconds one is
+  // ~1.8e9. The gap is four orders of magnitude, so this cannot misfire on
+  // real data — it just makes a legacy doc that stored ms harmless.
+  return n > 1e11 ? n : n * 1000;
+}
+
+/** Build a scope from a challenge document. See the block comment above. */
+function challengeScope(id, challenge) {
+  const roster = Array.isArray(challenge.participants)
+    ? Array.from(new Set(challenge.participants.filter((u) => typeof u === 'string' && u)))
+    : [];
+  return {
+    id,
+    kind: 'challenge',
+    roster,
+    // Normalized to ms — see challengeEpochMs. These are stored in SECONDS.
+    from: challengeEpochMs(challenge.start_date),
+    to: challengeEpochMs(challenge.end_date),
+    // A challenge may carry an area ('anywhere' challenges do not). When it
+    // does, it means what it says: work outside the area isn't part of it.
+    area: challenge.area && typeof challenge.area === 'object' && challenge.area.type !== 'anywhere'
+      ? challenge.area
+      : null,
+  };
+}
+
+/** Firestore caps `in` at 30 values, so rosters are queried in chunks. */
+function chunkRoster(roster, size = 30) {
+  const out = [];
+  for (let i = 0; i < roster.length; i += size) out.push(roster.slice(i, i + size));
+  return out;
+}
+
+/** Does this cleanup belong to `scope`? Roster membership is enforced by the
+ *  query; window and area are checked here (see block comment on why). */
+function cleanupInScope(cleanup, scope) {
+  const ms = toMillis(cleanup.timestamp);
+  if (scope.from && ms < scope.from) return false;
+  if (scope.to && ms > scope.to) return false;
+  if (scope.area && !cleanupInArea(cleanup, scope.area)) return false;
+  return true;
+}
+
+/** Every cleanup belonging to `scope`, as plain data. Bounded by roster size. */
+async function cleanupsForScope(scope) {
+  if (!scope.roster.length) return [];
+  const chunks = chunkRoster(scope.roster);
+  const results = await Promise.all(
+    chunks.map((chunk) => db.collection('cleanups').where('userId', 'in', chunk).get())
+  );
+  const out = [];
+  for (const snap of results) {
+    snap.forEach((doc) => {
+      const d = doc.data();
+      if (cleanupInScope(d, scope)) out.push(d);
+    });
+  }
+  return out;
+}
+
+/** Totals for a scope. `participants` counts people who actually logged
+ *  qualifying work — not roster size — because that is the number an event
+ *  artifact should show. Someone who joined and never walked is not a
+ *  participant in any sense the map can evidence. */
+function statsFromScopedCleanups(cleanups) {
+  let pickups = 0, bagsTotal = 0, seconds = 0, lastCleanup = 0;
+  const contributors = new Set();
+  for (const c of cleanups) {
+    pickups += num(c.items_count);
+    bagsTotal += bagsFor(c);
+    seconds += num(c.duration_seconds);
+    const ms = toMillis(c.timestamp);
+    if (ms > lastCleanup) lastCleanup = ms;
+    if (c.userId) contributors.add(c.userId);
+  }
+  return {
+    cleanups: cleanups.length,
+    pickups,
+    bags: Math.round(bagsTotal),
+    hours: round1(seconds / 3600),
+    participants: contributors.size,
+    last_cleanup: lastCleanup,
+  };
+}
+
+/**
+ * Recompute and store `challenge_stats/{challengeId}`. Exact, not
+ * incremental — see the block comment. Safe to call as often as needed.
+ */
+async function rebuildChallengeStats(challengeId) {
+  const snap = await db.collection('challenges').doc(challengeId).get();
+  if (!snap.exists) return null;
+  const scope = challengeScope(challengeId, snap.data());
+  const stats = statsFromScopedCleanups(await cleanupsForScope(scope));
+  await db.collection('challenge_stats').doc(challengeId).set({
+    ...stats,
+    roster_size: scope.roster.length,
+    updated_at: Date.now(),
+  });
+  return stats;
+}
+
+/**
+ * Challenges that have been given a share token, cached briefly. Only these
+ * carry a maintained rollup: minting a token is the signal that somebody
+ * wants the artifact, and it keeps this fan-out bounded to a small,
+ * human-driven set — the same reasoning as areaScopedTeams above.
+ */
+let _tokenizedChallengesCache = null;
+let _tokenizedChallengesCacheAt = 0;
+const TOKENIZED_CHALLENGES_TTL_MS = 60 * 1000;
+
+async function tokenizedChallengeIds() {
+  const now = Date.now();
+  if (_tokenizedChallengesCache && now - _tokenizedChallengesCacheAt < TOKENIZED_CHALLENGES_TTL_MS) {
+    return _tokenizedChallengesCache;
+  }
+  const snap = await db.collection('challenge_tokens').get();
+  const ids = snap.docs.map((d) => d.id);
+  _tokenizedChallengesCache = ids;
+  _tokenizedChallengesCacheAt = now;
+  return ids;
+}
+
+/**
+ * Called from onCleanupWrite. Rebuilds the rollup for any tokenized challenge
+ * this cleanup could affect — i.e. the walker is on its roster and the walk
+ * falls in its window/area, checked against the before- AND after-states so
+ * an edit that moves a walk out of scope still updates the total it left.
+ */
+async function applyChallengeStatsForCleanup(before, after) {
+  const ids = await tokenizedChallengeIds();
+  if (!ids.length) return;
+  const uids = new Set([before && before.userId, after && after.userId].filter(Boolean));
+  if (!uids.size) return;
+
+  const affected = [];
+  await Promise.all(
+    ids.map(async (id) => {
+      const snap = await db.collection('challenges').doc(id).get();
+      if (!snap.exists) return;
+      const scope = challengeScope(id, snap.data());
+      if (![...uids].some((u) => scope.roster.includes(u))) return;
+      const touches =
+        (before && cleanupInScope(before, scope)) || (after && cleanupInScope(after, scope));
+      if (touches) affected.push(id);
+    })
+  );
+  await Promise.all(affected.map((id) => rebuildChallengeStats(id)));
+}
 
 /**
  * Retrieve an existing challenge share token (e.g. the organizer lost the

@@ -368,3 +368,27 @@ the ledger's actual structure, not paste it verbatim.
   **PROCESS PROBLEM, sixth consecutive occurrence.** `items_count` 36 == `items_detected` 36,
   truth 30; `ground_truth` is `"[]"`. Unchanged and now the longest-running open issue in this
   ledger.
+
+- 2026-09-08 — **`challenges` mixes time units inside a single document, and it silently zeroes
+  any window filter.** Found by dry-running the new roster-scoped stats query (§8.2) against live
+  data before deploying it — all six challenges returned zero.
+  ```
+  start_date  1785200688      SECONDS
+  end_date    1785729599      SECONDS
+  created_at  1785200689272   MILLISECONDS
+  updated_at  1785201184876   MILLISECONDS
+  ```
+  The `Challenge` interface types all four as plain `number`, so nothing warns. **Seconds is the
+  deliberate convention for the window** — `app/challenge/[id].tsx:323` does
+  `new Date(challenge.start_date * 1000)` and `challengeStatus()` compares against
+  `Date.now() / 1000` — while everything else in the codebase, `cleanups.timestamp` included, is
+  milliseconds.
+  **The failure mode is the dangerous part: it does not throw.** Reading the window as ms yields a
+  1970 window, every cleanup falls after it, and every challenge reports 0 pickups. A deployed
+  version would have produced empty artifacts that looked like "no one logged anything yet"
+  rather than like a bug. Normalized in `challengeEpochMs()` with the evidence in the comment.
+  After the fix the same query returns real numbers — Litchfield Litter Invitational: 40 cleanups,
+  793 pickups, 2.0 hours, 2/2 participants.
+  **Process note, and the reason this was caught:** the query was run against production data as a
+  read-only dry run before the code was deployed. That is now the cheapest available check on
+  anything that filters cleanups, and it cost one script.
