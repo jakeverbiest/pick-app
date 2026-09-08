@@ -27,70 +27,145 @@
   cv.width=W; cv.height=H; cv.style.width=W+'px'; cv.style.height=H+'px';
   var ctx=cv.getContext('2d');
 
-  /* ---- layout: vertical social composition ---------------------------- */
-  var PAD=Math.round(W*0.068);
-  var HEAD=Math.round(H*0.150);          // title block
-  var FOOT=Math.round(H*0.212);          // stats + brand
-  var MAPY=HEAD, MAPH=H-HEAD-FOOT;
-  var MAPX=PAD, MAPW=W-PAD*2;
+  /* ---- layout ----------------------------------------------------------
+   * Two skins.
+   *   'plain' — the data-poster composition: title, map, stat row.
+   *   'phone' — the same drawing inside a device frame, so it reads as the
+   *             app rather than as a chart.
+   *
+   * The phone skin is a STYLISED FRAME, deliberately not a replica of the
+   * app's UI: a bezel, an island, and the app's own colour language, with no
+   * fake tab bar, no invented controls and no status-bar chrome pretending to
+   * be a capture. The distinction matters — a device frame is presentation,
+   * a counterfeit screenshot is a claim about what the app shows. Don't add
+   * UI here that the app doesn't have, and don't caption the output as a
+   * screen recording.
+   */
+  var SKIN=CFG.skin==='phone'?'phone':'plain';
+  var PAD, HEAD, FOOT, MAPX, MAPY, MAPW, MAPH;
+  var DEV={};
+  if(SKIN==='phone'){
+    DEV.h=Math.round(H*0.90);
+    DEV.w=Math.round(DEV.h*9/19.5);          // modern handset aspect
+    if(DEV.w>W*0.82){ DEV.w=Math.round(W*0.82); DEV.h=Math.round(DEV.w*19.5/9); }
+    DEV.x=Math.round((W-DEV.w)/2);
+    DEV.y=Math.round((H-DEV.h)/2);
+    DEV.r=Math.round(DEV.w*0.105);
+    DEV.bezel=Math.max(3,Math.round(DEV.w*0.017));
+    DEV.sx=DEV.x+DEV.bezel; DEV.sy=DEV.y+DEV.bezel;
+    DEV.sw=DEV.w-DEV.bezel*2; DEV.sh=DEV.h-DEV.bezel*2;
+    PAD=Math.round(DEV.sw*0.070);
+    HEAD=Math.round(DEV.sh*0.150);
+    FOOT=Math.round(DEV.sh*0.215);
+    // Full-bleed, like the real screen — the stat bar and Stop control sit ON
+    // the map, they don't carve a band out of it. Reserving HEAD+FOOT here was
+    // what left the walk floating small in the upper third with dead space
+    // below it.
+    MAPX=DEV.sx; MAPW=DEV.sw;
+    MAPY=DEV.sy;  MAPH=DEV.sh;
+  }else{
+    PAD=Math.round(W*0.068);
+    HEAD=Math.round(H*0.150);
+    FOOT=Math.round(H*0.212);
+    MAPY=HEAD; MAPH=H-HEAD-FOOT;
+    MAPX=PAD; MAPW=W-PAD*2;
+  }
+  // Text origin: page-relative for the poster, screen-relative inside a phone.
+  var TX=SKIN==='phone'?DEV.sx+PAD:PAD;
+  var TOP=SKIN==='phone'?DEV.sy:0;
+  var BOT=SKIN==='phone'?DEV.sy+DEV.sh:H;
 
   /* ---- fit geometry into the map area --------------------------------- */
-  // Fit to the WALK's frame (percentile-trimmed upstream), never to the extent
-  // of the fetched streets — those are pulled wider on purpose so the edges
-  // stay full of city, and fitting to them would zoom back out and waste the
-  // frame on empty ground. See render-video.mjs's framing comment.
+  // Fit to the WALK's frame, and in phone view to the area actually visible
+  // between the stat bar and the Stop control — fitting the raw screen rect
+  // buries the walk's centre under the chrome.
   var mnx=D.frame[0], mny=D.frame[1], mxx=D.frame[2], mxy=D.frame[3];
-  var inset=Math.round(W*0.028);
-  var sc=Math.min((MAPW-inset*2)/(mxx-mnx),(MAPH-inset*2)/(mxy-mny));
-  var ox=MAPX+(MAPW-(mxx-mnx)*sc)/2-mnx*sc, oy=MAPY+(MAPH-(mxy-mny)*sc)/2-mny*sc;
+  var inset=Math.round((SKIN==='phone'?MAPW*0.045:W*0.028));
+  var availW=MAPW-inset*2, availH=MAPH-inset*2;
+  var sc=Math.min(availW/(mxx-mnx), availH/(mxy-mny));
+  var ox=MAPX+(MAPW-(mxx-mnx)*sc)/2-mnx*sc;
+  // Nudge down a touch in phone view: the stat bar occupies the top ~14%, so
+  // dead-centring puts the track under it.
+  var bias=SKIN==='phone'?MAPH*0.035:0;
+  var oy=MAPY+(MAPH-(mxy-mny)*sc)/2+bias-mny*sc;
   var T=function(p){return [p[0]*sc+ox,p[1]*sc+oy];};
-  var route=D.route.map(T), picks=D.pickups.map(T);
-  var streets=D.streets.map(function(s){return {r:s.r,c:s.c,g:s.g.map(T)};});
+  var streets=D.streets.map(function(s){return {r:s.r,c:s.c,at:(s.at>=0?s.at:Infinity),g:s.g.map(T)};});
   var MPU=D.mPerUnit||1;
 
-  /* GPS gaps are lifted, never bridged — see the artifact's note. */
-  var GAP=400/MPU;
-  var isGap=[false];
-  for(var i=1;i<D.route.length;i++){
-    var ax=D.route[i][0]-D.route[i-1][0], ay=D.route[i][1]-D.route[i-1][1];
-    isGap[i]=Math.sqrt(ax*ax+ay*ay)>GAP;
-  }
-
-  var TH=(28/MPU)*sc;
-  streets.forEach(function(s){
-    if(!s.c){s.at=Infinity;return;}
-    var best=Infinity;
-    for(var i=0;i<route.length&&best===Infinity;i++)
-      for(var j=0;j<s.g.length;j++){
-        var dx=s.g[j][0]-route[i][0], dy=s.g[j][1]-route[i][1];
-        if(dx*dx+dy*dy<TH*TH){best=i;break;}
-      }
-    s.at=best;
+  // One entry per crew. `ticks` are positions on ONE shared clock spanning the
+  // whole event, so crews animate as they actually walked — concurrently, from
+  // different corners — rather than one after another.
+  var GAPU=400/MPU;
+  var ROUTES=(D.routes||[]).map(function(rt){
+    var pts=rt.pts.map(T);
+    var gap=[false];
+    for(var i=1;i<rt.pts.length;i++){
+      var ax=rt.pts[i][0]-rt.pts[i-1][0], ay=rt.pts[i][1]-rt.pts[i-1][1];
+      gap[i]=Math.sqrt(ax*ax+ay*ay)>GAPU;
+    }
+    return {label:rt.label,color:rt.color,pts:pts,ticks:rt.ticks,gap:gap,
+            picks:rt.picks.map(T),pickTicks:rt.pickTicks};
   });
+
+  function roundRect(c,x,y,w,h,r){
+    c.beginPath();
+    c.moveTo(x+r,y); c.lineTo(x+w-r,y); c.quadraticCurveTo(x+w,y,x+w,y+r);
+    c.lineTo(x+w,y+h-r); c.quadraticCurveTo(x+w,y+h,x+w-r,y+h);
+    c.lineTo(x+r,y+h); c.quadraticCurveTo(x,y+h,x,y+h-r);
+    c.lineTo(x,y+r); c.quadraticCurveTo(x,y,x+r,y); c.closePath();
+  }
 
   /* ---- static base, drawn once ---------------------------------------- */
   var base=document.createElement('canvas'); base.width=W; base.height=H;
   var bx=base.getContext('2d');
-  bx.fillStyle='#061426'; bx.fillRect(0,0,W,H);
-  bx.fillStyle='#0A1E36'; bx.fillRect(MAPX,MAPY,MAPW,MAPH);
-  bx.save(); bx.beginPath(); bx.rect(MAPX,MAPY,MAPW,MAPH); bx.clip();
-  var stepM=100, step=(stepM/MPU)*sc;
-  if(step>12){
-    bx.strokeStyle='#10314F'; bx.lineWidth=1;
-    for(var x=MAPX+(ox-MAPX)%step;x<MAPX+MAPW;x+=step){bx.beginPath();bx.moveTo(x,MAPY);bx.lineTo(x,MAPY+MAPH);bx.stroke();}
-    for(var y=MAPY+(oy-MAPY)%step;y<MAPY+MAPH;y+=step){bx.beginPath();bx.moveTo(MAPX,y);bx.lineTo(MAPX+MAPW,y);bx.stroke();}
-  }
   var K=W/1080;
-  streets.forEach(function(s){
-    bx.strokeStyle = s.r===2 ? '#2E5B85' : '#22456B';
-    bx.lineWidth   = (s.r===2?1.6:s.r===1?1.15:0.7)*K;
-    bx.beginPath();
-    s.g.forEach(function(p,i){ i?bx.lineTo(p[0],p[1]):bx.moveTo(p[0],p[1]); });
-    bx.stroke();
-  });
-  bx.restore();
-  bx.strokeStyle='#173A5C'; bx.lineWidth=1; bx.strokeRect(MAPX+.5,MAPY+.5,MAPW-1,MAPH-1);
+  bx.fillStyle='#061426'; bx.fillRect(0,0,W,H);
 
+  if(SKIN==='phone'){
+    // Device body, then the app's own light basemap inside the screen.
+    bx.save();
+    bx.shadowColor='rgba(0,0,0,.55)'; bx.shadowBlur=44*K; bx.shadowOffsetY=18*K;
+    var g=bx.createLinearGradient(DEV.x,DEV.y,DEV.x+DEV.w,DEV.y+DEV.h);
+    g.addColorStop(0,'#26405C'); g.addColorStop(.4,'#0C1E33'); g.addColorStop(1,'#233A54');
+    bx.fillStyle=g; roundRect(bx,DEV.x,DEV.y,DEV.w,DEV.h,DEV.r); bx.fill();
+    bx.restore();
+
+    bx.save(); roundRect(bx,DEV.sx,DEV.sy,DEV.sw,DEV.sh,DEV.r-DEV.bezel); bx.clip();
+    // CARTO light_all is what the app actually loads (map.tsx:2711); tiles are
+    // unavailable here so the same OSM geometry is drawn light instead —
+    // casing pass then fill pass, which is how light basemaps read.
+    bx.fillStyle='#F0EEE8'; bx.fillRect(DEV.sx,DEV.sy,DEV.sw,DEV.sh);
+    bx.lineCap='round'; bx.lineJoin='round';
+    streets.forEach(function(st){ if(st.r===0)return;
+      bx.strokeStyle='#D5D2C9'; bx.lineWidth=(st.r===2?7:4.4)*K*1.4;
+      bx.beginPath(); st.g.forEach(function(p,i){ i?bx.lineTo(p[0],p[1]):bx.moveTo(p[0],p[1]); }); bx.stroke(); });
+    streets.forEach(function(st){
+      if(st.r===0){ bx.strokeStyle='#DEDBD3'; bx.lineWidth=1.1*K; }
+      else { bx.strokeStyle='#FFFFFF'; bx.lineWidth=(st.r===2?5:3)*K*1.4; }
+      bx.beginPath(); st.g.forEach(function(p,i){ i?bx.lineTo(p[0],p[1]):bx.moveTo(p[0],p[1]); }); bx.stroke(); });
+    bx.restore();
+  } else {
+    bx.fillStyle='#0A1E36'; bx.fillRect(MAPX,MAPY,MAPW,MAPH);
+    bx.save(); bx.beginPath(); bx.rect(MAPX,MAPY,MAPW,MAPH); bx.clip();
+    var stepM=100, step=(stepM/MPU)*sc;
+    if(step>12){
+      bx.strokeStyle='#10314F'; bx.lineWidth=1;
+      for(var x=MAPX+(ox-MAPX)%step;x<MAPX+MAPW;x+=step){bx.beginPath();bx.moveTo(x,MAPY);bx.lineTo(x,MAPY+MAPH);bx.stroke();}
+      for(var y=MAPY+(oy-MAPY)%step;y<MAPY+MAPH;y+=step){bx.beginPath();bx.moveTo(MAPX,y);bx.lineTo(MAPX+MAPW,y);bx.stroke();}
+    }
+    streets.forEach(function(st){
+      bx.strokeStyle = st.r===2 ? '#2E5B85' : '#22456B';
+      bx.lineWidth   = (st.r===2?1.6:st.r===1?1.15:0.7)*K;
+      bx.beginPath(); st.g.forEach(function(p,i){ i?bx.lineTo(p[0],p[1]):bx.moveTo(p[0],p[1]); }); bx.stroke();
+    });
+    bx.restore();
+    bx.strokeStyle='#173A5C'; bx.lineWidth=1; bx.strokeRect(MAPX+.5,MAPY+.5,MAPW-1,MAPH-1);
+  }
+
+  function hexA(h,a){
+    var n=parseInt(h.slice(1),16);
+    return 'rgba('+((n>>16)&255)+','+((n>>8)&255)+','+(n&255)+','+a+')';
+  }
   function ease(t){ return t<.5 ? 2*t*t : 1-Math.pow(-2*t+2,2)/2; }
   function fmt(s){var m=Math.floor(s/60),x=Math.floor(s%60);return (m<10?'0':'')+m+':'+(x<10?'0':'')+x;}
 
@@ -104,56 +179,120 @@
     ctx.clearRect(0,0,W,H);
     ctx.drawImage(base,0,0);
 
-    ctx.save(); ctx.beginPath(); ctx.rect(MAPX,MAPY,MAPW,MAPH); ctx.clip();
-
-    var head=walk*(route.length-1), hi=Math.floor(head);
+    ctx.save();
+    if(SKIN==='phone'){ roundRect(ctx,DEV.sx,DEV.sy,DEV.sw,DEV.sh,DEV.r-DEV.bezel); }
+    else { ctx.beginPath(); ctx.rect(MAPX,MAPY,MAPW,MAPH); }
+    ctx.clip();
 
     ctx.lineCap='round';
     var cleanedNow=0;
-    streets.forEach(function(s){
-      if(s.at>hi)return;
+    streets.forEach(function(st){
+      if(st.at>walk)return;
       cleanedNow++;
-      var age=Math.min(1,(hi-s.at)/5);
+      var age=Math.min(1,(walk-st.at)*22);
       ctx.strokeStyle='#2FB457'; ctx.globalAlpha=.55+.45*age;
-      ctx.lineWidth=(s.r===2?2.3:s.r===1?1.8:1.3)*K;
+      ctx.lineWidth=(st.r===2?3.2:st.r===1?2.6:2.0)*K*(SKIN==='phone'?2.2:1);
       ctx.beginPath();
-      s.g.forEach(function(p,i){ i?ctx.lineTo(p[0],p[1]):ctx.moveTo(p[0],p[1]); });
+      st.g.forEach(function(p,i){ i?ctx.lineTo(p[0],p[1]):ctx.moveTo(p[0],p[1]); });
       ctx.stroke();
     });
     ctx.globalAlpha=1;
 
-    if(hi>0){
-      ctx.strokeStyle='#EFE3C2'; ctx.lineWidth=2.2*K; ctx.lineJoin='round';
-      ctx.beginPath(); ctx.moveTo(route[0][0],route[0][1]);
-      for(var i=1;i<=hi;i++){ isGap[i]?ctx.moveTo(route[i][0],route[i][1]):ctx.lineTo(route[i][0],route[i][1]); }
-      var f=head-hi;
-      if(hi+1<route.length&&!isGap[hi+1])
-        ctx.lineTo(route[hi][0]+(route[hi+1][0]-route[hi][0])*f, route[hi][1]+(route[hi+1][1]-route[hi][1])*f);
-      ctx.stroke();
-    }
-
     var shown=0;
-    for(var k=0;k<picks.length;k++){
-      if(D.revealAt[k]>hi)continue;
-      shown++;
-      var pop=Math.min(1,(hi-D.revealAt[k])/3);
-      var r=(3.3+3.2*(1-pop))*K;
-      ctx.beginPath(); ctx.arc(picks[k][0],picks[k][1],r,0,6.2832);
-      ctx.fillStyle='#F2A20C'; ctx.globalAlpha=.55+.45*pop; ctx.fill();
-      if(pop<1){
-        ctx.beginPath(); ctx.arc(picks[k][0],picks[k][1],r+6*K*(1-pop),0,6.2832);
-        ctx.strokeStyle='#FFD166'; ctx.globalAlpha=(1-pop)*.85; ctx.lineWidth=1.5*K; ctx.stroke();
+    ROUTES.forEach(function(rt){
+      // route so far, pen lifted across GPS gaps
+      ctx.strokeStyle = SKIN==='phone' ? hexA(rt.color,.55) : rt.color;
+      ctx.lineWidth = SKIN==='phone' ? 15*K*1.4 : 2.6*K;
+      ctx.lineJoin='round'; ctx.lineCap='round';
+      var started=false;
+      ctx.beginPath();
+      for(var i=0;i<rt.pts.length;i++){
+        if(rt.ticks[i]>walk)break;
+        if(!started||rt.gap[i]){ ctx.moveTo(rt.pts[i][0],rt.pts[i][1]); started=true; }
+        else ctx.lineTo(rt.pts[i][0],rt.pts[i][1]);
       }
-    }
-    ctx.globalAlpha=1;
+      if(started)ctx.stroke();
 
-    if(walk>0&&walk<1){
-      var hp=route[Math.min(hi+1,route.length-1)];
-      ctx.beginPath(); ctx.arc(hp[0],hp[1],5.6*K,0,6.2832); ctx.fillStyle='#FFF'; ctx.fill();
-      ctx.beginPath(); ctx.arc(hp[0],hp[1],11*K,0,6.2832);
-      ctx.strokeStyle='#EFE3C2'; ctx.globalAlpha=.42; ctx.lineWidth=1.4*K; ctx.stroke(); ctx.globalAlpha=1;
-    }
+      for(var k=0;k<rt.picks.length;k++){
+        if(rt.pickTicks[k]>walk)continue;
+        shown++;
+        var pop=Math.min(1,(walk-rt.pickTicks[k])*30);
+        if(SKIN==='phone'){
+          ctx.beginPath(); ctx.arc(rt.picks[k][0],rt.picks[k][1],5.5*K*1.4,0,6.2832);
+          ctx.fillStyle=rt.color; ctx.globalAlpha=.95; ctx.fill();
+          ctx.strokeStyle='#fff'; ctx.lineWidth=1.2*K*1.4; ctx.stroke();
+        }else{
+          var r=(3.3+3.2*(1-pop))*K;
+          ctx.beginPath(); ctx.arc(rt.picks[k][0],rt.picks[k][1],r,0,6.2832);
+          ctx.fillStyle=rt.color; ctx.globalAlpha=.55+.45*pop; ctx.fill();
+        }
+      }
+      ctx.globalAlpha=1;
+
+      // the crew's current position
+      var li=-1;
+      for(var j=0;j<rt.pts.length;j++) if(rt.ticks[j]<=walk) li=j;
+      if(walk>0&&walk<1&&li>=0){
+        var hp=rt.pts[li];
+        ctx.beginPath(); ctx.arc(hp[0],hp[1],5.6*K,0,6.2832);
+        ctx.fillStyle= SKIN==='phone' ? '#0F2F66' : '#FFF'; ctx.fill();
+        ctx.beginPath(); ctx.arc(hp[0],hp[1],11*K,0,6.2832);
+        ctx.strokeStyle=rt.color; ctx.globalAlpha=.45; ctx.lineWidth=1.4*K; ctx.stroke();
+        ctx.globalAlpha=1;
+      }
+    });
+
     ctx.restore();
+
+    if(SKIN==='phone'){
+      // In-app chrome, drawn to the same spec as the real screen:
+      // stat bar C.dark #0F2F66 radius 16 inset 16 (map.tsx topBarWhite),
+      // 22px display values, 11px #A8B896 labels; Stop control C.danger
+      // #FF3B30 radius 16, 17px vertical padding, 12px white square,
+      // 16px bold label. NO distance stat — the cleanup stores none and the
+      // thinned track cannot reproduce the app's live figure.
+      var iw=16*K*1.4, br=16*K*1.4;
+      var bx0=DEV.sx+iw, bw=DEV.sw-iw*2;
+      var barY=DEV.sy+Math.round(DEV.sh*0.075), barH=Math.round(64*K*1.4);
+      ctx.fillStyle='#0F2F66'; roundRect(ctx,bx0,barY,bw,barH,br); ctx.fill();
+      var stats=[[fmt(walk*M.minutes*60),'Time'],[String(Math.round(M.items*walk)),'Pickups']];
+      ctx.textAlign='center';
+      stats.forEach(function(st,i){
+        var cx=bx0+bw*(i+0.5)/stats.length;
+        ctx.fillStyle='#fff'; ctx.font='700 '+Math.round(22*K*1.4)+'px Archivo, sans-serif';
+        ctx.fillText(st[0], cx, barY+barH*0.52);
+        ctx.fillStyle='#A8B896'; ctx.font='500 '+Math.round(11*K*1.4)+'px "IBM Plex Mono", monospace';
+        ctx.fillText(st[1], cx, barY+barH*0.80);
+      });
+
+      var stopH=Math.round(54*K*1.4), stopY=DEV.sy+DEV.sh-stopH-Math.round(DEV.sh*0.045);
+      ctx.save(); ctx.shadowColor='rgba(255,59,48,.30)'; ctx.shadowBlur=14*K*1.4; ctx.shadowOffsetY=10*K;
+      ctx.fillStyle='#FF3B30'; roundRect(ctx,bx0,stopY,bw,stopH,br); ctx.fill(); ctx.restore();
+      ctx.font='700 '+Math.round(16*K*1.4)+'px Archivo, sans-serif';
+      var label='Stop & save', lw=ctx.measureText(label).width, sq=12*K*1.4, gap=10*K*1.4;
+      var gx=bx0+bw/2-(lw+sq+gap)/2;
+      ctx.fillStyle='#fff'; roundRect(ctx,gx,stopY+stopH/2-sq/2,sq,sq,3*K*1.4); ctx.fill();
+      ctx.textAlign='left'; ctx.fillText(label, gx+sq+gap, stopY+stopH/2+6*K*1.4);
+      ctx.textAlign='left';
+
+      // Island last, over the screen.
+      ctx.fillStyle='#04101E';
+      var isw=Math.round(DEV.sw*0.30), ish=Math.round(isw*0.285);
+      roundRect(ctx,DEV.sx+(DEV.sw-isw)/2,DEV.sy+Math.round(DEV.sh*0.016),isw,ish,ish/2); ctx.fill();
+
+      // Byline on the ground outside the device — the org is the hero.
+      ctx.globalAlpha=intro;
+      ctx.font='800 '+Math.round(21*K)+'px Archivo, sans-serif';
+      ctx.fillStyle='#E8E4D9';
+      ctx.textAlign='center';
+      ctx.fillText((M.team||M.hood||'Cleanup').toUpperCase(), W/2, DEV.y-Math.round(H*0.022));
+      ctx.font='800 '+Math.round(17*K)+'px Archivo, sans-serif';
+      ctx.fillStyle='#2FB457';
+      ctx.fillText('POWERED BY PICK  ·  PICKGLOBAL.ORG', W/2, DEV.y+DEV.h+Math.round(H*0.035));
+      ctx.textAlign='left'; ctx.globalAlpha=1;
+
+      return {cleaned:cleanedNow, pickups:shown};
+    }
 
     /* ---- header ---- */
     ctx.globalAlpha=intro;
@@ -169,7 +308,7 @@
     /* ---- footer stats ---- */
     var fy=MAPY+MAPH+Math.round(H*0.062);
     var cols=[
-      ['PICKUPS', String(Math.round(M.items*walk)), '#FFD166'],
+      [M.crews>1?'PICKUPS · '+M.crews+' PICKERS':'PICKUPS', String(Math.round(M.items*walk)), '#FFD166'],
       ['SIDEWALKS', String(cleanedNow), '#5BE087'],
       ['BAGS', ((M.bags||0)*walk).toFixed(2), '#E8E4D9'],
       ['ELAPSED', fmt(walk*M.minutes*60), '#E8E4D9']
