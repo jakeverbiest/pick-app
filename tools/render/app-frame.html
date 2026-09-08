@@ -160,12 +160,16 @@
     /* ---- chrome ---- */
     var ins=22*K, br=20*K, barY=44*K, barH=112*K;
     ctx.fillStyle='#0F2F66'; rr(ctx,ins,barY,W-ins*2,barH,br); ctx.fill();
-    // NO DISTANCE. The app shows one, but the cleanup document stores none and
-    // the thinned track cannot reproduce the app's live figure — an earlier
-    // pass here printed an invented "1.90 mi". A blank slot still implies the
-    // number should exist, so the stat is gone rather than empty. Do not add it
-    // back by summing the route.
+    // Distance appears ONLY when the walk carries a real distance_m, stored
+    // live from the full GPS track at save time (added 2026-09-08). Walks saved
+    // before that have none, and it must stay absent for them: the thinned
+    // route_points cannot reproduce it — summing them gives running speed for a
+    // walking cleanup, and an earlier version of this file printed an invented
+    // "1.90 mi". Never derive this from the route.
     var stats=[[fmt(walk*M.dur),'Time'],[String(Math.round(M.items*walk)),'Pickups']];
+    if(typeof M.distance_m==='number'&&M.distance_m>0){
+      stats.push([(M.distance_m*walk/1609.34).toFixed(2)+' mi','Distance']);
+    }
     ctx.textAlign='center';
     stats.forEach(function(st,i){
       var cx=ins+(W-ins*2)*(i+.5)/stats.length;

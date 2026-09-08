@@ -1946,6 +1946,18 @@ export default function MapScreen() {
         pace_median_mps: pace.medianMps,
         pace_slow_share: pace.slowShare,
         pace_low_confidence: pace.lowConfidence,
+        // Distance actually walked, in metres, from the FULL in-memory
+        // sessionRoute — the same figure the in-walk top bar shows.
+        //
+        // Why it has to be stored rather than recomputed later: `route_points`
+        // is thinned before saving to keep walks small (measured on a real
+        // 66-minute walk: 73 stored points, median step 86m, six gaps over
+        // 400m with the longest 1,992m). Summing that back gives 11.07km at
+        // 2.80 m/s — running speed for a walking cleanup. So every downstream
+        // consumer that wanted distance either showed a wrong number or, in
+        // the impact renderer, had to drop the stat entirely. This is the only
+        // point in the system where the true value exists.
+        distance_m: Math.round((parseFloat(String(calculateCoverage().distance)) || 0) * 1000),
         // Optional fields are OMITTED rather than written null, matching
         // createPost()'s challengeId. 'unknown' carries no information and
         // would only make a short walk look like a classified one.

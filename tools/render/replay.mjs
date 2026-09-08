@@ -94,6 +94,8 @@ async function buildPayload(walkIds, label) {
     if (route.length < 4) { log(`  skipping ${id}: only ${route.length} route points`); continue; }
     walks.push({ id, route, pickups: JSON.parse(x.pickups || '[]'),
       dur: x.duration_seconds || 0, items: x.items_count || 0,
+      // Real measured distance, present only on walks saved after 2026-09-08.
+      distance_m: typeof x.distance_m === 'number' ? x.distance_m : null,
       hood: x.neighborhood || x.city, team: x.team, ts: secsOf(x.timestamp) });
   }
   if (!walks.length) throw new Error('no walk had enough route points to draw');
@@ -143,6 +145,8 @@ out geom;`;
   });
   const withAge = out.filter((s) => s.d !== null).length;
   log(`     ${segs.length} segments · ${withAge} with a recorded cleaning age`);
+  const noDist = walks.filter((w) => w.distance_m === null).length;
+  if (noDist) log(`     ${noDist}/${walks.length} walk(s) predate distance_m — Distance stat omitted`);
 
   // Multi-walk is concatenated into one track for now: a shared-clock group
   // replay needs per-crew cameras, which the follow-cam design does not yet
@@ -152,7 +156,11 @@ out geom;`;
   return { route, pickups, segs: out,
     meta: { hood: walks[0].hood, team: label || walks[0].team,
             dur: walks.reduce((n, w) => n + w.dur, 0),
-            items: walks.reduce((n, w) => n + w.items, 0), walks: walks.length } };
+            items: walks.reduce((n, w) => n + w.items, 0), walks: walks.length,
+            // Summed only if EVERY walk has a real figure — a partial total
+            // would understate the event while looking authoritative.
+            distance_m: walks.every((w) => w.distance_m !== null)
+              ? walks.reduce((n, w) => n + w.distance_m, 0) : null } };
 }
 
 /* --------------------------------------------------------------- render */

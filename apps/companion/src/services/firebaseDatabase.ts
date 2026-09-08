@@ -65,6 +65,11 @@ export interface Cleanup {
    * route to tuning against actual users. Never displayed.
    */
   items_detected?: number;
+  /** Distance actually walked, in metres, measured live from the full GPS
+   *  track. Stored because `route_points` is thinned before saving — summing
+   *  it back gives running speed for a walking cleanup — so this is the only
+   *  place the true figure survives. Absent on walks saved before 2026-09-08. */
+  distance_m?: number;
   /** Median GPS speed over the walk's motion events, m/s. -1 = unknown. */
   pace_median_mps?: number;
   /** Share of speed samples below PACE_CONTEXT.strollMps, 0-1. -1 = unknown. */
