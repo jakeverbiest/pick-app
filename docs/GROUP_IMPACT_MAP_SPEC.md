@@ -485,3 +485,40 @@ Steps 1-3 and 5 are mechanical and need nothing from Jake. Step 6 is gated on hi
 user-facing copy. **The marker grid floor and the minimum participant count are still open
 numbers** (§11.6) and must be picked together against a rendered map — they are the one thing in
 step 3/4 that cannot be decided in advance.
+
+### 11.8 A marker is a PLACE, not a pickup — 2026-09-08
+
+Investigated after step 3's dry run showed Litchfield Litter Invitational at **793 pickups but
+only 321 stored coordinates**. **This is not a bug and nothing needs fixing in capture.**
+
+`cleanups.pickups` is deduplicated on the device to unique **~11m cells per walk** — 4-decimal
+rounding, with the reason stated in `map.tsx`: *"Rounded to ~11m so it maps a block, never a
+doorstep."* Several items collected along the same stretch collapse to one stored point. Across
+Jake's 217 walks: **7,717 pickups → 1,993 stored points.** (The file also carries scar tissue
+worth not repeating: an earlier `slice(0, 60)` truncation was removed for starving spatial
+coverage on long walks.)
+
+**Consequence 1 — §3's copy must change.** §3 lists "Pickups, bags, hours, participants" as
+headline totals and §5 describes "a field of markers [that] says *we did this four hundred
+times*." Those two together imply one dot per pickup, and the artifact would show ~321 dots
+beside a "793 pickups" headline. Both numbers are true; the pairing is misleading. **The
+renderer must not imply a one-to-one relationship.** `challenge_markers` now carries `points`
+alongside `cell_count` so the page can say something accurate — e.g. "793 pickups across 321
+spots." Exact wording is a copy decision, not settled here.
+
+**Consequence 2 — the §11.6 privacy floor is stronger than it looked.** Coordinates are already
+11m-rounded before they ever leave the device, so the server-side grid is a *second* layer of
+coarsening rather than the only one, and `MARKER_GRID_MIN_DEG` (~22m) is coarser still. Good
+news, but do not let it become an argument for lowering the floor: the floor protects against
+route reconstruction from *many* points, which per-point rounding does not address.
+
+**Consequence 3 — densest-first truncation is meaningful.** Since the dedupe is per *walk*, a
+spot worked across many walks accumulates a real count. Measured at grid 0.0003 over Jake's
+data: **463 cells, 299 of them with a count above 1, max 88.** So cell counts carry genuine
+signal and can drive dot sizing; truncation drops the sparsest rather than an arbitrary slice.
+
+**Still open (§11.6):** the grid size and `MARKER_MIN_PARTICIPANTS`. Note that at the current
+value of 3, **every existing challenge is suppressed** — the platform has 5 users who have ever
+logged a cleanup and the largest challenge roster is 2. Recommendation is to keep 3 and let the
+layer light up at the first real multi-person event rather than weaken a floor that cannot be
+un-published; recorded here so that is a decision rather than a surprise.

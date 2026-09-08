@@ -1062,6 +1062,8 @@ async function rebuildChallengeStats(challengeId) {
       reason: markers.reason,
       grid_deg: MARKER_GRID_DEG,
       cell_count: markers.cells.length / 3,
+      // Pickup points behind those cells. NOT items_count — see gridPickups.
+      points: markers.points,
       cells: markers.cells, // flat [lat,lon,count,…] — Firestore rejects nested arrays
       updated_at: now,
     }),
@@ -1135,6 +1137,26 @@ function pickupPoints(cleanup) {
 /**
  * Grid a scope's pickup coordinates into aggregate cells.
  *
+ * ⚠️ A CELL IS A PLACE, NOT A PICKUP. `cleanups.pickups` is already
+ * deduplicated on the phone to unique ~11m cells per walk (4-decimal rounding,
+ * `map.tsx`: "Rounded to ~11m so it maps a block, never a doorstep"). Several
+ * items picked up along the same stretch collapse to one stored point. Across
+ * Jake's 217 walks that is 7,717 pickups recorded as 1,993 points.
+ *
+ * So the artifact must NOT imply one dot per pickup — printing "793 pickups"
+ * beside ~321 dots invites exactly that misreading. `points` is returned
+ * alongside `cell_count` so the renderer can say something true.
+ *
+ * The counts still carry real signal, because the dedupe is PER WALK: a spot
+ * worked on many walks accumulates. Measured at grid 0.0003 over Jake's data,
+ * 299 of 463 cells have a count above 1, max 88. Densest-first truncation is
+ * therefore meaningful, not arbitrary.
+ *
+ * Privacy note worth keeping: this means the server-side grid is a SECOND
+ * layer of coarsening, not the only one — coordinates are already 11m-rounded
+ * before they leave the device, and MARKER_GRID_MIN_DEG (~22m) is coarser
+ * still.
+ *
  * Returns `{ suppressed, reason, cells }` where `cells` is FLAT —
  * [lat, lon, count, lat, lon, count, …]. Flat because Firestore rejects
  * nested arrays outright; this codebase already stores polylines and polygon
@@ -1142,7 +1164,7 @@ function pickupPoints(cleanup) {
  */
 function gridPickups(cleanups, participantCount, gridDeg = MARKER_GRID_DEG) {
   if (participantCount < MARKER_MIN_PARTICIPANTS) {
-    return { suppressed: true, reason: 'too_few_participants', cells: [] };
+    return { suppressed: true, reason: 'too_few_participants', cells: [], points: 0 };
   }
   // Enforce the floor here rather than trusting the caller — this is the
   // single choke point every marker passes through.
@@ -1165,8 +1187,12 @@ function gridPickups(cleanups, participantCount, gridDeg = MARKER_GRID_DEG) {
   // arbitrary slice — the visual keeps its shape.
   const cells = [...counts.values()].sort((a, b) => b.n - a.n).slice(0, MARKER_MAX_CELLS);
   const flat = [];
-  for (const c of cells) flat.push(Number(c.lat.toFixed(6)), Number(c.lon.toFixed(6)), c.n);
-  return { suppressed: false, reason: null, cells: flat };
+  let points = 0;
+  for (const c of cells) {
+    flat.push(Number(c.lat.toFixed(6)), Number(c.lon.toFixed(6)), c.n);
+    points += c.n;
+  }
+  return { suppressed: false, reason: null, cells: flat, points };
 }
 
 /**
