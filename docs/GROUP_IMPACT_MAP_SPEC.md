@@ -296,3 +296,96 @@ rather than inherited.
 - Not a reopening of the public all-time hotspot layer (§5).
 - Not a personal impact artifact. Individual share cards already exist and are unaffected.
 - Not a backfill. Only events that run after this ships can produce one.
+
+---
+
+## 11. Amendment 2026-09-08 — one query, two rosters; and in-app access is settled
+
+Written after a design conversation with Jake. **This amends §4 rather than replacing it.**
+§4's core call still stands — a time-boxed event is a challenge, and the district dashboard is
+a separate, geographic thing. What §4 does not cover is the case Jake raised: **a team leader
+seeing their group's logged work on an ongoing basis**, which is neither a one-day event nor a
+geographic district.
+
+### 11.1 The model, in Jake's words
+
+> "I should be able to be on a team AND participate in a specific challenge (upon joining that
+> challenge). I should be able to be unaffiliated and join a challenge. A challenge organizer
+> should see the full stats and beautiful map of their joined participants. Same with a team
+> leader — they should be able to see logged work on a longer basis. The difference is how we
+> filter or categorize the data to include all team members or all participants for a specific
+> challenge."
+
+**This needs no schema change.** One team per user (`team_id`/`team_name`, singular in user
+settings) and many challenges per user is exactly what ships today. An earlier draft of this
+conversation claimed many-to-many membership was the load-bearing prerequisite; that was wrong
+for this model and is withdrawn.
+
+### 11.2 The generalization
+
+There is **one query**, parameterized by a roster and a window:
+
+| view | roster | window |
+|---|---|---|
+| challenge / event | joined participants | the challenge's start–end |
+| team, ongoing | current team members | all time (or a chosen period) |
+| district sponsor (existing, §4) | *everyone* — geographic filter | all time |
+
+The first two are the same code with a different roster. The third stays as-is and stays
+honest about being geographic; `web/org.html` already says so on screen.
+
+The practical consequence for build order (§8): **do not build the team view as a second
+system.** Build the challenge view as §8 describes, but take the roster as a parameter from
+the start rather than reading participants inline. The team view is then a second caller.
+
+### 11.3 The map is street coverage, not routes — and that is already privacy-safe
+
+The blocker on any roster-scoped map is that **`cleanups` is owner-only read**
+(`firestore.rules:33`), deliberately: a route traces a walk that usually starts and ends at
+home. That is why `contrib` docs carry totals only. An organizer must never see participants'
+routes, and this spec does not propose changing that.
+
+**It does not need to.** `segment_status` is readable by any signed-in user
+(`firestore.rules:197`) and carries `last_user` and `last_cleaned`. So the map is:
+
+> segments where `last_user` ∈ roster **and** `last_cleaned` ∈ window
+
+That is street *coverage*, not a route trace — privacy-safe by construction, and already the
+app's own visual language. §4b's "streets covered underneath the markers, from
+`segment_status`" was already reaching for this; §11 makes it the primary mechanism for both
+views rather than a background layer.
+
+**Two real caveats, neither blocking but both worth building around:**
+
+1. **`last_user` is last-writer-wins.** Two people clean the same block and only one is
+   credited. Fine for "this street got cleaned"; **wrong as a basis for per-person standings.**
+   Leaderboard numbers must come from `contrib`/cleanup totals, never from segment counts.
+2. **`segment_status` is client-written with weak validation** — any signed-in user can write
+   any segment claiming themselves. Acceptable while it drives a visual. **If it ever feeds
+   competitive standings in a corporate challenge, that is a live gaming vector** and needs
+   server-side validation first.
+
+### 11.4 Access — decided 2026-09-08
+
+**Jake's decision: joining is the permission. Everyone on a team sees their team's
+leaderboard; everyone in a challenge sees that challenge's.** No leader or organizer role is
+needed for the in-app view, and none should be built.
+
+This is close to a no-op against current rules and mostly a tightening: `contrib` is already
+`allow read: if signedIn()`, i.e. readable by *any* signed-in user, not just participants.
+
+**This settles §9 item 2 only for the in-app view. It does not settle the shareable web link**,
+which remains "anyone with the link is the credential," matching the sponsor dashboard. Those
+are two different surfaces and should not be conflated:
+
+| surface | audience | gate |
+|---|---|---|
+| in-app leaderboard + map | members / participants | membership (this decision) |
+| shareable web link | funders, social, the public | the token in the URL |
+
+**Carried over as still-open:** a team's roster is still joinable by typing the team's name
+(`joinOrCreateTeam` writes `team_name`/`team_id` straight into the joiner's own settings, no
+approval). Under this decision that is acceptable for a *view* — a stranger who joins sees
+group totals, which is low harm. It remains **not** acceptable as the basis of a funder-facing
+report, so if a team's numbers are ever exported as an org's official impact, enrollment needs
+a real gate first. §9 items 1, 3 and 4 are unaffected.
