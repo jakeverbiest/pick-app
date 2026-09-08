@@ -1,0 +1,199 @@
+<meta charset="utf-8">
+<title>PICK app-view frame renderer</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;700;800&display=swap">
+<style>html,body{margin:0;padding:0;background:#0F2F66;overflow:hidden}canvas{display:block}</style>
+<canvas id="c"></canvas>
+<script id="payload" type="application/json">__DATA__</script>
+<script id="config" type="application/json">__CONFIG__</script>
+<script>
+/* App-view frame renderer.
+ *
+ * Rebuilt 2026-09-08 from a real screenshot of the in-walk map screen. The
+ * earlier version drew untouched streets as faint grey lines over blank
+ * ground, which looked nothing like the app — because the app colours the
+ * WHOLE street network by freshness. Most of it is red and orange (cleaned
+ * long ago), with green where it was cleaned recently. That colour field is
+ * the dominant visual, and its absence was the real problem.
+ *
+ * Segments come from the app's own chopWaysIntoSegments(), so their ids match
+ * segment_status and the ages drawn here are the real recorded ones.
+ *
+ * No animation loop: the driver calls PICK.frame(t) for an exact t.
+ */
+(function(){
+  var D=JSON.parse(document.getElementById('payload').textContent);
+  var CFG=JSON.parse(document.getElementById('config').textContent);
+  var M=D.meta, W=CFG.width, H=CFG.height;
+  var cv=document.getElementById('c');
+  cv.width=W; cv.height=H; cv.style.width=W+'px'; cv.style.height=H+'px';
+  var ctx=cv.getContext('2d');
+  var K=W/1080;
+
+  /* ---- the app's freshness gradient, ported exactly (map.tsx freshRGB) ---- */
+  function freshRGB(d){
+    var stops=[[0,[47,180,87]],[6,[242,197,0]],[12,[238,122,30]],[20,[210,50,28]]];
+    var last=stops[stops.length-1];
+    if(d>=last[0])return last[1];
+    for(var i=1;i<stops.length;i++){
+      if(d<=stops[i][0]){
+        var t=(d-stops[i-1][0])/(stops[i][0]-stops[i-1][0]);
+        return [Math.round(stops[i-1][1][0]+(stops[i][1][0]-stops[i-1][1][0])*t),
+                Math.round(stops[i-1][1][1]+(stops[i][1][1]-stops[i-1][1][1])*t),
+                Math.round(stops[i-1][1][2]+(stops[i][1][2]-stops[i-1][1][2])*t)];
+      }
+    }
+    return last[1];
+  }
+  function freshCss(d,a){var c=freshRGB(d<0?0:d);return 'rgba('+c[0]+','+c[1]+','+c[2]+','+a+')';}
+  // tailFade: old blocks dim but stay legible — the worst must not disappear.
+  function tailFade(d){ d=d<0?0:d; if(d<=12)return 1; if(d>=30)return .6; return 1-.4*((d-12)/18); }
+
+  /* ---- projection: centre on the walk, fill the screen ---- */
+  var pts=D.route.concat(D.pickups);
+  var pct=function(a,q){var s=a.slice().sort(function(x,y){return x-y;});
+    return s[Math.min(s.length-1,Math.max(0,Math.round((s.length-1)*q)))];};
+  var la=pts.map(function(p){return p[0];}), lo=pts.map(function(p){return p[1];});
+  var mnLa=pct(la,.04), mxLa=pct(la,.96), mnLo=pct(lo,.04), mxLo=pct(lo,.96);
+  var cLa=(mnLa+mxLa)/2, cLo=(mnLo+mxLo)/2;
+  var kx=Math.cos(cLa*Math.PI/180);
+  // Zoom so the walk fills the frame; the app is a zoomed street-level view,
+  // so cropping the extremes is app-faithful rather than a compromise.
+  // FOLLOW-CAM. Fitting the whole walk into frame leaves it small with dead
+  // space around it — the opposite of the app, whose map is always full-bleed
+  // at street level and pans with you. So: hold a fixed street-level zoom and
+  // move the camera along the route, then ease back at the end to reveal the
+  // whole shape. The map fills the screen the entire time.
+  var METRES_ACROSS = CFG.metresAcross || 420;      // frame width in real metres
+  var scale = W / (METRES_ACROSS / (111320 * kx));  // px per degree lon
+  var scaleLat = scale;                             // equirectangular
+  // Pull-back at the end has to show the full extent, so compute what that needs.
+  var fullScale = Math.min(H*0.66/((mxLa-mnLa)*1.25), W/(((mxLo-mnLo)*1.25)*kx));
+  var camLa=cLa, camLo=cLo, camScale=scale;
+  function P(lat,lon){ return [W/2+(lon-camLo)*kx*camScale, H/2-(lat-camLa)*camScale]; }
+  // Raw lat/lon kept; projection happens per frame because the camera moves.
+  var segsRaw=D.segs, routeRaw=D.route, picksRaw=D.pickups;
+
+  var gap=[false];
+  for(var i=1;i<D.route.length;i++){
+    var dx=(D.route[i][1]-D.route[i-1][1])*kx, dy=D.route[i][0]-D.route[i-1][0];
+    gap[i]=Math.sqrt(dx*dx+dy*dy)*111320>400;
+  }
+  var revealAt=picksRaw.map(function(pt){
+    var bi=0,bd=Infinity;
+    routeRaw.forEach(function(r,i){var q=(r[0]-pt[0])*(r[0]-pt[0])+(r[1]-pt[1])*(r[1]-pt[1]);if(q<bd){bd=q;bi=i;}});
+    return bi;
+  });
+
+  /* ---- basemap is drawn per frame: the camera moves, so it cannot be
+         pre-rendered once. Cheap enough — a few thousand short polylines. ---- */
+  function drawBase(){
+    ctx.fillStyle='#F4F2ED'; ctx.fillRect(0,0,W,H);
+    ctx.lineCap='round'; ctx.lineJoin='round';
+    ctx.strokeStyle='#FFFFFF'; ctx.lineWidth=9*K;
+    segsRaw.forEach(function(s){ ctx.beginPath();
+      s.c.forEach(function(q,i){var p=P(q[0],q[1]); i?ctx.lineTo(p[0],p[1]):ctx.moveTo(p[0],p[1]);}); ctx.stroke(); });
+    ctx.strokeStyle='#E6E3DC'; ctx.lineWidth=1.6*K;
+    segsRaw.forEach(function(s){ ctx.beginPath();
+      s.c.forEach(function(q,i){var p=P(q[0],q[1]); i?ctx.lineTo(p[0],p[1]):ctx.moveTo(p[0],p[1]);}); ctx.stroke(); });
+  }
+
+  function ease(t){ return t<.5?2*t*t:1-Math.pow(-2*t+2,2)/2; }
+  function fmt(s){var h=Math.floor(s/3600),m=Math.floor(s%3600/60),x=Math.floor(s%60);
+    return (h<10?'0':'')+h+':'+(m<10?'0':'')+m+':'+(x<10?'0':'')+x;}
+  function rr(c,x,y,w,h,r){c.beginPath();c.moveTo(x+r,y);c.lineTo(x+w-r,y);c.quadraticCurveTo(x+w,y,x+w,y+r);
+    c.lineTo(x+w,y+h-r);c.quadraticCurveTo(x+w,y+h,x+w-r,y+h);c.lineTo(x+r,y+h);
+    c.quadraticCurveTo(x,y+h,x,y+h-r);c.lineTo(x,y+r);c.quadraticCurveTo(x,y,x+r,y);c.closePath();}
+
+  window.PICK={ frame:function(t){
+    var IN=.04, HOLD=.80, OUT=.90;
+    var walk = t<=IN?0 : t>=HOLD?1 : ease((t-IN)/(HOLD-IN));
+    var headF = walk*(routeRaw.length-1), hi=Math.floor(headF), f=headF-hi;
+
+    // Camera: ride the route at street level, then ease back to the whole shape
+    // for the final beat so the finished map is the last thing on screen.
+    var a=routeRaw[Math.min(hi,routeRaw.length-1)], b=routeRaw[Math.min(hi+1,routeRaw.length-1)];
+    var tgtLa=a[0]+(b[0]-a[0])*f, tgtLo=a[1]+(b[1]-a[1])*f;
+    if(t>=OUT){
+      var e=ease(Math.min(1,(t-OUT)/(1-OUT)));
+      camLa=tgtLa+(cLa-tgtLa)*e; camLo=tgtLo+(cLo-tgtLo)*e;
+      camScale=scale+(fullScale-scale)*e;
+    } else { camLa=tgtLa; camLo=tgtLo; camScale=scale; }
+
+    drawBase();
+    ctx.lineCap='round'; ctx.lineJoin='round';
+
+    // freshness field — the app's dominant visual
+    segsRaw.forEach(function(s){
+      if(s.d===null)return;
+      var al=tailFade(s.d);
+      ctx.strokeStyle=freshCss(s.d,.85*al); ctx.lineWidth=7.5*K;
+      ctx.beginPath(); s.c.forEach(function(q,i){var p=P(q[0],q[1]); i?ctx.lineTo(p[0],p[1]):ctx.moveTo(p[0],p[1]);}); ctx.stroke();
+      ctx.fillStyle=freshCss(s.d,.95*al);
+      [s.c[0],s.c[s.c.length-1]].forEach(function(q){var p=P(q[0],q[1]);
+        ctx.beginPath(); ctx.arc(p[0],p[1],2.6*K,0,6.2832); ctx.fill(); });
+    });
+
+    if(hi>0){
+      ctx.strokeStyle='rgba(47,180,87,.95)'; ctx.lineWidth=9*K;
+      ctx.beginPath();
+      var p0=P(routeRaw[0][0],routeRaw[0][1]); ctx.moveTo(p0[0],p0[1]);
+      for(var i=1;i<=hi;i++){ var p=P(routeRaw[i][0],routeRaw[i][1]);
+        gap[i]?ctx.moveTo(p[0],p[1]):ctx.lineTo(p[0],p[1]); }
+      ctx.stroke();
+    }
+
+    var shown=0;
+    for(var k=0;k<picksRaw.length;k++){
+      if(revealAt[k]>hi)continue; shown++;
+      var pp=P(picksRaw[k][0],picksRaw[k][1]);
+      ctx.beginPath(); ctx.arc(pp[0],pp[1],6*K,0,6.2832);
+      ctx.fillStyle='#2F7A3E'; ctx.fill();
+      ctx.strokeStyle='#fff'; ctx.lineWidth=1.6*K; ctx.stroke();
+    }
+    if(walk>0&&walk<1){
+      var hp=P(tgtLa,tgtLo);
+      ctx.beginPath(); ctx.arc(hp[0],hp[1],11*K,0,6.2832);
+      ctx.fillStyle='#12356F'; ctx.fill();
+      ctx.strokeStyle='#fff'; ctx.lineWidth=2.4*K; ctx.stroke();
+    }
+
+    /* ---- chrome ---- */
+    var ins=22*K, br=20*K, barY=44*K, barH=112*K;
+    ctx.fillStyle='#0F2F66'; rr(ctx,ins,barY,W-ins*2,barH,br); ctx.fill();
+    var stats=[[fmt(walk*M.dur),'Time'],[String(Math.round(M.items*walk)),'Pickups'],
+               ['\u2014','Distance']];
+    ctx.textAlign='center';
+    stats.forEach(function(st,i){
+      var cx=ins+(W-ins*2)*(i+.5)/3;
+      ctx.fillStyle='#fff'; ctx.font='700 '+Math.round(42*K)+'px Archivo, sans-serif';
+      ctx.fillText(st[0],cx,barY+barH*.48);
+      ctx.fillStyle='#A8B896'; ctx.font='500 '+Math.round(24*K)+'px Archivo, sans-serif';
+      ctx.fillText(st[1],cx,barY+barH*.80);
+    });
+
+    var tabH=118*K, stopH=104*K, stopY=H-tabH-stopH-26*K;
+    ctx.fillStyle='#FF3B30'; rr(ctx,ins,stopY,W-ins*2,stopH,br); ctx.fill();
+    ctx.font='700 '+Math.round(38*K)+'px Archivo, sans-serif';
+    var lbl='Stop & save', lw=ctx.measureText(lbl).width, sq=26*K, g=20*K, gx=W/2-(lw+sq+g)/2;
+    ctx.fillStyle='#fff'; rr(ctx,gx,stopY+stopH/2-sq/2,sq,sq,6*K); ctx.fill();
+    ctx.textAlign='left'; ctx.fillText(lbl,gx+sq+g,stopY+stopH/2+13*K);
+
+    ctx.fillStyle='#fff'; ctx.fillRect(0,H-tabH,W,tabH);
+    ctx.strokeStyle='#E4E6EC'; ctx.lineWidth=1;
+    ctx.beginPath(); ctx.moveTo(0,H-tabH+.5); ctx.lineTo(W,H-tabH+.5); ctx.stroke();
+    var tabs=['Map','Impact','Ranks','Community','You'];
+    ctx.textAlign='center'; ctx.font='500 '+Math.round(21*K)+'px Archivo, sans-serif';
+    tabs.forEach(function(nm,i){
+      var cx=W*(i+.5)/5;
+      ctx.fillStyle = i===0?'#0F2F66':'#9AA3B2'; ctx.strokeStyle=ctx.fillStyle;
+      ctx.beginPath(); ctx.arc(cx,H-tabH+42*K,11*K,0,6.2832); ctx.lineWidth=3*K; ctx.stroke();
+      ctx.fillText(nm,cx,H-tabH+86*K);
+    });
+    ctx.textAlign='left';
+    return {pickups:shown};
+  }};
+
+  window.PICK.ready=true;
+  window.PICK.frame(0);
+})();
+</script>
