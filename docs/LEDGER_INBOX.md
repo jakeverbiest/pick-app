@@ -300,3 +300,35 @@ the ledger's actual structure, not paste it verbatim.
   number before it will write, at least while ground-truth collection is running. Until that
   ships, every collected walk needs its truth value recorded in chat and reconciled here by hand,
   which is what has happened for all four.
+
+- 2026-09-08 — **Fifth ground-truth walk (`uyGqEUxNcQKruNpfvN7j`, 3.6 min, 290 m, normal pace, no
+  taps, truth 30): detector 26 = 0.87x.** Four walks now sit in the normal-pace/no-taps condition.
+  | pace | slow share | truth | detected | ratio |
+  |---|---|---|---|---|
+  | 0.48 | 0.81 | 30 | 27 | 0.90x |
+  | 0.70 | 0.74 | 30 | 37 | 1.23x |
+  | 0.80 | 0.63 | 30 | 27 | 0.90x |
+  | 0.97 | 0.52 | 30 | 26 | 0.87x |
+  **Mean 0.97x, sd 0.17, 95% CI 0.70-1.25 (n=4).** The condition is centered essentially on truth.
+  Note what the fourth point does to the distribution: **three of four walks cluster tightly at
+  0.87-0.90x and one sits at 1.23x.** The mean is only near 1.0 because that single high walk pulls
+  it up. The median is 0.90x. If the 1.23x walk is an outlier rather than a draw from the same
+  distribution, the detector's honest normal-pace behavior is a **mild ~10% under-count**, not
+  "unbiased" — and that reading is now more likely than the one recorded in the previous entry.
+  **Pace does not predict ratio inside the band.** Pearson r = -0.18 across the four (not
+  significant at n=4), and the sequence 0.48->0.90x, 0.70->1.23x, 0.80->0.90x, 0.97->0.87x has no
+  trend. Pace separates the brisk walk (1.27 m/s, 0.43x) from the band by a wide margin; within the
+  band it explains nothing. Prior entries that framed a pace-ratio curve off three points are
+  superseded.
+  **Field-name correction for future analysis.** These walks store `pace_median_mps`,
+  `pace_slow_share`, `duration_seconds`, `distance_m` and `route_points` (a JSON *string*, not an
+  array) directly on the cleanup doc. Do not recompute pace from the route — the stored values are
+  what the app itself used, and a hand-rolled distance/duration ratio gives materially different
+  numbers (1.4 m/s where the app recorded 0.48).
+  **PROCESS PROBLEM, fifth consecutive occurrence.** `items_count` 26 == `items_detected` 26,
+  truth 30. `ground_truth` is the string `"[]"` on every walk in the series. The correction prompt
+  is confirmed visible and confirmed ignored five times running; it is an invitation and
+  invitations get skipped at the end of a walk. Every data point in this ledger came from Jake
+  typing the number into chat. Until the save flow *requires* the number, that hand-reconciliation
+  is the only thing keeping the corpus honest, and any analysis run straight off Firestore
+  `items_count` will silently treat detector output as ground truth.
