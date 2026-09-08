@@ -168,3 +168,40 @@ the ledger's actual structure, not paste it verbatim.
   assume the inline form works everywhere.
   Cost of getting there: a ~10-minute production regression that stripped the key from all four
   maps (logged above), caused by putting the env expression behind a variable.
+
+- 2026-09-08 — **DETECTOR: feature-level analysis of the ground-truth walk. Conclusion: the missed
+  picks are NOT recoverable by tuning, and this is now demonstrated rather than inferred.**
+  Walk `LIEYG6ezcsDcQpxIIOF2` (35 real picks, 15 detected). Split the 161 motion events into three
+  populations and compared their raw features — median [p10-p90]:
+  | feature | A: counted (n=15) | B: rejected NEAR a real pick (n=77) | C: rejected, no pick (n=69) |
+  |---|---|---|---|
+  | peak | 1.48 | 2.11 | 3.05 |
+  | duration | 895 ms | 2386 ms | 2585 ms |
+  | gyro | 2.95 | 5.10 | 5.80 |
+  | confidence | 70 | 0 | 0 |
+  | peaks | 1 | 3 | 4 |
+  | speed | **0.30 m/s** | **1.18 m/s** | **1.38 m/s** |
+  **B sits between A and C on every feature but far closer to C.** There is no threshold that
+  separates a missed pick from walking noise, because at walking speed they are not different
+  signals. Checked the strongest candidate subset too — events that PASSED the shape checks and
+  were killed only by a context gate: 9 near a tap vs 5 not, against ~8 expected from the 57% base
+  rate. No enrichment. Even the best candidates carry no signal.
+  **What the detector actually measures: stop-and-pick.** Counted events are short, single-peak,
+  low-rotation motions made while nearly stationary (0.30 m/s, 895 ms, 1 peak). That is a real,
+  clean signature — and the zero false positives across every matching window say it identifies it
+  reliably. It is not a broken detector; it is a detector for a different behaviour than the one
+  people use at an event.
+  **Recall by pace at the pick** (n=35, so bands are thin and NOT a clean curve — the 0.4-0.8 band
+  breaks monotonicity): stopped <0.4 → 2/2; 0.4-0.8 → 2/6; 0.8-1.2 → 10/19; **brisk >1.2 → 1/8
+  (0.13)**. The defensible claim is the last one: above ~1.2 m/s detection collapses. Below that it
+  is roughly 0.4-0.5 with too few samples to distinguish bands.
+  **Consequences, stated plainly:**
+  1. **Do not loosen thresholds.** Rejected events near real picks look like noise; counting them
+     would buy recall with false positives and destroy the one property worth having.
+  2. The honest product lever is **guidance** — pausing briefly when you pick moves you into the
+     band the detector actually works in — and the **count-correction prompt shipped today**,
+     which is the real mitigation.
+  3. Genuine improvement needs a **different signal**, not different thresholds. That is R&D, and
+     it needs a multi-tester corpus that does not exist yet.
+  Still n=1: one walk, one person, one phone, one pocket. Everything above could change with a
+  second walker; nothing above should be treated as settled.
