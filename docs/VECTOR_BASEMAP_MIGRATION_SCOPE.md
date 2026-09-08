@@ -87,11 +87,7 @@ not a find-and-replace.
 
 ## 5. Build order
 
-0. **WebGL spike first — this gates everything.** MapLibre GL requires WebGL; these are
-   `WKWebView`s. It should work, but "should" is not good enough for something that renders
-   every map in the app. ~20 minutes on a real device: load MapLibre with the Positron style and
-   confirm it paints. **If this fails, the whole migration is off and the answer is `dark_all`/
-   raster until CARTO forces the issue.**
+0. ~~**WebGL spike first**~~ — **DONE 2026-09-08, PASSED.** See §5a.
 1. Port `ImpactMap.tsx` — smallest real map, establishes the source/layer pattern.
 2. Port `AreaPreview.tsx` and `challenge/new.tsx` — static polygons, near-mechanical.
 3. Port `map.tsx`. Do the segment layer first (the data-driven win), then panes/mask, then
@@ -140,3 +136,67 @@ raster shutdown date, so this is directional, not urgent.
    after parity (step 5), and it is a design call not a technical one.
 3. **Dark mode?** Vector makes it real theming rather than a style swap. Not currently requested;
    noting only that the migration unlocks it.
+
+
+## 5a. Spike result — 2026-09-08, PASSED
+
+Run on the iOS Simulator (iPhone 17, iOS WebKit) against the live Positron vector style using
+the existing API key — **the key already covers the vector service, confirming no dependency on
+the pending key request.**
+
+```
+WebGL available: true
+maplibregl loaded: true
+STYLE LOADED — vector basemap painting
+```
+
+MapLibre GL JS 4.7.1 from cdnjs, rendering Carroll Gardens, with a **data-driven line layer**
+(`line-color` from a `fresh` feature property via a `case` expression) painting correctly. That
+is the exact pattern §4.1 depends on, so the performance win is confirmed available, not assumed.
+
+### ⚠️ The spike's real finding: "insert before the first symbol layer" is WRONG
+
+The obvious anchor — `layers.find(l => l.type === 'symbol')` — resolves to **`waterway_label`,
+which sits BELOW the building fills.** Overlay lines inserted there are painted over by
+buildings, producing lines broken by diagonal white slashes that look like a dash pattern but
+are not. This was caught visually on the first run and would be easy to misdiagnose as a
+`line-dasharray` problem.
+
+**Correct anchor: the first symbol layer that comes after the LAST fill layer.**
+
+```js
+const layers = map.getStyle().layers || [];
+const lastFill = layers.map(l => l.type).lastIndexOf('fill');
+const beforeId = layers.find((l, i) => i > lastFill && l.type === 'symbol')?.id;
+map.addLayer({ id: 'segments', type: 'line', source: 'segments', paint: {…} }, beforeId);
+```
+
+In Positron today `lastFill` is index 64 and `beforeId` resolves to `waterway_ocean`. **Do not
+hardcode either value** — the style is served live and CARTO can reorder it; compute the anchor
+at load time.
+
+### The label defect fix is confirmed structurally
+
+The style's symbol layers, in order:
+
+```
+waterway_label, watername_ocean, watername_sea, watername_lake, watername_lake_line,
+place_hamlet, place_suburbs, place_villages, place_town, place_country_2, place_country_1,
+place_state, place_continent, place_city_r6, place_city_r5, place_city_dot_r7,
+place_city_dot_r4, place_city_dot_r2, place_city_dot_z7, place_capital_dot_z7,
+poi_stadium, poi_park, roadname_minor, roadname_sec, roadname_pri, roadname_major, housenumber
+```
+
+Every `roadname_*` layer sits **after** the computed insertion point, so street names render on
+top of coverage lines. This is the §1 defect fixed, and it costs nothing extra — it falls out of
+inserting at the right place.
+
+Verified on screen: labels (`Smith Street`, `Court Street`, `Union Street`, `Carroll Park`) all
+still render with the overlay present.
+
+### Still unverified
+
+- Behaviour in a real `WKWebView` inside the app, as opposed to iOS Safari on the Simulator.
+  Both are WebKit and this is strong evidence, but it is not the same process. Worth one check
+  during step 1 rather than a separate spike.
+- Performance with thousands of segments, which is the actual claim in §4.1. The spike drew two.
