@@ -58,3 +58,77 @@ the ledger's actual structure, not paste it verbatim.
   low: it is an `EXPO_PUBLIC_` key that ships inside the app bundle by design, so anyone with the
   app already has it, and the free tier is 5M tile requests/month. **Recorded so this is not
   re-attempted as though it were an open task** — "rotate the CARTO key" is closed, not pending.
+
+- 2026-09-09 — **The "Always" location question CANNOT be answered from production data: there are
+  ZERO foreground-mode walks on record.** Full read of the `cleanups` collection via the Admin SDK
+  (217 docs, 2026-06-10 → 2026-09-08). This is a negative result, deliberately not dressed up as a
+  finding.
+  **`session_mode` coverage.** Field present on **23 of 217 docs (10.6%)**. Every one of the 23 is
+  on or after 2026-08-25T10:51Z, and coverage in that window is **23 of 23 (100%)** — no walk since
+  instrumentation has silently dropped the field. The other 194 predate it entirely. Values found
+  (no unexpected ones):
+  ```
+  <field absent>  194  (89.4% of corpus — all pre-2026-08-25)
+  "background"     17  (73.9% of the 23 instrumented walks)
+  "unresolved"      6  (26.1%)
+  "foreground"      0  (0.0%)
+  ```
+  **Answers to the five questions, plainly.** (1) Foreground share is **0 of 17 resolved walks**;
+  for 89.4% of the corpus it is unknown and unrecoverable. (2) The core duration/distance
+  comparison **cannot be run** — one arm is empty. (3) Per-user split **cannot be run**: all 17
+  resolved walks are Jake's; the only other instrumented walk in existence (tester
+  `o8CC8WkJ…`, 2026-09-06) came back `unresolved`. The other three testers have 32 walks between
+  them, all pre-instrumentation. Non-Jake walks are **34 of 217 all-time**, last one 2026-09-06.
+  (4) Mix over time shows no trend to report — among instrumented walks, Aug was 4 background / 2
+  unresolved, Sep 13 background / 4 unresolved; zero foreground in either. (5) Correlations with
+  `items_count`, `pace_median_mps` and `carry_mode` are single-arm and therefore meaningless here.
+  **Background-only baseline, recorded now so a future foreground arm has something to compare
+  against** (n=17, all Jake, all `iPhone14,7 / iOS 26.6` where `device_model` is present):
+  ```
+  duration_seconds  n=17  min 29    p25 82    med 215   p75 248   max 3962  mean 542.3
+  items_count       n=17  min 0     p25 3     med 15    p75 36    max 533   mean 53.5
+  pace_median_mps   n=13  min 0.21  p25 0.62  med 0.80  p75 1.22  max 1.27  mean 0.85
+  distance_m        n=7   min 40    p25 185   med 290   p75 335   max 1610  mean 425.7
+  carry_mode: pocket 10, hand 1, absent 6
+  ```
+  **Sample-size honesty.** 17 walks, one device, one tester, 15 days. Even with a foreground arm,
+  a Mann-Whitney at α=0.05 / 80% power needs roughly 15 per arm to see a *large* effect (d≈1.0),
+  ~26/arm at d≈0.8 and ~65/arm at d≈0.5. Nothing short of a very large effect would be visible.
+  **Corrects the Launch-gates keep-awake row**, which closed 2026-08-24 on the reasoning that
+  "`session_mode` is now saved on every walk, so the field answers this rather than the ledger
+  asking about it." Coverage is indeed 100% since 2026-08-25 — but 15 days of it produced **zero
+  foreground observations and one usable tester walk**, so the field does not yet answer the
+  question. Worth stating that the foreground fallback (`activateKeepAwakeAsync`,
+  `map.tsx` ~L1641, reached only when `startBackgroundSession()` returns `'foreground'`) has **no
+  evidence of ever having executed in production**. It is not a demonstrated cost; it is an
+  unexercised code path.
+  **Four data-quality items for `code`, each with reproducible detail:**
+  1. **`session_mode: 'unresolved'` still fires after `ae3f028`** (which landed 2026-08-25T10:55Z
+     to fix exactly this). Post-fix rate is **4 of 14 walks since 2026-09-01 = 28.6%**. Doc IDs:
+     `Lmo58pXnd5EyJHeaGdtk`, `JkjTn2Yadp6O6S7tbcC1`, `eNRzJbBdL9oHADQ0eJQI` (Jake, 2026-09-01),
+     `mVHe2aXjOoEj1nOzHR8X` (tester `o8CC8WkJ…`, 2026-09-06). The two on 2026-08-25 (10:51, 11:02)
+     straddle the commit and most likely predate its OTA, so they are not counted as post-fix.
+     Mechanism unconfirmed — not diagnosed here, two candidates worth checking: `map.tsx` L1638
+     calls `startBackgroundSession()` fire-and-forget via `.then()`, and `map.tsx` L1552 resets
+     `sessionModeRef.current = null`, so a walk resumed or crash-recovered without a fresh
+     `startCleanup()` would save as `unresolved`. **This matters for the permission question
+     specifically: `unresolved` is ambiguous and could be masking a foreground walk**, so "zero
+     foreground" is strictly 0 of 17 known, with 6 unknown.
+  2. **`route_points` is present on all 217 docs and EMPTY on all 217.** Distance cannot be
+     backfilled from it. Flagging because it reads as populated data until you check `.length`.
+  3. **`distance_m` exists on only 7 of 217 docs (3.2%)**, all from 2026-09-08. It is not yet a
+     usable comparison metric for any cohort question, mode-related or not.
+  4. `items_count` vs `items_detected`: both present on 50 docs, **differing on 5 (10%)** — i.e.
+     45 of 50 counts were never corrected at save. Consistent with the known skipped-prompt
+     problem, quantified. Separately, `ground_truth` is a non-empty array on **3 of 217** docs
+     (up from 1 as of the 2026-09-07 entry).
+  **What would actually answer the question — proposed, not run.** Two things, and the second is
+  the one that matters. (a) A within-device forced-mode block: set PICK to "While Using" in iOS
+  Settings, then run ~6 walks alternating foreground/background on the same route, pace, carry
+  position and starting battery level. That is cheap, exercises a path with zero production
+  evidence, and would at minimum confirm the fallback works at all. (b) The real question is about
+  *other people's* phones, and we have exactly one instrumented tester walk ever — nothing about
+  the permission mix in the wild is knowable until Build 36 testers produce walks. **Schema gap
+  blocking the causal claim either way:** "battery drain cuts walks short" has no proxy in the
+  data — battery level at walk start/end is not recorded. If this question is worth settling,
+  that field is the prerequisite.
