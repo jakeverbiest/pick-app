@@ -40,6 +40,54 @@
 export const BASEMAP_URL =
   `https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png?key=${process.env.EXPO_PUBLIC_CARTO_API_KEY}`;
 
+/**
+ * The vector equivalent of BASEMAP_URL, for maps ported to MapLibre GL.
+ *
+ * CARTO is retiring the raster service and hinting they may freeze its
+ * cartography — which matters here more than sharpness does, because street
+ * geometry comes from live OSM via Overpass. A frozen basemap would drift away
+ * from the data drawn on top of it. Full reasoning and build order in
+ * docs/VECTOR_BASEMAP_MIGRATION_SCOPE.md.
+ *
+ * EVERY WARNING ABOVE APPLIES TO THIS CONSTANT TOO. Keep the env expression
+ * inline. A `style.json` URL is substituted by the same textual mechanism that
+ * shipped a keyless bundle on 2026-09-08; putting it behind a variable or a
+ * ternary would fail in exactly the same way, and just as silently.
+ *
+ * Migration is partial by design — raster and vector coexist while maps are
+ * ported one at a time, so BASEMAP_URL stays until the last caller is gone.
+ */
+export const BASEMAP_STYLE_URL =
+  `https://basemaps.cartocdn.com/gl/positron-gl-style/style.json?key=${process.env.EXPO_PUBLIC_CARTO_API_KEY}`;
+
+/**
+ * MapLibre layer-insertion anchor. Returns the id of the first symbol layer
+ * that sits AFTER every fill layer, or undefined if there is none.
+ *
+ * WHY THIS IS NOT `layers.find(l => l.type === 'symbol')`. That obvious version
+ * resolves to `waterway_label`, which sits BELOW the building fills — overlays
+ * inserted there get painted over by buildings and come out sliced into what
+ * looks like a dash pattern but isn't. Caught on the first spike run,
+ * 2026-09-08; see VECTOR_BASEMAP_MIGRATION_SCOPE.md §5a.
+ *
+ * Inserting at this anchor also puts overlays below the style's roadname_*
+ * layers, so street names stay readable on top of drawn coverage — the label
+ * defect the raster basemap has today, fixed for free.
+ *
+ * Computed at load time, never hardcoded: CARTO serves the style live and can
+ * reorder it.
+ */
+export const MAPLIBRE_ANCHOR_FN = `
+function pickOverlayAnchor(map) {
+  var layers = (map.getStyle() && map.getStyle().layers) || [];
+  var lastFill = -1;
+  for (var i = 0; i < layers.length; i++) if (layers[i].type === 'fill') lastFill = i;
+  for (var j = lastFill + 1; j < layers.length; j++) {
+    if (layers[j].type === 'symbol') return layers[j].id;
+  }
+  return undefined;
+}`;
+
 /** True when this bundle shipped without a usable CARTO key. */
 export function basemapKeyMissing(): boolean {
   const k = process.env.EXPO_PUBLIC_CARTO_API_KEY;

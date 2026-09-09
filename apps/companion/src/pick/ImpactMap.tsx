@@ -1,21 +1,30 @@
 /**
  * ImpactMap — a small, non-interactive "map snapshot" for impact posts and
  * recaps. Renders the post's `coverage` (walked block polylines + optional
- * cleaned-tile centers) on real streets, using the same Leaflet + CARTO
- * light-tile setup as AreaPreview/the Map tab, so a path reads against
- * actual geography instead of floating on a blank rectangle.
+ * cleaned-tile centers) on real streets, so a path reads against actual
+ * geography instead of floating on a blank rectangle.
+ *
+ * MIGRATED TO MAPLIBRE GL + CARTO's Positron VECTOR style, 2026-09-08 — the
+ * first of the four app maps off Leaflet + raster tiles. The other three
+ * (AreaPreview, challenge/new, the Map tab) are still Leaflet; both basemap
+ * constants live in ./basemap while that is true. See
+ * docs/VECTOR_BASEMAP_MIGRATION_SCOPE.md.
+ *
+ * ⚠️ VERIFY THE SHARE FLOW ON-DEVICE BEFORE TRUSTING THIS. This component is
+ * captured by react-native-view-shot from RecapCard/GroupRecapCard/
+ * ImpactComposer, and WKWebView content was ALREADY known to sometimes capture
+ * blank on iOS. Vector rendering draws to a WebGL canvas rather than to
+ * composited raster tiles, which is a strictly harder case for that capture
+ * path — if share cards come out with an empty map, this migration is the
+ * first thing to suspect, and reverting this file alone is enough to test it.
  *
  * NOTE: this used to be a dependency-free react-native-svg drawing
  * specifically to avoid a WebView in feed cards and recap share cards. That
- * tradeoff was deliberately given up here in favor of real map context —
- * know the costs: every card is now its own WebView (real cost in a feed
- * that renders several at once), and RecapCard/GroupRecapCard/ImpactComposer
- * capture this via react-native-view-shot for the share sheet — WKWebView
- * content is known to sometimes capture blank on iOS. Verify the actual
- * share flow on-device after any change here.
+ * tradeoff was deliberately given up in favor of real map context — every card
+ * is now its own WebView, a real cost in a feed that renders several at once.
  */
 import React, { useMemo } from 'react';
-import { BASEMAP_URL } from './basemap';
+import { BASEMAP_STYLE_URL, MAPLIBRE_ANCHOR_FN } from './basemap';
 import { View, StyleSheet } from 'react-native';
 import { WebView } from 'react-native-webview';
 import type { ImpactCoverage } from '../services/firebaseDatabase';
@@ -72,48 +81,83 @@ export function ImpactMap({
     // when they have no coverage, same as before this was a real WebView.
     if (lines.length === 0 && shortMarks.length === 0 && tiles.length === 0) return '';
 
+    // MapLibre GL + CARTO's Positron VECTOR style — first of the four app maps
+    // ported off Leaflet + raster tiles (VECTOR_BASEMAP_MIGRATION_SCOPE.md §5,
+    // step 1). This one first because it is the smallest real map, so the
+    // source/layer pattern is established somewhere cheap.
+    //
+    // COORDINATE ORDER IS THE THING TO WATCH. Leaflet takes [lat, lon];
+    // MapLibre and GeoJSON take [lon, lat]. Every point below is flipped once,
+    // at the boundary, and the incoming `lines`/`shortMarks`/`tiles` arrays are
+    // left in the app's own [lat, lon] convention so nothing upstream changes.
     return `<!DOCTYPE html><html><head>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
-<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
-<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/maplibre-gl/4.7.1/maplibre-gl.min.css" />
+<script src="https://cdnjs.cloudflare.com/ajax/libs/maplibre-gl/4.7.1/maplibre-gl.min.js"></script>
 <style>
   html, body, #map { margin:0; padding:0; height:100%; width:100%; background:${C.cream}; }
-  .leaflet-control-attribution, .leaflet-control-zoom { display: none; }
+  .maplibregl-ctrl-attrib, .maplibregl-ctrl-bottom-left, .maplibregl-ctrl-bottom-right { display: none; }
 </style></head><body><div id="map"></div><script>
-  var map = L.map('map', {
-    zoomControl: false, attributionControl: false,
-    dragging: false, touchZoom: false, scrollWheelZoom: false,
-    doubleClickZoom: false, boxZoom: false, keyboard: false, tap: false
-  });
-  L.tileLayer('${BASEMAP_URL}', {
-    subdomains: 'abcd', maxZoom: 19
-  }).addTo(map);
+${MAPLIBRE_ANCHOR_FN}
 
   var lines = ${JSON.stringify(lines)};
   var shortMarks = ${JSON.stringify(shortMarks)};
   var tiles = ${JSON.stringify(tiles)};
-  var bounds = [];
+  var flip = function (p) { return [p[1], p[0]]; };
 
-  lines.forEach(function (pts) {
-    L.polyline(pts, { color: '${C.accent}', weight: 3, lineCap: 'round', lineJoin: 'round' }).addTo(map);
-    bounds = bounds.concat(pts);
-  });
-  shortMarks.forEach(function (p) {
-    L.circleMarker(p, { radius: 5, color: '${C.accent}', fillColor: '${C.accent}', fillOpacity: 1, weight: 0 }).addTo(map);
-    bounds.push(p);
-  });
-  tiles.forEach(function (p) {
-    L.circleMarker(p, { radius: 3.2, color: '${C.accent}', fillColor: '${C.accent}', fillOpacity: 0.35, weight: 0, opacity: 0.35 }).addTo(map);
-    bounds.push(p);
+  var map = new maplibregl.Map({
+    container: 'map',
+    style: '${BASEMAP_STYLE_URL}',
+    center: [0, 0],
+    zoom: 1,
+    // Static preview: this WebView already has pointerEvents="none", but
+    // interactive:false also stops MapLibre installing handlers at all.
+    interactive: false,
+    attributionControl: false
   });
 
-  if (bounds.length) {
-    map.fitBounds(bounds, { padding: [10, 10] });
-  } else if (${hasBbox}) {
-    map.fitBounds([[${minLat}, ${minLon}], [${maxLat}, ${maxLon}]], { padding: [10, 10] });
-  } else {
-    map.setView([0, 0], 2);
-  }
+  map.on('load', function () {
+    var anchor = pickOverlayAnchor(map);
+    var bounds = [];
+    var push = function (p) { bounds.push(flip(p)); };
+
+    if (lines.length) {
+      map.addSource('routes', { type: 'geojson', data: { type: 'FeatureCollection',
+        features: lines.map(function (pts) {
+          pts.forEach(push);
+          return { type: 'Feature', properties: {},
+                   geometry: { type: 'LineString', coordinates: pts.map(flip) } };
+        }) } });
+      map.addLayer({ id: 'routes', type: 'line', source: 'routes',
+        layout: { 'line-cap': 'round', 'line-join': 'round' },
+        paint: { 'line-color': '${C.accent}', 'line-width': 3 } }, anchor);
+    }
+
+    // Two dot layers, matching the previous circleMarker radii and opacities:
+    // solid marks for short segments, faint ones for covered tiles.
+    var dotLayer = function (id, pts, radius, opacity) {
+      if (!pts.length) return;
+      map.addSource(id, { type: 'geojson', data: { type: 'FeatureCollection',
+        features: pts.map(function (p) {
+          push(p);
+          return { type: 'Feature', properties: {}, geometry: { type: 'Point', coordinates: flip(p) } };
+        }) } });
+      map.addLayer({ id: id, type: 'circle', source: id,
+        paint: { 'circle-radius': radius, 'circle-color': '${C.accent}', 'circle-opacity': opacity } }, anchor);
+    };
+    dotLayer('shortMarks', shortMarks, 5, 1);
+    dotLayer('tiles', tiles, 3.2, 0.35);
+
+    if (bounds.length) {
+      var b = bounds.reduce(function (acc, c) {
+        return [Math.min(acc[0], c[0]), Math.min(acc[1], c[1]),
+                Math.max(acc[2], c[0]), Math.max(acc[3], c[1])];
+      }, [180, 90, -180, -90]);
+      map.fitBounds([[b[0], b[1]], [b[2], b[3]]], { padding: 10, duration: 0, maxZoom: 17 });
+    } else if (${hasBbox}) {
+      map.fitBounds([[${minLon}, ${minLat}], [${maxLon}, ${maxLat}]], { padding: 10, duration: 0, maxZoom: 17 });
+    }
+  });
 </script></body></html>`;
   }, [coverage]);
 
