@@ -44,3 +44,17 @@ the ledger's actual structure, not paste it verbatim.
   the incremental path only rebuilds when a written cleanup falls in scope, a challenge whose work
   is all in the past would otherwise never get a stats doc at all. The two direct-write tests
   skipped the callable and so skipped the seed — which is exactly why they produced nothing.
+
+- 2026-09-09 — **CARTO's self-serve key form is idempotent per domain: re-applying returns the
+  SAME key, so the leaked basemap key cannot be rotated this way.** Jake requested a replacement
+  key after the 2026-09-08 transcript leak, saved it to `.env`, and the value came back
+  byte-identical to the key already in `.env`, `web/map.html`, `web/org.html`,
+  `web/challenge.html` and the shipped bundle. `.env`'s mtime confirms the save happened; this is
+  CARTO's behavior, not a failed edit. **Corrects an earlier guess in this session** that
+  re-applying would issue a second, distinct key.
+  **Consequences.** No web-file swap and no OTA were needed. The leaked key remains live and
+  there is no self-serve way to retire it — CARTO documents no revocation, rotation or
+  deactivation, so killing it would require a support request. Practically the exposure stays
+  low: it is an `EXPO_PUBLIC_` key that ships inside the app bundle by design, so anyone with the
+  app already has it, and the free tier is 5M tile requests/month. **Recorded so this is not
+  re-attempted as though it were an open task** — "rotate the CARTO key" is closed, not pending.
