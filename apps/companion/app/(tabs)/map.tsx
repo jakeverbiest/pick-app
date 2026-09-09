@@ -124,6 +124,21 @@ export default function MapScreen() {
   // detector's number stands. Deliberately separate from pickupCount: that
   // stays the RAW sensor figure and is stored as items_detected for tuning.
   const [userCount, setUserCount] = useState<number | null>(null);
+  /**
+   * Did the walker actually LOOK at the count before saving?
+   *
+   * `items_count === items_detected` is ambiguous today: it means either "I
+   * checked and the detector was right" or "I skipped straight past it". Those
+   * are very different for reporting — the first is evidence FOR the detector,
+   * the second is an absence of evidence — and 45 of 50 walks with both fields
+   * sit in that ambiguous bucket (2026-09-09 field-data pass).
+   *
+   * Set when the correction panel is opened, whether or not the number is then
+   * changed. Deliberately NOT a forced confirmation step: correcting is a
+   * face-saver we would rather nobody needed, so the goal is to record whether
+   * the number was seen, not to make people touch it.
+   */
+  const [countConfirmed, setCountConfirmed] = useState(false);
   const [showAdjust, setShowAdjust] = useState(false);
   const [bagFullness, setBagFullness] = useState(50);
   // True once the user touches the bag report — their report then wins over the estimate.
@@ -180,6 +195,8 @@ export default function MapScreen() {
    *  "unresolved" on every walk (A9, 25 Aug) for exactly that reason. Set once
    *  when the mode resolves, cleared only at the START of the next walk. */
   const sessionModeRef = useRef<'background' | 'foreground' | null>(null);
+  /** Why startBackgroundSession() rejected, if it did — see its .catch below. */
+  const sessionModeFailureRef = useRef<string | null>(null);
   const currentLocationRef = useRef<{ lat: number; lon: number } | null>(null); // latest fix — pickup-pin fallback
   const [gpsInterval, setGpsInterval] = useState(20000); // 20s base interval
   const lastPickupTimeRef = useRef(0);
@@ -1550,6 +1567,7 @@ export default function MapScreen() {
     pickupCounterRef.current = 0;
     groundTruthRef.current = [];
     sessionModeRef.current = null;
+    sessionModeFailureRef.current = null;
     setSegmentsCompleted(0);
     setElapsedSeconds(0);
     setSessionRoute([]);
@@ -1653,7 +1671,21 @@ export default function MapScreen() {
       } else {
         console.log('🌙 Background session active — screen may sleep; no keep-awake or Pocket Mode needed.');
       }
+    }).catch((err) => {
+      // WHY THIS CATCH EXISTS. Until 2026-09-09 this promise had none, so a
+      // rejection left sessionModeRef null and the walk saved as the bare
+      // string 'unresolved' with no record of what failed. That fired on 4 of
+      // 14 walks since 2026-09-01 (28.6%) and made session_mode untrustworthy:
+      // an 'unresolved' walk could be masking a foreground one, which is
+      // exactly the arm the Always-location question needs.
+      //
+      // Record the reason rather than shrugging. The walk still runs and still
+      // saves — this only changes what we can read afterwards.
+      const why = (err && (err.message || String(err))) || 'unknown';
+      sessionModeFailureRef.current = why.slice(0, 120);
+      console.warn('startBackgroundSession failed:', why);
     });
+
     } catch (e) {
       // Start failed (permissions, sensors) — release the watch so it doesn't
       // sit on a "starting" screen for a walk that never began.
@@ -1716,6 +1748,7 @@ export default function MapScreen() {
     setBagFullness(50);
     setBagCount(1);
     setUserCount(null);
+    setCountConfirmed(false);
     setShowAdjust(false);
 
     // SAVE-FIRST: persist the whole walk to disk the instant Stop is pressed —
@@ -2013,6 +2046,10 @@ export default function MapScreen() {
         // labeled training data that lets thresholds be tuned against real
         // users instead of one tester's walks.
         items_detected: pickupCount,
+        // Whether the count was actually looked at — see countConfirmed. Lets a
+        // matching items_count/items_detected pair be read as "confirmed
+        // accurate" rather than "never checked".
+        count_confirmed: countConfirmed,
         // Walk-level pace summary — see walkPaceProfile() for the field evidence.
         pace_median_mps: pace.medianMps,
         pace_slow_share: pace.slowShare,
@@ -2074,7 +2111,11 @@ export default function MapScreen() {
         // location was missing. Never recorded before, so there has never been
         // any evidence about how often the expensive path is taken — which is
         // exactly what made the keep-awake question feel like a judgment call.
-        session_mode: sessionModeRef.current ?? 'unresolved',
+        // 'unresolved' now carries its reason where one is known, so the field
+        // says what happened instead of only that something did.
+        session_mode:
+          sessionModeRef.current ??
+          (sessionModeFailureRef.current ? `unresolved:${sessionModeFailureRef.current}` : 'unresolved'),
       } as any);
 
       const updatedStats = await db.getCleanupStats();
@@ -3652,7 +3693,7 @@ ${MAPLIBRE_ANCHOR_FN}
                   that is a sensor limit, not a bug we can filter away — so the
                   honest thing is to let people fix the number. Tucked behind a
                   disclosure so the one-tap path above stays the default. */}
-              <TouchableOpacity style={styles.adjustToggle} activeOpacity={0.7} onPress={() => setShowAdjust((v) => !v)}>
+              <TouchableOpacity style={styles.adjustToggle} activeOpacity={0.7} onPress={() => { setShowAdjust((v) => !v); setCountConfirmed(true); }}>
                 <Text style={styles.adjustToggleText}>{showAdjust ? 'Hide details' : 'Adjust details'}</Text>
               </TouchableOpacity>
 
