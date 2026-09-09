@@ -38,6 +38,31 @@
  * So: pass `user=<uid>`. Use `since=2026-09-06` if you ever need a
  * genuinely policy-bounded corpus across all accounts. An unbounded run is a
  * decision to reverse the above, not a default.
+ *
+ * WIDENED 2026-09-09 BY JAKE — FORWARD ONLY, NOT RETROACTIVE.
+ *
+ * The above still stands for every account that already existed. What changed
+ * is that NEW signups can now consent, via a disclosure shown at account
+ * creation, and `scope=consented` exports those accounts and only those.
+ *
+ * Three separate things have to be true before a walk appears in that scope,
+ * and each is enforced in code rather than by convention:
+ *   1. `users/{uid}.detector_telemetry_consent == true` — written only by the
+ *      account-creation path, only when the disclosure copy actually rendered
+ *      (src/constants/legal.ts DETECTOR_DISCLOSURE_TEXT/VERSION). Absent on
+ *      every pre-existing account, and absence is treated as "no", never as
+ *      "unknown".
+ *   2. The account has a readable `detector_telemetry_consent_at`. Flagged but
+ *      undatable accounts are skipped, not exported.
+ *   3. The walk's own timestamp is at or after that consent moment.
+ *
+ * (3) is what makes this forward-only rather than a policy claim: even if a
+ * pre-existing account somehow acquired the flag, its earlier walks are still
+ * outside every pass's since-floor. Widening to already-collected data would
+ * mean deleting that check, which is a decision to be made out loud.
+ *
+ * Until the disclosure copy lands, `scope=consented` correctly returns zero
+ * accounts and an empty file.
  * ---------------------------------------------------------------------------------------------
  * WHAT THIS DOES
  *
@@ -130,6 +155,36 @@ function toEpochSeconds(v) {
   return null;
 }
 
+/**
+ * Consent timestamps are MILLISECONDS, and this is deliberately NOT
+ * toEpochSeconds().
+ *
+ * `users/{uid}.detector_telemetry_consent_at` is written client-side as
+ * `Date.now()`, matching that document's existing `created_at`/`updated_at`
+ * convention — epoch MILLIS as a plain number. `cleanups.timestamp` is a
+ * Firestore Timestamp. Two collections, two conventions.
+ *
+ * Feeding a millis number to toEpochSeconds() returns it unchanged as
+ * "seconds", i.e. a consent moment somewhere around the year 57000, which
+ * silently filters out every walk the person ever recorded and reports a
+ * successful 0-row export. That failure mode is exactly the one this file's
+ * header already records for `cleanups.timestamp` — same shape, different
+ * field — so it is spelled out rather than left to the next reader.
+ *
+ * A Timestamp is still accepted in case this field is ever written
+ * server-side, and a number is sanity-checked so a seconds-valued write
+ * doesn't get divided a second time: anything below 1e11 (≈ year 5138 in
+ * seconds, ≈ 1973 in millis) is read as already-seconds.
+ */
+function consentEpochSeconds(v) {
+  if (v == null) return null;
+  if (typeof v === 'number') {
+    if (!Number.isFinite(v) || v <= 0) return null;
+    return v >= 1e11 ? Math.floor(v / 1000) : Math.floor(v);
+  }
+  return toEpochSeconds(v);
+}
+
 function dayBucket(timestamp) {
   const secs = toEpochSeconds(timestamp);
   if (secs === null) return null;
@@ -184,6 +239,10 @@ function buildTelemetryRow(data) {
  *   until  (optional) ISO date (YYYY-MM-DD); only cleanups with timestamp <= this day.
  *   user   (optional) Firebase uid; export only that account's walks. The uid is used as a
  *          FILTER only and never appears in the output — see the PRIVACY SCOPE note above.
+ *   scope  (optional) only value: 'consented'. Exports every account carrying a recorded
+ *          detector-telemetry consent, each bounded to walks at or after that account's own
+ *          consent moment. Mutually exclusive with `user`. See the RETROACTIVE SCOPE block
+ *          at the top of this file.
  *
  * No CORS header is set — this is an operator tool hit directly (curl, browser address bar with
  * the key in the query string, or a local script), not called from pickglobal.org's client-side
@@ -220,10 +279,30 @@ const exportDetectorTelemetry = onRequest(
     // in the output — the no-cross-walk-linkage guarantee is unchanged.
     const userFilter = String(req.query.user || '').trim();
 
+    // `scope=consented` — added 2026-09-09 for Jake's decision to widen the
+    // export to NEW SIGNUPS ONLY, gated on the disclosure shown at account
+    // creation (src/constants/legal.ts DETECTOR_DISCLOSURE_*). Existing users
+    // and every pre-disclosure walk stay out.
+    //
+    // Additive on purpose. Passing no `scope` leaves every existing code path
+    // byte-for-byte as it behaved on the 2026-09-08 run, so this file landing
+    // in an unrelated `firebase deploy --only functions` cannot change what an
+    // existing invocation does. Widening the corpus takes someone typing the
+    // parameter.
+    const scope = String(req.query.scope || '').trim();
+    if (scope && scope !== 'consented') {
+      res.status(400).json({ ok: false, error: `unknown scope '${scope}' (only 'consented' is supported)` });
+      return;
+    }
+    if (scope === 'consented' && userFilter) {
+      res.status(400).json({ ok: false, error: "pass either 'user' or 'scope=consented', not both" });
+      return;
+    }
+
     let q = db.collection('cleanups').select(...ALLOWED_TOP_LEVEL_FIELDS);
     let filterDatesInMemory = false;
 
-    if (userFilter) {
+    if (userFilter || scope === 'consented') {
       // No orderBy, and no timestamp where(): either combined with this
       // equality filter would demand a composite index on
       // (userId, timestamp), and standing up an index for a hand-run
@@ -234,7 +313,6 @@ const exportDetectorTelemetry = onRequest(
       // Sound at this corpus size (206 documents total); if `cleanups` ever
       // reaches a size where buffering one account's walks is a problem,
       // create the composite index and drop this branch.
-      q = q.where('userId', '==', userFilter);
       filterDatesInMemory = true;
     } else {
       q = q.orderBy('timestamp', 'asc');
@@ -249,14 +327,65 @@ const exportDetectorTelemetry = onRequest(
       if (untilSec !== null) q = q.where('timestamp', '<=', Timestamp.fromMillis(untilSec * 1000));
     }
 
+    // One "pass" per account to scan (a single unscoped pass on the default
+    // path). Each pass carries its OWN since-floor, which is what lets the
+    // consent cutoff be enforced per person rather than as one global date.
+    let passes = [{ uid: null, sinceSec, untilSec }];
+    let consentedAccounts = null;
+    let skippedNoConsentAt = 0;
+
+    if (scope === 'consented') {
+      // Single-field equality, so Firestore's automatic single-field index
+      // serves it — nothing to create before the first run.
+      //
+      // This fails closed on absence, which is the entire mechanism: every
+      // account that existed before the disclosure shipped has no such field,
+      // is therefore not returned here, and never enters the scan below. There
+      // is no "unknown, assume yes" path.
+      //
+      // Only the two consent fields are read off `users` — no display name,
+      // email or neighborhood enters function memory, same select()-projection
+      // discipline the cleanups read uses.
+      const consentSnap = await db
+        .collection('users')
+        .where('detector_telemetry_consent', '==', true)
+        .select('detector_telemetry_consent_at')
+        .get();
+
+      passes = [];
+      for (const d of consentSnap.docs) {
+        const consentSec = consentEpochSeconds(d.get('detector_telemetry_consent_at'));
+        if (consentSec === null) {
+          // Flagged as consented but with no usable consent moment. SKIPPED,
+          // not exported: without a timestamp there is no way to demonstrate a
+          // given walk post-dates the disclosure, and "probably fine" isn't the
+          // standard for the one guarantee this scope exists to make. Surfaced
+          // in the response so a nonzero count gets noticed rather than
+          // silently shrinking the corpus.
+          skippedNoConsentAt += 1;
+          continue;
+        }
+        passes.push({
+          uid: d.id,
+          // The stricter of the operator's `since` and this account's own
+          // consent moment. A walk recorded before that person consented is
+          // never exported, whatever `since` says.
+          sinceSec: sinceSec === null ? consentSec : Math.max(sinceSec, consentSec),
+          untilSec,
+        });
+      }
+      consentedAccounts = passes.length;
+    } else if (userFilter) {
+      passes = [{ uid: userFilter, sinceSec, untilSec }];
+    }
+
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
     const objectPath = `detector_exports/${stamp}.ndjson`;
     const file = bucket.file(objectPath);
     const stream = file.createWriteStream({ contentType: 'application/x-ndjson' });
 
     let rowCount = 0;
-    let cursor = null;
-    const buffered = []; // only used on the userFilter branch, see above
+    const buffered = []; // only used on the per-account branches, see above
 
     try {
       // Manual pagination rather than a single `.get()` on the whole
@@ -264,30 +393,45 @@ const exportDetectorTelemetry = onRequest(
       // (rebuildTeamStats, orgDashboard's cold-start fallback) but this
       // export is meant to run against the WHOLE history since launch, which
       // is a materially larger and still-growing read than either of those.
-      for (;;) {
-        let page = q.limit(PAGE_SIZE);
-        if (cursor) page = page.startAfter(cursor);
-        const snap = await page.get();
-        if (snap.empty) break;
+      //
+      // One scan per consenting account rather than a single `userId in [...]`
+      // batch of 30: the per-account consent cutoff needs to know WHICH account
+      // a document belongs to, and `userId` is deliberately outside the
+      // select() projection, so the only place that association exists is the
+      // loop variable. Cheap at new-signup scale; if consenting accounts ever
+      // reach the hundreds, replace the per-account cutoff with a single global
+      // disclosure-date floor and batch the queries.
+      for (const pass of passes) {
+        const passQuery = pass.uid ? q.where('userId', '==', pass.uid) : q;
+        let cursor = null;
+        for (;;) {
+          let page = passQuery.limit(PAGE_SIZE);
+          if (cursor) page = page.startAfter(cursor);
+          const snap = await page.get();
+          if (snap.empty) break;
 
-        for (const doc of snap.docs) {
-          const data = doc.data();
-          if (filterDatesInMemory) {
-            // The date window couldn't go into the query on this branch (see
-            // the userFilter comment above), so it is applied here against
-            // the same epoch-seconds field the query would have used.
-            const ts = toEpochSeconds(data.timestamp);
-            if (sinceSec !== null && (ts === null || ts < sinceSec)) continue;
-            if (untilSec !== null && (ts === null || ts > untilSec)) continue;
-            buffered.push(buildTelemetryRow(data));
-            continue;
+          for (const doc of snap.docs) {
+            const data = doc.data();
+            if (filterDatesInMemory) {
+              // The date window couldn't go into the query on this branch (see
+              // the userFilter comment above), so it is applied here against
+              // the same epoch-seconds field the query would have used. A doc
+              // whose timestamp can't be read is DROPPED whenever a floor is
+              // set — on the consented path a floor is always set, so an
+              // undatable walk can never slip past the consent cutoff.
+              const ts = toEpochSeconds(data.timestamp);
+              if (pass.sinceSec !== null && (ts === null || ts < pass.sinceSec)) continue;
+              if (pass.untilSec !== null && (ts === null || ts > pass.untilSec)) continue;
+              buffered.push(buildTelemetryRow(data));
+              continue;
+            }
+            stream.write(JSON.stringify(buildTelemetryRow(data)) + '\n');
+            rowCount += 1;
           }
-          stream.write(JSON.stringify(buildTelemetryRow(data)) + '\n');
-          rowCount += 1;
-        }
 
-        cursor = snap.docs[snap.docs.length - 1];
-        if (snap.docs.length < PAGE_SIZE) break;
+          cursor = snap.docs[snap.docs.length - 1];
+          if (snap.docs.length < PAGE_SIZE) break;
+        }
       }
 
       if (filterDatesInMemory) {
@@ -335,6 +479,12 @@ const exportDetectorTelemetry = onRequest(
         ok: true,
         object_path: objectPath,
         row_count: rowCount,
+        // Present only on scope=consented. `consented_accounts: 0` is the
+        // expected result until the disclosure copy ships and someone signs up
+        // under it — an empty file then is correct, not a bug.
+        ...(scope === 'consented'
+          ? { scope, consented_accounts: consentedAccounts, skipped_no_consent_at: skippedNoConsentAt }
+          : {}),
         ...(signedUrl
           ? { download_url: signedUrl, expires_in_seconds: 3600 }
           : {

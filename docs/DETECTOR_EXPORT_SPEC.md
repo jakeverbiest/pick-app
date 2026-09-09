@@ -1,5 +1,32 @@
 # Detector telemetry export — spec + staged code
 
+> ## ⚠️ This document is PARTLY SUPERSEDED BY ITS OWN CODE. Read this box first.
+>
+> Two sections below describe a state that stopped being true on 2026-09-07, when the
+> function was reviewed, wired into `index.js`, deployed, and renamed
+> `functions/detectorExport.staged.js` → **`apps/companion/functions/detectorExport.js`**.
+> The file's own header comment is the current source of truth; where this doc and that
+> file disagree, the file wins.
+>
+> 1. **Status.** Not "staged, not deployed." It is **live** and has been run twice
+>    (2026-09-07, 2026-09-08 — the latter producing 174 rows). §7 and
+>    "Deliberately not wired in" describe a decision that has since been taken.
+> 2. **`carry_mode` / `device_model` are IN the export, not excluded.** §2's table row and
+>    §6's open call #4 say they were left out because policy disclosed only *collecting*
+>    them. **That reading was corrected on 2026-09-07 by reading the actual text, and
+>    re-verified 2026-09-09 against both content-carrying copies:**
+>    `apps/companion/src/constants/legal.ts:34` and `~/pick-app/web/privacy.html`
+>    ("To improve pickup detection") both disclose the **use** in as many words — *"your
+>    walking pace, and the device model and carry position above — to measure and improve
+>    detection accuracy"* — and the collection clause adds that both are *"kept only to
+>    make the detection-accuracy work below meaningful."* There is no live policy text
+>    supporting the exclusion. Anything still repeating "collection-disclosed, not
+>    use-disclosed" (including `LAUNCH_LEDGER.md`'s Public-beta row) is carrying the stale
+>    pre-2026-09-07 reading forward. **Flagged for Jake, not changed unilaterally** — see
+>    `docs/LEDGER_INBOX.md`, 2026-09-09.
+>
+> §§1–5's privacy reasoning, output format and access control are otherwise still accurate.
+
 **Status (2026-09-07): designed and staged by the `code` subagent. NOT deployed, NOT wired
 into `functions/index.js`.** No `firebase deploy` has been run and none should be until Jake
 reviews this doc and the staged file below. See "Deliberately not wired in" at the end for why
@@ -211,3 +238,103 @@ exports.exportDetectorTelemetry = exportDetectorTelemetry;
 
 then `firebase functions:secrets:set DETECTOR_EXPORT_KEY` (one time) before
 `firebase deploy --only functions`.
+
+---
+
+## 8. Consent-gated widening to new signups (2026-09-09)
+
+**Decision (Jake, direct chat, 2026-09-09):** widen the export beyond his own account to
+**NEW SIGNUPS ONLY**, gated on a disclosure shown at account creation. **Existing users and
+all pre-disclosure walks stay excluded.** This does not reopen §6's call #5 (retroactive
+scope) — it goes the other way, adding a forward-only path and leaving every already-collected
+walk exactly where the 2026-09-07 decision left it.
+
+### 8.1 The consent record
+
+`users/{uid}`, written once at account creation (`initializeUserSettings`, `setDoc` with
+`merge: true`), three fields:
+
+| Field | Type | Why not fewer |
+|---|---|---|
+| `detector_telemetry_consent` | `true` | The queryable predicate. Firestore cannot index "this field exists," so the export needs a literal `== true` to filter on. |
+| `detector_telemetry_consent_at` | epoch **millis** (`Date.now()`, matching this doc's existing `created_at`/`updated_at` convention) | The per-account cutoff. This is what makes the guarantee *forward-only in code* rather than a policy claim — a walk older than this is dropped even for a consenting account. |
+| `detector_telemetry_disclosure_version` | string, e.g. `'2026-09-10'` | The only record of *what* a given account agreed to. Without it, the first reword of the copy makes every prior consent unauditable. |
+
+**Durable and queryable, checked rather than assumed:** every writer of `users/{uid}` in the
+app uses `setDoc(..., {merge:true})` or `updateDoc` — `firebaseDatabase.ts` (settings,
+migration), `notifications.ts` (push token), `moderation.ts` (block lists). Nothing overwrites
+the document wholesale, so the flag cannot be silently clobbered by an unrelated write.
+
+**Absence is "no", never "unknown."** Every account created before this ships simply lacks the
+field and is therefore not returned by the export's `== true` query. No backfill, no default.
+
+### 8.2 Where it lands in the signup flow
+
+Both account-creation paths, and only those:
+
+- `app/auth/signup.tsx` renders the disclosure and passes its version down through
+  `authService.signup()` → `initializeUserSettings()`.
+- `authService.loginWithApple()` records it **only on its `isNewUser` branch** — re-signing in
+  is not a fresh disclosure.
+
+The disclosure block sits **outside** signup.tsx's collapsed `showEmailForm` section, because
+Sign in with Apple is rendered above that block and creates an account in two taps; a
+disclosure nested inside the email form would be invisible to the most common signup path.
+
+**Fail-closed on missing copy.** `DETECTOR_DISCLOSURE_TEXT` / `DETECTOR_DISCLOSURE_VERSION`
+in `src/constants/legal.ts` are deliberately empty — the copy is `safety`'s to write. Empty
+text renders no disclosure and passes no version, which records no consent at all. Shipping
+this before the copy lands therefore cannot claim consent for a disclosure nobody was shown;
+it just produces zero consenting accounts. Filling in those two constants is the entire
+go-live step, with no further code change.
+
+### 8.3 What changed in the Cloud Function
+
+New optional query param **`scope=consented`**, mutually exclusive with `user`. It queries
+`users` for `detector_telemetry_consent == true` (selecting only the consent timestamp — no
+name, email or neighborhood enters function memory), then runs **one scan per consenting
+account**, each floored at `max(since, that account's consent moment)`.
+
+- **Strictly additive.** With no `scope` param every existing path behaves exactly as it did
+  on the 2026-09-08 run, so this file landing in an unrelated `firebase deploy --only
+  functions` cannot change what an existing invocation does.
+- **One query per account, not `userId in [...]` batches of 30**, because the per-account
+  cutoff needs to know which account a document belongs to and `userId` is deliberately
+  outside the `select()` projection — the loop variable is the only place that association
+  exists. Cheap at new-signup scale; if consenting accounts reach the hundreds, swap the
+  per-account cutoff for a single global disclosure-date floor and batch the queries.
+- **Rows are unchanged.** No `userId`, no doc id, no per-user key — §2's "no cross-walk
+  linkage" guarantee holds exactly as before. Consent is a *filter*, not a field.
+- **Flagged-but-undatable accounts are skipped, not exported**, and counted in the response as
+  `skipped_no_consent_at` so a nonzero count is noticed rather than silently shrinking the
+  corpus.
+- **Response adds** `scope`, `consented_accounts`, `skipped_no_consent_at` on this path only.
+  `consented_accounts: 0` is the correct result until the copy ships.
+
+**One bug worth recording, found and fixed during implementation.** The first cut reused
+`toEpochSeconds()` for the consent timestamp. That helper passes plain numbers through as
+*seconds*, but `detector_telemetry_consent_at` is written as `Date.now()` — *millis* — so
+every consent moment resolved to roughly the year 57000 and filtered out every walk, reporting
+a clean, successful, zero-row export. Same failure shape as the `cleanups.timestamp` bug this
+file's header already documents, one collection over. Fixed with a dedicated
+`consentEpochSeconds()` that treats numbers as millis (with a sanity threshold so a
+seconds-valued write isn't divided twice), and covered by the harness in §8.4.
+
+### 8.4 Verification
+
+`scope=consented` was exercised end-to-end against a stubbed Firestore/Storage (throwaway
+harness, not committed) with four fixture accounts and seven walks. Confirmed: pre-consent
+walks excluded; unconsented account excluded; flagged-but-undatable account skipped and
+counted; `since` and the consent floor combine to the stricter of the two; rows sorted
+oldest-first; no `userId` on any row; and the `user=` path byte-identical to its prior
+behavior. `npx tsc --noEmit` clean across the client changes.
+
+### 8.5 Shipping
+
+- **Client (consent flag + disclosure hook): OTA-able.** Pure TS/TSX, no native module, no
+  `app.json` change. **Build 36 is untouched** — nothing here needs a native build.
+- **Cloud Function: `firebase deploy --only functions`**, a separate action from any OTA and
+  not run by this session.
+- **No Firestore rules change needed.** `match /users/{userId} { allow read, write: if
+  isOwner(userId); }` already permits the client to write its own consent field, and the
+  export runs on the admin SDK, which bypasses rules entirely.

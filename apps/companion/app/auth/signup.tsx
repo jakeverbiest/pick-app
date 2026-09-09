@@ -1,4 +1,4 @@
-import { View, Text, StyleSheet, TouchableOpacity, TextInput, Alert, ActivityIndicator, ScrollView, KeyboardAvoidingView, Platform, Image } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, TextInput, Alert, ActivityIndicator, ScrollView, KeyboardAvoidingView, Platform, Image, Modal } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useEffect, useState } from 'react';
 import { useLocalSearchParams, useRouter } from 'expo-router';
@@ -6,6 +6,13 @@ import * as AppleAuthentication from 'expo-apple-authentication';
 import { getAuthService } from '../../src/services/authService';
 import { C, Fonts, radius } from '../../src/pick/theme';
 import { readPendingChallengeFromClipboard, consumePendingChallengeMarker } from '../../src/services/pendingChallenge';
+import {
+  DETECTOR_DISCLOSURE_TEXT,
+  DETECTOR_DISCLOSURE_VERSION,
+  DETECTOR_DISCLOSURE_DETAIL,
+  PRIVACY_POLICY_TEXT,
+  TERMS_OF_SERVICE_TEXT,
+} from '../../src/constants/legal';
 
 export default function SignupScreen() {
   const router = useRouter();
@@ -72,10 +79,21 @@ export default function SignupScreen() {
     }
   };
 
+  // The disclosure is only "shown" if there is copy to show. Both auth paths
+  // below pass this, and both pass '' when the copy hasn't landed — which
+  // records no consent at all rather than consent to a blank disclosure.
+  const shownDisclosureVersion = DETECTOR_DISCLOSURE_TEXT ? DETECTOR_DISCLOSURE_VERSION : '';
+
+  // One modal, three documents. Deliberately a single <Modal> with a switched
+  // body rather than three: two RN Modals mounted at once stack behind each
+  // other on iOS, which has already produced two real bugs in this app
+  // (ShareComposer, RecapHistory). `null` is closed.
+  const [legalDoc, setLegalDoc] = useState<'detail' | 'privacy' | 'terms' | null>(null);
+
   const handleAppleSignup = async () => {
     try {
       setLoading(true);
-      await getAuthService().loginWithApple();
+      await getAuthService().loginWithApple(shownDisclosureVersion);
       console.log('✅ Sign in with Apple successful, navigating to home');
       await routeAfterAuth();
     } catch (error: any) {
@@ -109,7 +127,7 @@ export default function SignupScreen() {
       // Neighborhood is deferred off signup — it's freeform text with no
       // validation/autocomplete here; set later from the map or Settings
       // once the user's real location is known.
-      await authService.signup(email.trim(), password, displayName.trim());
+      await authService.signup(email.trim(), password, displayName.trim(), '', shownDisclosureVersion);
 
       console.log('✅ Signup successful, navigating to home');
       await routeAfterAuth();
@@ -235,6 +253,33 @@ export default function SignupScreen() {
           )}
         </View>
 
+        {/*
+          Detector-telemetry disclosure. Placed OUTSIDE the showEmailForm block
+          on purpose: Sign in with Apple sits above that block and creates an
+          account in two taps, so a disclosure nested inside the collapsed email
+          form would never be seen by the fastest — and most common — signup
+          path. Copy and version come from src/constants/legal.ts and are the
+          `safety` agent's to write; this renders nothing until they land.
+        */}
+        {!!DETECTOR_DISCLOSURE_TEXT && (
+          <>
+            <Text style={styles.disclosure}>{DETECTOR_DISCLOSURE_TEXT}</Text>
+            <View style={styles.disclosureLinks}>
+              <TouchableOpacity onPress={() => setLegalDoc('detail')} hitSlop={8}>
+                <Text style={styles.disclosureLink}>What gets analyzed</Text>
+              </TouchableOpacity>
+              <Text style={styles.disclosureSep}>·</Text>
+              <TouchableOpacity onPress={() => setLegalDoc('privacy')} hitSlop={8}>
+                <Text style={styles.disclosureLink}>Privacy Policy</Text>
+              </TouchableOpacity>
+              <Text style={styles.disclosureSep}>·</Text>
+              <TouchableOpacity onPress={() => setLegalDoc('terms')} hitSlop={8}>
+                <Text style={styles.disclosureLink}>Terms</Text>
+              </TouchableOpacity>
+            </View>
+          </>
+        )}
+
         {/* Login Link */}
         <View style={styles.footer}>
           <Text style={styles.footerText}>Already have an account? </Text>
@@ -253,6 +298,40 @@ export default function SignupScreen() {
         </View>
       </ScrollView>
       </KeyboardAvoidingView>
+
+      {/*
+        Same shape as the Settings legal viewer, so the two surfaces read as one
+        app. onRequestClose is set for the Android hardware back button.
+      */}
+      <Modal
+        visible={legalDoc !== null}
+        animationType="slide"
+        onRequestClose={() => setLegalDoc(null)}
+      >
+        <SafeAreaView style={styles.container}>
+          <View style={styles.legalHeader}>
+            <Text style={styles.legalTitle}>
+              {legalDoc === 'detail'
+                ? 'What gets analyzed'
+                : legalDoc === 'privacy'
+                  ? 'Privacy Policy'
+                  : 'Terms of Service'}
+            </Text>
+            <TouchableOpacity onPress={() => setLegalDoc(null)} hitSlop={8}>
+              <Text style={styles.legalClose}>✕</Text>
+            </TouchableOpacity>
+          </View>
+          <ScrollView contentContainerStyle={styles.legalContent}>
+            <Text style={styles.legalText}>
+              {legalDoc === 'detail'
+                ? DETECTOR_DISCLOSURE_DETAIL
+                : legalDoc === 'privacy'
+                  ? PRIVACY_POLICY_TEXT
+                  : TERMS_OF_SERVICE_TEXT}
+            </Text>
+          </ScrollView>
+        </SafeAreaView>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -364,6 +443,43 @@ const styles = StyleSheet.create({
   appleBtn: { height: 50, width: '100%' },
   altToggle: { alignSelf: 'center', paddingVertical: 12, paddingHorizontal: 8 },
   altToggleText: { fontFamily: Fonts.body, color: C.muted, fontSize: 14, textDecorationLine: 'underline' },
+  disclosure: {
+    fontFamily: Fonts.body,
+    fontSize: 12,
+    lineHeight: 17,
+    color: C.muted,
+    textAlign: 'center',
+    paddingHorizontal: 24,
+    paddingBottom: 8,
+  },
+  disclosureLinks: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    paddingHorizontal: 24,
+    paddingBottom: 16,
+  },
+  disclosureLink: {
+    fontFamily: Fonts.body,
+    fontSize: 12,
+    color: C.rust,
+    textDecorationLine: 'underline',
+  },
+  disclosureSep: { fontFamily: Fonts.body, fontSize: 12, color: C.muted, paddingHorizontal: 8 },
+  legalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 20,
+    paddingVertical: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: C.border,
+  },
+  legalTitle: { fontFamily: Fonts.headlineBold, fontSize: 18, color: C.dark },
+  legalClose: { fontSize: 20, color: C.muted, paddingHorizontal: 8 },
+  legalContent: { padding: 20, paddingBottom: 40 },
+  legalText: { fontFamily: Fonts.body, fontSize: 14, lineHeight: 21, color: C.dark },
   footer: {
     flexDirection: 'row',
     justifyContent: 'center',

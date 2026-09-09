@@ -95,7 +95,20 @@ class AuthService {
     callback(this.currentUser);
   }
 
-  async signup(email: string, password: string, displayName: string, neighborhood: string = ''): Promise<AuthUser> {
+  /**
+   * @param detectorDisclosureVersion The version string of the detector-telemetry
+   *   disclosure the caller actually RENDERED on the signup screen. Pass it only
+   *   from a screen that showed the copy — see initializeUserSettings' doc and
+   *   DETECTOR_DISCLOSURE_VERSION in src/constants/legal.ts. Empty/omitted means
+   *   no consent is recorded and the account never enters the telemetry export.
+   */
+  async signup(
+    email: string,
+    password: string,
+    displayName: string,
+    neighborhood: string = '',
+    detectorDisclosureVersion?: string
+  ): Promise<AuthUser> {
     try {
       console.log(`🚀 Signing up: ${email}`);
       const cred = await createUserWithEmailAndPassword(auth, email, password);
@@ -112,7 +125,7 @@ class AuthService {
 
       const db = await getDatabase();
       await db.initialize(cred.user.uid);
-      await db.initializeUserSettings(cred.user.uid, displayName, neighborhood);
+      await db.initializeUserSettings(cred.user.uid, displayName, neighborhood, detectorDisclosureVersion);
 
       this.currentUser = { uid: cred.user.uid, email, displayName, neighborhood, emailVerified: cred.user.emailVerified };
       await this.migrateLegacyAccount(cred.user.uid);
@@ -172,7 +185,7 @@ class AuthService {
    * from it when present; otherwise it's left for the user to set later
    * (Settings), same as the deferred-neighborhood pattern signup.tsx uses.
    */
-  async loginWithApple(): Promise<AuthUser> {
+  async loginWithApple(detectorDisclosureVersion?: string): Promise<AuthUser> {
     try {
       console.log('🍎 Starting Sign in with Apple');
 
@@ -219,7 +232,21 @@ class AuthService {
       await db.initialize(cred.user.uid);
       if (isNewUser) {
         // Mirrors signup(): neighborhood deferred, same as email signup.
-        await db.initializeUserSettings(cred.user.uid, derivedName, '');
+        //
+        // Consent is recorded ONLY on this branch. A returning Apple user
+        // already has a users/{uid} doc, and re-signing-in is not a fresh
+        // disclosure — writing the flag here would silently opt in accounts
+        // that predate the disclosure, which is exactly what "new signups
+        // only" rules out.
+        //
+        // NOTE, and this is a real gap rather than an oversight: this method
+        // also runs from app/auth/login.tsx, where Sign in with Apple is a
+        // de-facto account-creation path for anyone who has never signed up.
+        // That screen does not render the disclosure today, so it passes no
+        // version and those accounts land un-consented (excluded from the
+        // export — fail-closed, not a leak). Showing the copy on login.tsx too
+        // is a `safety` copy decision, not something to paper over here.
+        await db.initializeUserSettings(cred.user.uid, derivedName, '', detectorDisclosureVersion);
       }
       const neighborhood = await this.loadNeighborhood(cred.user.uid);
 

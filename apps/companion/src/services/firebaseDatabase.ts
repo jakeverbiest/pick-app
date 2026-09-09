@@ -133,6 +133,25 @@ export interface UserSettings {
   weekly_goal?: number; // cleanups/week target behind "goal met" on Impact
   community_sharing_enabled?: boolean; // show the "Share to community" option (default on)
   community_auto_post?: boolean; // auto-post a cleanup's photo to community on save (default off)
+  /**
+   * Detector-telemetry consent, recorded once at account creation (2026-09-09).
+   * ABSENT on every account created before that — absence means NOT consented,
+   * never "unknown, assume yes": `exportDetectorTelemetry?scope=consented`
+   * queries for `== true` and so fails closed on a missing field.
+   *
+   * Three fields rather than one boolean, because the export needs all three:
+   *  - `_consent`      the queryable predicate (Firestore can't index "field exists").
+   *  - `_consent_at`   epoch ms; the export drops any walk older than this, which is
+   *                    what enforces "no pre-disclosure walk is ever exported" even
+   *                    if an account somehow acquires the flag after the fact.
+   *  - `_disclosure_version` the exact copy version the person was shown
+   *                    (DETECTOR_DISCLOSURE_VERSION in src/constants/legal.ts).
+   *                    Without it, a later reword makes every prior consent
+   *                    unauditable.
+   */
+  detector_telemetry_consent?: boolean;
+  detector_telemetry_consent_at?: number;
+  detector_telemetry_disclosure_version?: string;
   created_at: number;
   updated_at: number;
 }
@@ -648,7 +667,22 @@ class FirebaseDatabase {
     }
   }
 
-  async initializeUserSettings(userId: string, displayName: string, neighborhood: string) {
+  /**
+   * @param detectorDisclosureVersion When a non-empty string, the caller is
+   *   asserting that THIS disclosure version was actually displayed to the
+   *   person before they created the account, and consent is recorded against
+   *   it. Empty/omitted records nothing at all — no `false` is written either,
+   *   because "we asked and they declined" and "we never asked" are different
+   *   facts and only the second one is true today (there is no decline path;
+   *   the disclosure is informational, shown at signup). Never pass a version
+   *   from a code path that didn't render the copy.
+   */
+  async initializeUserSettings(
+    userId: string,
+    displayName: string,
+    neighborhood: string,
+    detectorDisclosureVersion?: string
+  ) {
     const newSettings: UserSettings = {
       id: userId,
       userId,
@@ -660,6 +694,15 @@ class FirebaseDatabase {
       created_at: Date.now(),
       updated_at: Date.now(),
     };
+
+    // Added conditionally, not as `undefined` keys: Firestore rejects
+    // undefined values outright, and a merge write of `undefined` would in
+    // any case be indistinguishable from not writing.
+    if (detectorDisclosureVersion) {
+      newSettings.detector_telemetry_consent = true;
+      newSettings.detector_telemetry_consent_at = Date.now();
+      newSettings.detector_telemetry_disclosure_version = detectorDisclosureVersion;
+    }
 
     try {
       // setDoc with merge — updateDoc fails when the doc doesn't exist yet

@@ -11,6 +11,94 @@
 export const PRIVACY_LAST_UPDATED = 'September 6, 2026';
 export const TERMS_LAST_UPDATED = 'June 11, 2026'; // matches web/terms.html — no substantive Terms change since
 
+/**
+ * Detector-telemetry disclosure shown at account creation — the HOOK, not the copy.
+ *
+ * Jake approved (2026-09-09) widening the detector telemetry export from his own
+ * account to NEW SIGNUPS ONLY, gated on a disclosure shown at account creation.
+ * Existing users and every pre-disclosure walk stay excluded.
+ *
+ * The user-facing copy is the `safety` agent's to write, not this file's author's.
+ * Both constants are DELIBERATELY EMPTY until that copy lands, and the whole
+ * pipeline is fail-closed on that emptiness:
+ *
+ *   - `app/auth/signup.tsx` renders the disclosure block only when TEXT is non-empty.
+ *   - `authService.signup()` / `loginWithApple()` record consent only when a
+ *     non-empty VERSION is passed in.
+ *   - `functions/detectorExport.js?scope=consented` exports only accounts carrying
+ *     a recorded consent, so an account created before this copy ships is simply
+ *     not in the corpus.
+ *
+ * So shipping this file as-is records NO consent from anyone — it cannot claim
+ * consent for a disclosure nobody was shown. To go live, `safety` fills in both
+ * constants; no other code change is needed.
+ *
+ * VERSION is stored verbatim on `users/{uid}.detector_telemetry_disclosure_version`,
+ * so it must change whenever the TEXT materially changes — that string is the only
+ * record of WHAT a given account actually agreed to. Suggested form: 'YYYY-MM-DD'.
+ */
+export const DETECTOR_DISCLOSURE_VERSION = '2026-09-09';
+
+/**
+ * Draft A ("notice", not a checkbox), approved by Jake 2026-09-09.
+ *
+ * This is the BODY only. Draft A as written also carried a link row
+ * ([What gets analyzed] · [Privacy Policy] · [Terms]) and a Terms-acceptance
+ * line. Neither is here, because signup.tsx renders this constant as a single
+ * flat <Text> — links would show up as literal bracketed text, and the Terms
+ * line is a separate decision (there is no contract-acceptance moment anywhere
+ * in the app yet). Add them to the constant only once there is UI behind them.
+ *
+ * The full approved draft, including the "What gets analyzed" sheet copy this
+ * summarizes, is in ~/pick-app/docs/DETECTOR_TELEMETRY_CONSENT_COPY.md §3.
+ * Bump VERSION whenever this text materially changes — it is the only record
+ * of what a given account was actually shown.
+ */
+export const DETECTOR_DISCLOSURE_TEXT =
+  "Before you start: PICK counts your pickups from your phone's motion sensors. " +
+  'To make that counting more accurate, we analyze the walks you log: the motion ' +
+  'the app recorded, how many pickups it counted against the number you confirm ' +
+  'at the end, your walking pace, how long the walk lasted, and which phone ' +
+  'recorded it.\n\n' +
+  'This is engineering work on the detector. It is never shown to other users, ' +
+  'and it is not used to profile you or to make any decision about you. Your ' +
+  'walking routes are not part of it.';
+
+/**
+ * The "What gets analyzed" sheet behind the signup disclosure's first link.
+ * Draft A §3, approved by Jake 2026-09-09. Written from real export rows, not
+ * from the spec — every item here is a field that actually appears in
+ * functions/detectorExport.js ALLOWED_TOP_LEVEL_FIELDS.
+ *
+ * `session_mode` is deliberately ABSENT: it is collected but not exported, so
+ * listing it would describe a use that isn't happening. If it is ever added to
+ * the export, add "Whether the walk ran in the background or with the screen
+ * on." to the first list and bump DETECTOR_DISCLOSURE_VERSION.
+ */
+export const DETECTOR_DISCLOSURE_DETAIL = `What we analyze from a walk
+
+•  The motion log. For each motion the detector looked at: how strong it was, how long it lasted, how much your phone rotated, how confident the detector was, and whether it was counted as a pickup or rejected — and why.
+
+•  The counts. How many pickups the app detected, and the number you confirmed at the end.
+
+•  Your pace. Your median walking speed during the cleanup, how much of it was slow, and whether we could measure it reliably.
+
+•  How long the walk lasted.
+
+•  Which iPhone model recorded it, and whether the phone rode in a pocket or in your hand. Detection accuracy depends heavily on both, so without them one person's results can't be told apart from another's. This is a hardware model string — never your device's name, which you set yourself.
+
+•  The date, to the day. Not the time.
+
+What is never part of it
+
+•  Your name, your email, or any link back to your account
+
+•  Where you walked — no route, no pickup locations, no city or neighborhood
+
+•  Your notes, your photos, or your team
+
+•  The exact time of day`;
+
 export const PRIVACY_POLICY_TEXT = `PICK Privacy Policy
 Last updated: ${PRIVACY_LAST_UPDATED}
 Operated by John Larkin Verbiest, known publicly as Jake Verbiest ("we", "us").
