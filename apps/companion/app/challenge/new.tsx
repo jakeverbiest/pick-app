@@ -6,12 +6,15 @@
  *   WHEN   one day · a range of days
  *   WHAT   how many pickups / bags / cleanups, together
  *
- * Drawing happens in a small Leaflet WebView: tap to drop a vertex, and the
+ * Drawing happens in a small MapLibre GL WebView: tap to drop a vertex, and the
  * ring closes itself. The result is handed back as [lat, lon] pairs and stored
  * flat (Firestore has no nested-array type — see challenges.ts).
+ *
+ * Migrated off Leaflet + raster tiles 2026-09-08 — see
+ * docs/VECTOR_BASEMAP_MIGRATION_SCOPE.md.
  */
 import { useEffect, useRef, useState } from 'react';
-import { BASEMAP_URL } from '../../src/pick/basemap';
+import { BASEMAP_STYLE_URL, MAPLIBRE_ANCHOR_FN } from '../../src/pick/basemap';
 import {
   ActivityIndicator, Alert, KeyboardAvoidingView, Modal, Platform, Pressable,
   ScrollView, StyleSheet, Text, TextInput, View,
@@ -434,47 +437,99 @@ function BoundaryDrawer({
   const lat = center?.lat ?? 40.6795;
   const lon = center?.lon ?? -73.9958;
 
+  // Boundary drawer, on MapLibre GL + the CARTO vector style (step 2 of
+  // VECTOR_BASEMAP_MIGRATION_SCOPE.md §5). Unlike the two preview maps this one
+  // is interactive, so it exercises click handling and live source updates
+  // rather than a single static draw.
+  //
+  // `pts` stays in the app's [lat, lon] convention throughout, because it is
+  // posted straight back to React Native and every consumer upstream expects
+  // that order. Flipping happens only where geometry is handed to MapLibre.
   const html = `<!DOCTYPE html><html><head>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
-<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
-<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/maplibre-gl/4.7.1/maplibre-gl.min.css" />
+<script src="https://cdnjs.cloudflare.com/ajax/libs/maplibre-gl/4.7.1/maplibre-gl.min.js"></script>
 <style>
   html, body, #map { margin:0; padding:0; height:100%; width:100%; background:#FFFFFF; }
-  .leaflet-control-attribution { font-size: 9px; }
+  .maplibregl-ctrl-attrib { font-size: 9px; }
 </style></head><body><div id="map"></div><script>
-  var map = L.map('map', { zoomControl: false }).setView([${lat}, ${lon}], 15);
-  L.control.zoom({ position: 'bottomright' }).addTo(map);
-  L.tileLayer('${BASEMAP_URL}', {
-    attribution: '© OpenStreetMap © CARTO', subdomains: 'abcd', maxZoom: 19
-  }).addTo(map);
+${MAPLIBRE_ANCHOR_FN}
 
   var pts = ${JSON.stringify(initial)};
-  var poly = L.polygon([], { color: '#0F2F66', weight: 3, fillColor: '#4B7A54', fillOpacity: 0.18 }).addTo(map);
-  var dots = L.featureGroup([]).addTo(map);
+  var flip = function (p) { return [p[1], p[0]]; };
+
+  var map = new maplibregl.Map({
+    container: 'map',
+    style: '${BASEMAP_STYLE_URL}',
+    center: [${lon}, ${lat}],
+    zoom: 15
+  });
+  map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'bottom-right');
 
   function post() {
     if (window.ReactNativeWebView) {
       window.ReactNativeWebView.postMessage(JSON.stringify({ pts: pts }));
     }
   }
+
+  // Declared before load so the RN side's undo/clearAll can never land on an
+  // undefined function during the style fetch.
+  var ready = false;
   function redraw() {
-    poly.setLatLngs(pts);
-    dots.clearLayers();
-    pts.forEach(function (p, i) {
-      L.circleMarker(p, {
-        radius: 6, color: '#fff', weight: 2,
-        fillColor: i === 0 ? '#0F2F66' : '#4B7A54', fillOpacity: 1
-      }).addTo(dots);
-    });
+    if (!ready) { post(); return; }
+    var ringLL = pts.map(flip);
+    map.getSource('area').setData(
+      // A polygon needs at least 3 points and an explicit closing point. Below
+      // that, feed an empty geometry rather than a malformed one.
+      ringLL.length >= 3
+        ? { type: 'Feature', properties: {},
+            geometry: { type: 'Polygon', coordinates: [ringLL.concat([ringLL[0]])] } }
+        : { type: 'FeatureCollection', features: [] }
+    );
+    map.getSource('verts').setData({ type: 'FeatureCollection',
+      features: ringLL.map(function (c, i) {
+        return { type: 'Feature', properties: { first: i === 0 ? 1 : 0 },
+                 geometry: { type: 'Point', coordinates: c } };
+      }) });
     post();
   }
-  map.on('click', function (e) {
-    pts.push([e.latlng.lat, e.latlng.lng]);
-    redraw();
-  });
   window.undo = function () { pts.pop(); redraw(); };
   window.clearAll = function () { pts = []; redraw(); };
-  if (pts.length) { redraw(); try { map.fitBounds(poly.getBounds().pad(0.2)); } catch (e) {} }
+
+  map.on('load', function () {
+    var anchor = pickOverlayAnchor(map);
+    var empty = { type: 'FeatureCollection', features: [] };
+    map.addSource('area', { type: 'geojson', data: empty });
+    map.addSource('verts', { type: 'geojson', data: empty });
+
+    map.addLayer({ id: 'area-fill', type: 'fill', source: 'area',
+      paint: { 'fill-color': '#4B7A54', 'fill-opacity': 0.18 } }, anchor);
+    map.addLayer({ id: 'area-line', type: 'line', source: 'area',
+      layout: { 'line-join': 'round' },
+      paint: { 'line-color': '#0F2F66', 'line-width': 3 } }, anchor);
+    // The first vertex is navy so it is obvious which point closes the ring.
+    map.addLayer({ id: 'verts', type: 'circle', source: 'verts',
+      paint: {
+        'circle-radius': 6,
+        'circle-color': ['case', ['==', ['get', 'first'], 1], '#0F2F66', '#4B7A54'],
+        'circle-stroke-color': '#fff', 'circle-stroke-width': 2
+      } }, anchor);
+
+    ready = true;
+    if (pts.length) {
+      redraw();
+      var b = pts.map(flip).reduce(function (acc, c) {
+        return [Math.min(acc[0], c[0]), Math.min(acc[1], c[1]),
+                Math.max(acc[2], c[0]), Math.max(acc[3], c[1])];
+      }, [180, 90, -180, -90]);
+      try { map.fitBounds([[b[0], b[1]], [b[2], b[3]]], { padding: 24, duration: 0, maxZoom: 17 }); } catch (e) {}
+    }
+  });
+
+  map.on('click', function (e) {
+    pts.push([e.lngLat.lat, e.lngLat.lng]);
+    redraw();
+  });
 </script></body></html>`;
 
   return (
