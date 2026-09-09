@@ -636,13 +636,110 @@ function pointInRing(lat, lon, ring) {
 
 /** Does this cleanup fall inside the team's sponsored area? Mirrors
  *  challenges.ts's cleanupInArea() exactly. */
+// ---------------------------------------------------------------------------
+// Fine-neighborhood index, shared by every area check below.
+//
+// Why this exists: a neighborhood-scoped area used to match ONLY on the
+// cleanups doc's `neighborhood` STRING. That string is a reverse-geocode of
+// the route centroid and routinely comes back as the borough — a walk at
+// 40.67832,-73.99518 on 2026-09-09 is squarely inside Carroll Gardens and
+// stored "Brooklyn", so a Carroll Gardens challenge credited it zero. Every
+// community group joining a neighborhood challenge would have hit this.
+//
+// The point is authoritative and the string is not, so resolve the point
+// against the same boundary file the app itself uses. Cached in module scope:
+// a warm function instance pays nothing, a cold one pays one fetch.
+// ---------------------------------------------------------------------------
+let HOOD_INDEX = null;
+let HOOD_INDEX_AT = 0;
+const HOOD_INDEX_TTL_MS = 6 * 60 * 60 * 1000;
+
+/** Load (or refresh) the boundary index. Fails OPEN: on any error the index
+ *  stays whatever it was, and area checks fall back to string matching — the
+ *  exact behaviour that shipped before this, never worse. */
+async function ensureHoodIndex() {
+  if (HOOD_INDEX && Date.now() - HOOD_INDEX_AT < HOOD_INDEX_TTL_MS) return HOOD_INDEX;
+  try {
+    const res = await fetch(NYC_HOODS_GEOJSON_URL);
+    if (!res.ok) {
+      console.warn(`hoodIndex: fetch failed (${res.status}) — area checks fall back to labels`);
+      return HOOD_INDEX;
+    }
+    const fc = await res.json();
+    const out = [];
+    for (const f of (fc && fc.features) || []) {
+      const props = (f && f.properties) || {};
+      const name = props.neighborhood || props.name || props.ntaname || props.NTAName;
+      const g = f && f.geometry;
+      if (!name || !g) continue;
+      let polys;
+      if (g.type === 'Polygon') polys = [g.coordinates];
+      else if (g.type === 'MultiPolygon') polys = g.coordinates;
+      else continue;
+      const rings = [];
+      let minLat = 90, minLon = 180, maxLat = -90, maxLon = -180;
+      for (const poly of polys) {
+        const outer = poly && poly[0];
+        if (!Array.isArray(outer) || outer.length < 3) continue;
+        const ring = [];
+        for (const pair of outer) {
+          const lon = Number(pair[0]);
+          const lat = Number(pair[1]);
+          if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+          ring.push([lat, lon]);
+          if (lat < minLat) minLat = lat;
+          if (lat > maxLat) maxLat = lat;
+          if (lon < minLon) minLon = lon;
+          if (lon > maxLon) maxLon = lon;
+        }
+        if (ring.length >= 3) rings.push(ring);
+      }
+      if (rings.length) {
+        out.push({ key: String(name).trim().toLowerCase(), minLat, minLon, maxLat, maxLon, rings });
+      }
+    }
+    if (out.length) {
+      HOOD_INDEX = out;
+      HOOD_INDEX_AT = Date.now();
+      console.log(`hoodIndex: ${out.length} neighborhoods loaded`);
+    }
+  } catch (e) {
+    console.warn(`hoodIndex: ${e && e.message} — area checks fall back to labels`);
+  }
+  return HOOD_INDEX;
+}
+
+/** Lowercased names of every indexed neighborhood containing the point, or
+ *  null when the index has not loaded (caller must then fall back). bbox
+ *  prefilter first so this is a handful of ring tests, not 312. */
+function hoodKeysForPoint(lat, lon) {
+  if (!HOOD_INDEX) return null;
+  const out = [];
+  for (const h of HOOD_INDEX) {
+    if (lat < h.minLat || lat > h.maxLat || lon < h.minLon || lon > h.maxLon) continue;
+    for (const r of h.rings) {
+      if (pointInRing(lat, lon, r)) { out.push(h.key); break; }
+    }
+  }
+  return out;
+}
+
 function cleanupInArea(c, area) {
   if (!area || area.type === 'anywhere') return true;
 
   if (area.type === 'neighborhood') {
     const want = String(area.label || '').trim().toLowerCase();
-    const got = String(c.neighborhood || '').trim().toLowerCase();
-    return !!want && want === got;
+    if (!want) return false;
+    // Fast path: the stored label already agrees. Kept first so a correctly
+    // geocoded walk never depends on the index being warm.
+    if (want === String(c.neighborhood || '').trim().toLowerCase()) return true;
+    // Otherwise trust the coordinates over the string.
+    const plat = Number(c.location_lat);
+    const plon = Number(c.location_lon);
+    if (!Number.isFinite(plat) || !Number.isFinite(plon)) return false;
+    const keys = hoodKeysForPoint(plat, plon);
+    if (!keys) return false; // index cold — behave exactly as before
+    return keys.includes(want);
   }
 
   const lat = Number(c.location_lat);
@@ -1081,6 +1178,7 @@ function cleanupInScope(cleanup, scope) {
 /** Every cleanup belonging to `scope`, as plain data. Bounded by roster size. */
 async function cleanupsForScope(scope) {
   if (!scope.roster.length) return [];
+  await ensureHoodIndex();
   const chunks = chunkRoster(scope.roster);
   const results = await Promise.all(
     chunks.map((chunk) => db.collection('cleanups').where('userId', 'in', chunk).get())
@@ -1310,6 +1408,10 @@ async function tokenizedChallengeIds() {
  * an edit that moves a walk out of scope still updates the total it left.
  */
 async function applyChallengeStatsForCleanup(before, after) {
+  // Warm the boundary index before any cleanupInArea call below — see
+  // ensureHoodIndex. Cheap on a warm instance, and failing to load only
+  // costs us the old string-matching behaviour.
+  await ensureHoodIndex();
   const ids = await tokenizedChallengeIds();
   if (!ids.length) return;
   const uids = new Set([before && before.userId, after && after.userId].filter(Boolean));
