@@ -45,6 +45,34 @@ function fmt(goal: string, n: number): string {
   return goal === 'bags' ? formatBagsShort(n) : Math.round(n).toLocaleString();
 }
 
+/**
+ * The consent sentence. GROUP_IMPACT_MAP_SPEC.md §6 requires it at join — "not
+ * retroactively, and not buried in a settings toggle" — because an organizer
+ * can publish this event's totals and street coverage on a link that opens for
+ * anyone holding it (§11.5, decided 2026-09-08).
+ *
+ * Every clause is load-bearing; see docs/CHALLENGE_CONSENT_COPY.md:
+ *  - "Pickups you log" scopes this to walks, not to the person.
+ *  - "which the organizer can share publicly" states the real exposure.
+ *    "part of the group's impact map" alone reads as staying inside the group.
+ *  - "to stop contributing" is exact: leaving does NOT remove walks already
+ *    logged (Jake's decision 2026-09-08). Do not shorten this to "leave any
+ *    time" — next to a consent disclosure that implies leaving undoes it.
+ *  - The routes line is true, and is the question people actually have:
+ *    `cleanups` is owner-only because routes reveal home addresses, and the
+ *    artifact carries street coverage, never route traces (§11.3).
+ *
+ * Shared by BOTH join paths on purpose. The deep-link path auto-joins with no
+ * confirmation, so its alert is the ONLY moment an invited participant sees
+ * this — and invited participants are most of a group event. One constant means
+ * the two cannot drift.
+ */
+const CONSENT_BODY =
+  'Pickups you log during this event become part of the group’s impact map, ' +
+  'which the organizer can share publicly. This applies to walks you log from ' +
+  'now on — you can leave the event any time to stop contributing.\n\n' +
+  'Your walking routes are never shared.';
+
 export default function ChallengeScreen() {
   const { id, autoJoin } = useLocalSearchParams<{ id: string; autoJoin?: string }>();
   const router = useRouter();
@@ -127,12 +155,26 @@ export default function ChallengeScreen() {
       try {
         await joinChallenge(challenge.id, me);
         await load();
-        // Auto-join removes the explicit confirmation step, so say so —
-        // and surface the easy way out, since silently opting someone in
-        // needs an equally obvious way to opt back out.
+        // Auto-join removes the explicit confirmation step, so say so — and
+        // surface the easy way out, since silently opting someone in needs an
+        // equally obvious way to opt back out.
+        //
+        // This alert carries the FULL consent sentence, not a shortened one.
+        // On this path the person was joined without being asked, so it is the
+        // only moment they see it — and invited participants are most of a
+        // group event, i.e. most of the people an artifact is built from
+        // (GROUP_IMPACT_MAP_SPEC.md §11.10).
+        //
+        // The "walks already logged stay" line will look cuttable for length.
+        // It is the one thing this path must not mislead on: leaving stops
+        // future contribution and does not withdraw past work.
         Alert.alert(
-          "You're in",
-          `You've joined "${challenge.name}". Leave any time with the button below.`,
+          `You’ve joined “${challenge.name}”`,
+          `${CONSENT_BODY}\n\nLeave any time to stop contributing — walks already logged stay in the group’s total.`,
+          [
+            { text: 'Leave', style: 'destructive', onPress: () => { leaveChallenge(challenge.id, me).then(load).catch(() => {}); } },
+            { text: 'Got it', style: 'cancel' },
+          ],
         );
       } catch (e: any) {
         console.warn('Auto-join failed:', e?.message || e);
@@ -140,19 +182,38 @@ export default function ChallengeScreen() {
     })();
   }, [autoJoin, challenge, me, load]);
 
+  const doJoin = async () => {
+    if (!challenge || !me) return;
+    setBusy(true);
+    try {
+      await joinChallenge(challenge.id, me);
+      await load();
+    } catch (e: any) {
+      Alert.alert('Could not join', e?.message || 'Please try again.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const toggleJoin = async () => {
     if (!challenge || !me) return;
     const joined = challenge.participants.includes(me);
+
+    // Joining asks first. Leaving does not — nothing is disclosed by leaving.
+    if (!joined) {
+      Alert.alert(`Join “${challenge.name}”?`, CONSENT_BODY, [
+        { text: 'Not now', style: 'cancel' },
+        { text: 'Join', onPress: doJoin },
+      ]);
+      return;
+    }
+
     setBusy(true);
     try {
-      if (joined) {
-        await leaveChallenge(challenge.id, me);
-      } else {
-        await joinChallenge(challenge.id, me);
-      }
+      await leaveChallenge(challenge.id, me);
       await load();
     } catch (e: any) {
-      Alert.alert(joined ? 'Could not leave' : 'Could not join', e?.message || 'Please try again.');
+      Alert.alert('Could not leave', e?.message || 'Please try again.');
     } finally {
       setBusy(false);
     }
