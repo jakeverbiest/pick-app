@@ -1,7 +1,22 @@
 # Challenge consent copy — DRAFT for Jake's approval
 
-Status: **draft, nothing shipped.** Written 2026-09-08 for `GROUP_IMPACT_MAP_SPEC.md` §6 / §11.10.
-User-facing copy is gated on Jake's explicit approval per the standing rule in `AGENTS.md`.
+Status **updated 2026-09-09: drafts A and B are APPROVED AND SHIPPED.** Draft C is approved but
+not built. Written 2026-09-08 for `GROUP_IMPACT_MAP_SPEC.md` §6 / §11.10.
+
+| draft | surface | state |
+|---|---|---|
+| A — explicit join confirmation | `toggleJoin` | **LIVE** — approved 2026-09-08, shipped in the OTA `challenge consent at join (both paths)` (commit `59f357a`), strings verified present in the shipped bundle |
+| B — deep-link auto-join notice | the auto-join alert | **LIVE** — same OTA |
+| C — per-photo opt-in | photo capture | **approved, not built.** Ships with step 5 (the photo strip), deliberately not before — a consent checkbox for a feature that does not exist is just a confusing tickbox. |
+
+**Therefore §11.10's gate is LIFTED for events created from 2026-09-08 onward.** A share link may
+now be minted for a challenge whose participants joined after the consent copy went live. The
+no-backfill rule still stands: the six challenges that existed before that date remain ineligible.
+
+*(This header previously read "draft, nothing shipped", which was true when written and stale
+within a day. It caused a downstream agent on 2026-09-09 to warn Jake that the volunteer
+one-pager described an unapproved notice volunteers would not see — when in fact the notice is
+live. Keep this table current.)*
 
 **This is the gating item for the whole group impact map.** §6 says events that ran before this
 ships have no consented participants, so no share link may be minted for a real event until this
