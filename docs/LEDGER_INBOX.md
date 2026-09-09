@@ -440,3 +440,60 @@ the ledger's actual structure, not paste it verbatim.
   geometry. Worth a glance on the next app open. **Process note — third occurrence of this class:**
   an implicit coupling (CARTO key behind a variable, the `$APP/.env` path, now two hard-coded
   offsets in different coordinate systems) broke silently because nothing named the dependency.
+
+- 2026-09-09 (`roadmap-ops`, from the auto-neighborhood-detection design pass) — **Four code
+  findings, all from reading current source at `a3e4b20`. Nothing was changed; the design lives
+  in `~/pick-app/docs/AUTO_NEIGHBORHOOD_DETECTION_SPEC.md` (DRAFT v2, unapproved).** Three of
+  these are independent of whether that feature is ever built.
+  1. **`hoodContaining()` is a trap for its first caller, not a bug today.**
+     `neighborhoods.ts:959` returns `fine.poly` **undecimated**, while the sibling
+     `getHoodsInBounds()` (`:931`) — the tap path — returns `decimate(ring)` (160-vertex cap,
+     `:918`). `ringHash()` (`streetSegments.ts:748`) folds `ring.length` into the AsyncStorage
+     cache key, so the *same* neighborhood reached via `hoodContaining()` vs. via a tap yields
+     two different `@pick_ring_*` entries and two independent Overpass fetches. Measured against
+     the live Pediacities GeoJSON: **55 of 312 NYC neighborhoods (18%) exceed 160 vertices**
+     (max 1,298). Harmless right now only because `hoodContaining()` still has zero callers.
+     One-line fix: `decimate(fine.poly)`.
+  2. **`pingPresence()`'s recovery path wipes the neighborhood.** `presence.ts:62` — when
+     `updateDoc` fails because the doc is gone, the catch calls `startPresence('')`, recreating
+     the presence doc with an empty `neighborhood`. That walker then drops out of every
+     `w.neighborhood === name` live count (`map.tsx:732`) for the rest of the walk. Real,
+     pre-existing, unrelated to any spec.
+  3. **A `cleanups` doc's `neighborhood` is the reverse-geocode of the route's arithmetic mean,
+     and the active level's name is never stored at all.** `map.tsx:2015-2085`. So an L-shaped
+     route around a park, or an out-and-back straddling a boundary, can already be credited to a
+     neighborhood the walker never entered — this affects leaderboard attribution on walks saved
+     today, not just hypothetical multi-hood ones. Flagged as a finding, not a proposed change:
+     changing it is a product call and is written up as one in the spec.
+  4. **The "21 of 312 NYC neighborhoods can never ring-cache-hit" figure independently
+     reproduced.** Fetched the live GeoJSON and reimplemented `gridCellsForRingBbox()`: 312
+     features, 4-63 cells each, median 12, **291 of 312 at or under `MAX_RING_PRECACHE_CELLS`
+     = 25** — matching `functions/index.js:2001-2008`'s own measurement exactly, from a separate
+     derivation. Worth recording because of one member of the over-cap 21: **Sunset Park (30
+     cells) is one of the ten `STREET_SEED_POINTS`**, so a deliberately seeded neighborhood can
+     still never hit the ring cache. Bedford-Stuyvesant (28), East New York (36), Long Island
+     City (42), Jamaica (42) and Flushing (63) are also in that set — dense residential, not
+     just parks and the airport.
+
+- **2026-09-09 — map control stack: three iterations, and a misalignment that predated the port.**
+  (a) Tools "+" overlapped the zoom pill (group `b49f52c0`) — `adoptButton`'s `bottom: 170` was
+  tuned against LEAFLET's zero-margin control; the MapLibre port's `margin-bottom: 84px` lifted a
+  76px control into it. Moved the button to 190, not the control: Start cleanup's top is only ~63px
+  above the map bottom. (b) That revealed two near-identical plus glyphs stacked ~20pt apart — added
+  a `layers` glyph to `Icon.tsx` for the tools trigger (group `f65c1501`). (c) The two still read as
+  unrelated widgets — a 44px bordered circle above a 38px shadowed rounded-rect. Zoom control now
+  matches the app (44px, radius 22, 1.5px border, no shadow) as `toolOptionBtn` already did
+  (group `d8b7271e`).
+
+  **The finding worth keeping: the horizontal alignment was NEVER right, and the comment hid it.**
+  The original said margin-right 8 on a 38px control gives center 27px from the right, matching the
+  44px button at right 5. That ignores the `.maplibregl-ctrl` wrapper MapLibre nests inside the
+  corner container, which carries its own `margin: 10px` — so the real center was ~37px. **My first
+  fix repeated the identical mistake** and measured 9.5px out. Zeroing the wrapper margin makes the
+  outer margin mean what the comment claims; re-measured at **0.00px misalignment**, pill 46x90 at
+  84-174, 16px gap to the button. Both comments now carry measured numbers and say not to
+  re-derive them by arithmetic.
+
+  **Method note:** all three were verified by reproducing real MapLibre 4.7.1 with the actual CSS in
+  a browser and reading `getBoundingClientRect()`, plus pixel-measuring Jake's own screenshots
+  (1170x2532 = 390x844pt @3x). Arithmetic alone was wrong twice; measurement caught it both times.
