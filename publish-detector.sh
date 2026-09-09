@@ -53,11 +53,28 @@ elif [ -f "$REPO/.env" ]; then
   # shellcheck disable=SC1091
   source "$REPO/.env"
   set +a
+else
+  # Neither path exists. Metro would still bundle happily, inlining empty
+  # strings for every EXPO_PUBLIC_* var — no Firebase config, no CARTO key,
+  # no Sentry DSN. Refuse rather than ship that.
+  echo "!! Neither $APP/.env nor $REPO/.env exists - refusing to publish." >&2
+  echo "   Every EXPO_PUBLIC_* var would inline as an empty string." >&2
+  exit 1
 fi
 if [ -z "${EXPO_PUBLIC_CARTO_API_KEY:-}" ]; then
   echo "⚠️  EXPO_PUBLIC_CARTO_API_KEY is not set (checked $APP/.env and $REPO/.env)." >&2
   echo "    The map will ship with the API-key-required watermark. Fix .env or set it" >&2
   echo "    in the shell before publishing." >&2
+  printf "    Continue anyway? [y/N] "
+  read -r reply
+  case "$reply" in [yY]*) ;; *) echo "    aborted."; exit 1;; esac
+fi
+if [ -z "${EXPO_PUBLIC_SENTRY_DSN:-}" ]; then
+  echo "⚠️  EXPO_PUBLIC_SENTRY_DSN is not set (checked $APP/.env and $REPO/.env)." >&2
+  echo "    errorMonitoring.ts no-ops without it, so this bundle ships with remote" >&2
+  echo "    crash reporting OFF - and because OTA JS replaces the native build's JS," >&2
+  echo "    publishing this would silently disable Sentry on builds that had it." >&2
+  echo "    Unlike the CARTO watermark, there is no visible symptom." >&2
   printf "    Continue anyway? [y/N] "
   read -r reply
   case "$reply" in [yY]*) ;; *) echo "    aborted."; exit 1;; esac
