@@ -50,7 +50,7 @@ const { onSchedule } = require('firebase-functions/v2/scheduler');
 // the values are never committed; the old literals are rotated and dead.
 const { defineSecret } = require('firebase-functions/params');
 const { initializeApp } = require('firebase-admin/app');
-const { getFirestore, FieldValue } = require('firebase-admin/firestore');
+const { getFirestore, FieldValue, FieldPath } = require('firebase-admin/firestore');
 const { getAuth } = require('firebase-admin/auth');
 const { getStorage } = require('firebase-admin/storage');
 // Overpass hedge/mirror-failover client + the exact street/boundary fetch
@@ -61,6 +61,15 @@ const { getStorage } = require('firebase-admin/storage');
 // doc comment for why these live under functions/ instead of src/.
 const { fetchStreetGeometry, gridKey } = require('./shared/streetGeometry');
 const { fetchOsmBoundariesInBox, osmCellKey, OSM_CELL_DEG } = require('./shared/boundaryGeometry');
+// Neighborhood grouping/priority for the precache drip — pure functions, kept
+// in their own module so the ordering can be exercised offline against a
+// simulated roster instead of only in production.
+const {
+  buildDripGroups,
+  resolveGroupIndex,
+  missingPriorityLabels,
+  PRECACHE_PRIORITY_LABELS,
+} = require('./shared/precacheGroups');
 
 initializeApp();
 const db = getFirestore();
@@ -2086,7 +2095,7 @@ function gridCellsForRingBbox(ring) {
  *  empty Map) on any fetch/parse error, so a bad week here just means "no
  *  new neighborhood tiles added this cycle," not a crashed roster rebuild. */
 async function deriveNycNeighborhoodTiles() {
-  const tiles = new Map(); // gridKey -> { lat, lon, label }
+  const tiles = new Map(); // gridKey -> { lat, lon, labels: string[] }
   try {
     const res = await fetch(NYC_HOODS_GEOJSON_URL);
     if (!res.ok) {
@@ -2111,7 +2120,26 @@ async function deriveNycNeighborhoodTiles() {
       const props = (f && f.properties) || {};
       const label = props.neighborhood || props.name || props.ntaname || props.NTAName || undefined;
       for (const key of gridCellsForRingBbox(ringLatLon)) {
-        if (tiles.has(key)) continue;
+        const existing = tiles.get(key);
+        if (existing) {
+          // A cell shared with a neighborhood we already walked records BOTH
+          // names — it used to keep only the first and drop the rest.
+          //
+          // FIXED 2026-09-09, and it was load-bearing for the grouped drip
+          // (shared/precacheGroups.js). Measured against this exact GeoJSON:
+          // 0 of Jackson Heights' 18 bbox cells carried the label 'Jackson
+          // Heights' — they were spread across Elmhurst (3), Corona (6), East
+          // Elmhurst (4), Astoria (2), Ditmars Steinway (1) and College Point
+          // (2), because those features come first in the file. Same for Fort
+          // Greene (0 of 9) and Clinton Hill (0 of 9). Grouping the drip by a
+          // first-writer-wins label would therefore have "completed" a
+          // neighborhood while several of the cells the client's ring check
+          // actually asks for were still cold — i.e. it would have looked
+          // fixed and changed nothing. A group has to be the FULL bbox cell
+          // set or it satisfies nothing.
+          if (label && !existing.labels.includes(label)) existing.labels.push(label);
+          continue;
+        }
         // Representative fetch point = THIS CELL's own center, not the
         // neighborhood's centroid — refreshStreetTile fetches a 600m radius
         // around whatever point it's given, so a cell far from the
@@ -2121,7 +2149,11 @@ async function deriveNycNeighborhoodTiles() {
         // floored SW corner, so splitting it back out and adding half a
         // grid step gives the cell's center.
         const [cLat, cLon] = key.split('_').map(Number);
-        tiles.set(key, { lat: cLat + NEIGHBORHOOD_GRID_DEG / 2, lon: cLon + NEIGHBORHOOD_GRID_DEG / 2, label });
+        tiles.set(key, {
+          lat: cLat + NEIGHBORHOOD_GRID_DEG / 2,
+          lon: cLon + NEIGHBORHOOD_GRID_DEG / 2,
+          labels: label ? [label] : [],
+        });
       }
     }
   } catch (e) {
@@ -2311,11 +2343,51 @@ async function refreshStreetTile(key, lat, lon) {
   const stored = segments.map((s) => ({ ...s, coords: flattenCoordPairs(s.coords) }));
   await db.collection(PRECACHE_STREETS_COLLECTION).doc(key).set({
     segments: stored,
+    // Denormalized so the drip's freshness scan can project just these two
+    // fields (`.select('refreshedAt', 'segmentCount')`) instead of pulling the
+    // whole segments array — tens of KB per tile — every four hours purely to
+    // ask "is this warm?". Added 2026-09-09; docs written before that have no
+    // segmentCount, which the drip reports as unknown rather than as empty.
+    segmentCount: stored.length,
     refreshedAt: Date.now(),
     seedLat: lat,
     seedLon: lon,
   });
   return segments.length;
+}
+
+/** How warm a set of street tiles already is, read as cheaply as Firestore
+ *  allows: one documentId() 'in' query per 10 keys, projected with .select()
+ *  down to the two small fields the drip needs, instead of one getDoc() per
+ *  tile dragging the whole (tens of KB) segments array back four times a day.
+ *  Returns key -> { refreshedAt, segmentCount }; a key with no document is
+ *  simply absent, which callers read as "needs warming". `segmentCount` is
+ *  null for tiles written before 2026-09-09, which is reported as unknown
+ *  rather than guessed at. */
+async function readTileFreshness(keys) {
+  const out = new Map();
+  if (!keys || !keys.length) return out;
+  const chunks = [];
+  for (let i = 0; i < keys.length; i += 10) chunks.push(keys.slice(i, i + 10));
+  const snaps = await Promise.all(
+    chunks.map((c) =>
+      db
+        .collection(PRECACHE_STREETS_COLLECTION)
+        .where(FieldPath.documentId(), 'in', c)
+        .select('refreshedAt', 'segmentCount')
+        .get()
+    )
+  );
+  for (const snap of snaps) {
+    snap.forEach((d) => {
+      const data = d.data() || {};
+      out.set(d.id, {
+        refreshedAt: Number.isFinite(data.refreshedAt) ? data.refreshedAt : 0,
+        segmentCount: Number.isFinite(data.segmentCount) ? data.segmentCount : null,
+      });
+    });
+  }
+  return out;
 }
 
 /** One ~20km boundary cell: fetch + stitch via the exact client pipeline,
@@ -2365,8 +2437,20 @@ const PRECACHE_TIMEOUT_SECONDS = 1800;
 
 // Persisted street-tile roster: precache_meta/nyc_street_roster holds the
 // full deduped tile list (Brooklyn hand-picks + all 312 NYC neighborhoods +
-// cleanup-promoted tiles) plus a rolling `cursor`. No Firestore rules entry
-// needed — this collection has no client reader, and the default-deny
+// cleanup-promoted tiles) plus the drip's resume state.
+//
+// Fields, as of 2026-09-09:
+//   tiles       [{ key, lat, lon, label, labels[] }] — append-only ORDER; a
+//               tile's position never changes, though `labels` may be enriched
+//               in place by a later rebuild (metadata only).
+//   groupKey    normalized neighborhood label the drip resumes on (authoritative)
+//   groupCursor its index in the derived group order (fallback only)
+//   groupRuns   consecutive runs spent on that group, for the stall guard
+//   cursor      LEGACY flat tile index. No longer read or written by the drip;
+//               preserved so a rollback of runPrecacheDripBatch still finds a
+//               sane value. It currently reads 0 because the 2026-09-08
+//               seed-offset repair reset it 40 -> 0.
+// No Firestore rules entry needed — this collection has no client reader, and the default-deny
 // catch-all at the bottom of firestore.rules already blocks it; only the
 // Admin SDK (this file) ever touches it.
 const PRECACHE_ROSTER_DOC = db.collection('precache_meta').doc('nyc_street_roster');
@@ -2420,6 +2504,50 @@ const PRECACHE_ROSTER_DOC = db.collection('precache_meta').doc('nyc_street_roste
 //      picking a compliant batch size.
 const PRECACHE_DRIP_BATCH_SIZE = 8;
 
+// Skip a tile whose cached copy is still this fresh, instead of re-fetching it
+// unconditionally (which is what the drip did until 2026-09-09 — refreshStreetTile
+// has never had a freshness check of its own, and the flat cursor called it on
+// every tile it walked past).
+//
+// This matters more than it looks: on 2026-09-08 the seed-offset repair reset
+// the cursor 40 -> 0, so the drip has been spending its entire Overpass budget
+// re-warming Brooklyn tiles that were already warm. Skipping fresh tiles turns
+// that budget back into new coverage without touching the rate.
+//
+// The number, with the arithmetic written down rather than assumed:
+//   - the client rejects a tile older than PRECACHE_STALENESS_MS = 52 days
+//     (src/services/streetSegments.ts), so anything we choose must leave real
+//     margin under 52;
+//   - capacity is 8 tiles x 6 runs/day = 48 tiles/day;
+//   - at a 30-day refresh age, a 1,226-tile roster expires ~41 tiles/day
+//     (1226/30), which fits inside 48/day with ~15% headroom, and a tile that
+//     becomes eligible has ~22 days of slack before the client would call it
+//     stale.
+// Deliberately NOT paired with a rate increase: the 8-tiles/4h ceiling comes
+// from real 429s observed 2026-09-03 and the ledger records it as an inference
+// from one data point, not a verified-safe ceiling.
+const PRECACHE_TILE_REFRESH_AFTER_MS = 30 * 24 * 60 * 60 * 1000;
+
+// How many neighborhood groups one run may look at. Only matters once the
+// roster is broadly warm, when a run walks past complete groups without
+// spending any Overpass calls: the bound keeps the freshness scan's Firestore
+// reads flat (~12 groups x ~12 tiles = ~150 reads/run, ~900/day) instead of
+// scanning all ~280 groups every four hours. At 12 groups/run x 6 runs/day the
+// whole roster is still re-examined about every four days, so a group aging
+// past PRECACHE_TILE_REFRESH_AFTER_MS is picked up well inside its 22 days of
+// slack.
+const PRECACHE_MAX_GROUPS_PER_RUN = 12;
+
+// Anti-deadlock margin. The drip normally refuses to leave a neighborhood
+// until every one of its cells is warm — that is the entire point of grouping.
+// A tile that can never succeed (a permanently 429ing mirror, a cell Overpass
+// times out on) would otherwise pin the drip to one neighborhood forever, so a
+// group is abandoned — and reported in precache_status/drip as `stalledGroup`
+// — after ceil(size / batch) + this many consecutive runs. Same spirit as the
+// existing "a failure on one tile never blocks the rest of its batch" rule,
+// one level up.
+const PRECACHE_GROUP_STALL_RUNS_MARGIN = 3;
+
 /** Street-tile roster: append-only on rebuild. A brand-new tile is added at
  *  the END of the existing order, never by re-sorting the whole list, so a
  *  weekly rebuild never shifts an already-scheduled tile's position — the
@@ -2441,10 +2569,22 @@ const PRECACHE_DRIP_BATCH_SIZE = 8;
  *  automatically if the doc changed since the read, so the cursor a
  *  concurrent drip run wrote is preserved either way. */
 async function rebuildStreetTileRoster() {
-  const candidates = new Map(); // key -> { lat, lon, label }
+  const candidates = new Map(); // key -> { lat, lon, labels: string[] }
   const addAll = (entries) => {
     for (const [key, point] of entries) {
-      if (!candidates.has(key)) candidates.set(key, point);
+      const labels = Array.isArray(point.labels) ? point.labels : point.label ? [point.label] : [];
+      const existing = candidates.get(key);
+      if (!existing) {
+        // First writer still wins the FETCH POINT (lat/lon) — though since the
+        // 2026-09-07 seed-offset fix both sources hand back the cell's own
+        // center, so the two agree and this no longer decides anything.
+        candidates.set(key, { lat: point.lat, lon: point.lon, labels: labels.slice() });
+        continue;
+      }
+      // Labels UNION rather than first-writer-wins — see the measurement in
+      // deriveNycNeighborhoodTiles for why dropping the later name breaks the
+      // grouped drip.
+      for (const l of labels) if (!existing.labels.includes(l)) existing.labels.push(l);
     }
   };
 
@@ -2452,7 +2592,7 @@ async function rebuildStreetTileRoster() {
   const brooklynTiles = new Map();
   for (const seed of STREET_SEED_POINTS) {
     for (const [key, point] of gridKeysAround(seed.lat, seed.lon, SEED_GRID_RADIUS_CELLS)) {
-      brooklynTiles.set(key, { ...point, label: seed.label });
+      brooklynTiles.set(key, { ...point, labels: [seed.label] });
     }
   }
   addAll(brooklynTiles);
@@ -2464,27 +2604,77 @@ async function rebuildStreetTileRoster() {
   addAll(await promotedStreetTilesFromCleanups());
 
   let added = 0;
+  let relabeled = 0;
   let total = 0;
   await db.runTransaction(async (tx) => {
     const snap = await tx.get(PRECACHE_ROSTER_DOC);
     const existing = snap.exists ? snap.data() : null;
     const tiles = Array.isArray(existing && existing.tiles) ? existing.tiles.slice() : [];
-    const seen = new Set(tiles.map((t) => t.key));
     added = 0;
+    relabeled = 0;
+
+    // Pass 1 — enrich labels on tiles ALREADY in the roster, in place.
+    //
+    // This is a metadata-only update: a tile's POSITION in the array never
+    // changes, so the append-only invariant this roster is built on ("position
+    // N means the same tile across rebuilds") still holds exactly. It has to
+    // happen, because every tile written before 2026-09-09 carries the single
+    // first-writer-wins `label` — without this pass the grouped drip would run
+    // on the old, wrong groups until each tile happened to be re-derived, which
+    // for an append-only roster is never. The original `label` field is left
+    // untouched for backward compatibility; `labels` is the field the drip reads.
+    const positionByKey = new Map();
+    tiles.forEach((t, i) => { if (t && t.key) positionByKey.set(t.key, i); });
     for (const [key, point] of candidates) {
-      if (seen.has(key)) continue;
-      seen.add(key);
-      tiles.push({ key, lat: point.lat, lon: point.lon, ...(point.label ? { label: point.label } : {}) });
+      const at = positionByKey.get(key);
+      if (at === undefined) continue;
+      const tile = tiles[at];
+      const current = Array.isArray(tile.labels)
+        ? tile.labels.slice()
+        : tile.label ? [tile.label] : [];
+      let changed = !Array.isArray(tile.labels);
+      for (const l of point.labels) if (!current.includes(l)) { current.push(l); changed = true; }
+      if (changed) {
+        tiles[at] = { ...tile, labels: current };
+        relabeled++;
+      }
+    }
+
+    // Pass 2 — genuinely new tiles, appended at the END as before.
+    for (const [key, point] of candidates) {
+      if (positionByKey.has(key)) continue;
+      positionByKey.set(key, tiles.length);
+      tiles.push({
+        key,
+        lat: point.lat,
+        lon: point.lon,
+        ...(point.labels.length ? { label: point.labels[0], labels: point.labels } : {}),
+      });
       added++;
     }
+
     const cursor = existing && Number.isFinite(existing.cursor) ? existing.cursor : 0;
     total = tiles.length;
-    tx.set(PRECACHE_ROSTER_DOC, { tiles, cursor, updatedAt: Date.now() });
+    // `cursor` is preserved but no longer read by the drip — see
+    // runPrecacheDripBatch's groupKey/groupCursor state. Kept rather than
+    // deleted so a rollback of that function still finds a sane value.
+    //
+    // { merge: true } is NOT cosmetic: this write used to be a full set(),
+    // which would delete every field it doesn't name — including the drip's
+    // new groupKey/groupCursor/groupRuns. That would have reset the drip to
+    // the top of the priority list every Monday morning, quietly restarting
+    // whichever neighborhood was half-finished. Merging replaces `tiles`
+    // wholesale (Firestore does not merge INTO an array) while leaving the
+    // drip's own progress fields alone.
+    tx.set(PRECACHE_ROSTER_DOC, { tiles, cursor, updatedAt: Date.now() }, { merge: true });
   });
 
-  const summary = { total, added, generatedAt: Date.now() };
+  const summary = { total, added, relabeled, generatedAt: Date.now() };
   await db.collection('precache_status').doc('roster').set(summary);
-  console.log(`precache: roster rebuilt — ${total} total tiles (${added} new this run)`);
+  console.log(
+    `precache: roster rebuilt — ${total} total tiles ` +
+    `(${added} new this run, ${relabeled} relabeled in place)`
+  );
   return summary;
 }
 
@@ -2510,7 +2700,35 @@ async function rebuildStreetTileRoster() {
  *  that file's own comment. A failure
  *  on one tile never blocks the rest of its batch or advancing the cursor —
  *  a permanently-failing tile (e.g. one that's mostly open water) would
- *  otherwise stall the whole roster behind it forever. */
+ *  otherwise stall the whole roster behind it forever.
+ *
+ *  REWRITTEN 2026-09-09 (Jake-approved) — WHAT THE BATCH IS CHOSEN FROM
+ *  CHANGED; the rate did not.
+ *
+ *  The description above still holds for pacing (8 tiles / 4 hours, unchanged),
+ *  but "the next 8 tiles in roster order" was buying nothing. The client's
+ *  ring check (getPrecachedSegmentsForRing, src/services/streetSegments.ts) is
+ *  all-or-nothing: one missing, stale, empty or over-MAX_RING_PRECACHE_CELLS
+ *  cell and the whole neighborhood falls through to a ~20s live Overpass fetch.
+ *  A flat cursor advances in roster order, so mid-cycle most neighborhoods sit
+ *  at most-but-not-all cells warm — which that check scores as a plain MISS.
+ *  Partial progress bought ZERO speed. Two changes:
+ *
+ *   1. Batches are now filled one NEIGHBORHOOD at a time (shared/
+ *      precacheGroups.js groups the roster by label without reordering it), so
+ *      a neighborhood's full cell set completes before the drip moves on and
+ *      each unit of work actually flips something from slow to fast.
+ *   2. Groups are ordered by real usage: Jake's own area (Fort Greene and the
+ *      brownstone-Brooklyn ring), then Astoria (Litter Legion, Astoria Trash
+ *      Club), then Jackson Heights (JHBG) — see PRECACHE_PRIORITY_LABELS.
+ *
+ *  And a tile still inside PRECACHE_TILE_REFRESH_AFTER_MS is skipped rather
+ *  than re-fetched, which is what pays for the above at the same call rate.
+ *
+ *  Resume state moved with it: `cursor` (an index into `tiles`) is retired in
+ *  place, and the drip now persists `groupKey` / `groupCursor` / `groupRuns`.
+ *  No reorder of the stored array and no cursor migration — see the
+ *  append-only note on rebuildStreetTileRoster, which still holds exactly. */
 async function runPrecacheDripBatch() {
   const snap = await PRECACHE_ROSTER_DOC.get();
   const roster = snap.exists ? snap.data() : null;
@@ -2520,11 +2738,82 @@ async function runPrecacheDripBatch() {
     return { attempted: 0, ok: 0, failed: 0, rosterSize: 0 };
   }
 
-  const rawCursor = Number.isFinite(roster.cursor) ? roster.cursor : 0;
-  const cursor = ((rawCursor % tiles.length) + tiles.length) % tiles.length;
   const batchSize = Math.min(PRECACHE_DRIP_BATCH_SIZE, tiles.length);
+
+  // Group the roster by neighborhood, priority groups first. The stored tiles
+  // array is NOT reordered — see shared/precacheGroups.js.
+  const groups = buildDripGroups(tiles);
+  const unmatchedPriority = missingPriorityLabels(groups, PRECACHE_PRIORITY_LABELS);
+  if (unmatchedPriority.length) {
+    console.warn(
+      `precache drip: ${unmatchedPriority.length} priority label(s) matched no group in the ` +
+      `roster and are having no effect: ${unmatchedPriority.join(', ')}`
+    );
+  }
+
+  const startIndex = resolveGroupIndex(groups, roster);
+  const priorRuns = Number.isFinite(roster.groupRuns) ? roster.groupRuns : 0;
+  const now = Date.now();
+
+  // Walk groups from the resume point, filling the batch with only the tiles
+  // that actually need warming. The batch does not move on from a group while
+  // that group still has cold tiles it couldn't fit — that is the whole change:
+  // a neighborhood's cell set completes, and the client's all-or-nothing ring
+  // check flips it from a ~20s Overpass fetch to Firestore reads, instead of
+  // progress being spread thinly across the roster where it buys nothing.
   const batch = [];
-  for (let i = 0; i < batchSize; i++) batch.push(tiles[(cursor + i) % tiles.length]);
+  const inBatch = new Set();
+  const visited = []; // { index, key, label, size, warm, staleKeys, takenKeys, emptyKeys }
+  let skippedFresh = 0;
+  const emptyTileKeys = [];
+
+  const maxGroups = Math.min(PRECACHE_MAX_GROUPS_PER_RUN, groups.length);
+  for (let step = 0; step < maxGroups && batch.length < batchSize; step++) {
+    const index = (startIndex + step) % groups.length;
+    const group = groups[index];
+    const groupTiles = group.indexes
+      .map((i) => tiles[i])
+      .filter((t) => t && t.key && Number.isFinite(t.lat) && Number.isFinite(t.lon));
+
+    const freshness = await readTileFreshness(groupTiles.map((t) => t.key));
+    const stale = [];
+    const emptyKeys = [];
+    for (const t of groupTiles) {
+      const info = freshness.get(t.key);
+      if (info && info.refreshedAt && now - info.refreshedAt < PRECACHE_TILE_REFRESH_AFTER_MS) {
+        skippedFresh++;
+        // Reported, NOT re-fetched. A tile whose last successful fetch found
+        // zero streets (open water, a park interior, a cemetery) is warm by
+        // every measure this job has, but the client's ring check treats an
+        // empty segments array as a MISS — so a neighborhood containing one can
+        // never hit precache no matter how completely the drip warms it.
+        // Re-fetching it every four hours would just burn Overpass calls to
+        // re-learn the same emptiness, so it is surfaced in
+        // precache_status/drip for a deliberate decision instead.
+        if (info.segmentCount === 0 && !emptyTileKeys.includes(t.key)) emptyKeys.push(t.key);
+        continue;
+      }
+      stale.push(t);
+    }
+
+    // A cell shared with a neighborhood already served this run (bboxes overlap
+    // constantly) is already scheduled — don't book it twice against the batch.
+    const room = batchSize - batch.length;
+    const taken = stale.filter((t) => !inBatch.has(t.key)).slice(0, room);
+    for (const t of taken) { batch.push(t); inBatch.add(t.key); }
+    for (const k of emptyKeys) emptyTileKeys.push(k);
+
+    visited.push({
+      index,
+      key: group.key,
+      label: group.label,
+      size: groupTiles.length,
+      warm: groupTiles.length - stale.length,
+      staleKeys: stale.map((t) => t.key),
+      takenKeys: taken.map((t) => t.key),
+      emptyKeys,
+    });
+  }
 
   async function attemptBatch(entries) {
     const failed = [];
@@ -2549,23 +2838,61 @@ async function runPrecacheDripBatch() {
     failed = await attemptBatch(failed);
   }
 
-  // Advance the cursor inside a transaction, re-reading the roster's
-  // current length at write time rather than trusting the `tiles.length`
-  // read at the top of this function — a concurrent weekly rebuild could
-  // have appended tiles mid-batch, and computing `% tiles.length` against a
-  // stale length could land the cursor on a since-shifted index. Firestore
-  // retries this transaction automatically if the doc changed since the
-  // read (the same guarantee rebuildStreetTileRoster's transaction relies
-  // on), so this and a concurrent rebuild can't silently clobber each
-  // other's write.
-  let nextCursor = cursor;
-  await db.runTransaction(async (tx) => {
-    const freshSnap = await tx.get(PRECACHE_ROSTER_DOC);
-    const freshData = freshSnap.exists ? freshSnap.data() : null;
-    const freshLen = Array.isArray(freshData && freshData.tiles) ? freshData.tiles.length : tiles.length;
-    nextCursor = freshLen ? (cursor + batch.length) % freshLen : 0;
-    tx.update(PRECACHE_ROSTER_DOC, { cursor: nextCursor });
-  });
+  // Where the next run resumes: the FIRST group examined this run that still
+  // has a cold tile once this batch's outcome is known. Deciding this after
+  // the fetches rather than before them is what keeps a failed tile from
+  // silently costing its neighborhood a whole extra cycle — a group is only
+  // left behind when every one of its cells is genuinely warm.
+  const failedKeys = new Set(failed.map((t) => t.key));
+  const warmedKeys = new Set(batch.filter((t) => !failedKeys.has(t.key)).map((t) => t.key));
+  const stillCold = (v) => v.staleKeys.filter((k) => !warmedKeys.has(k));
+
+  let resumeIndex = null;
+  for (const v of visited) {
+    if (stillCold(v).length) { resumeIndex = v.index; break; }
+  }
+  if (resumeIndex === null) {
+    resumeIndex = visited.length
+      ? (visited[visited.length - 1].index + 1) % groups.length
+      : startIndex;
+  }
+
+  const first = visited[0];
+  const stayedPut = Boolean(first) && first.index === startIndex && resumeIndex === startIndex;
+  let groupRuns = stayedPut ? priorRuns + 1 : 0;
+  let stalledGroup = null;
+  if (stayedPut) {
+    const allowedRuns = Math.ceil(first.size / batchSize) + PRECACHE_GROUP_STALL_RUNS_MARGIN;
+    if (groupRuns >= allowedRuns) {
+      // See PRECACHE_GROUP_STALL_RUNS_MARGIN — a tile that can never succeed
+      // must not pin the drip to one neighborhood forever.
+      stalledGroup = {
+        label: first.label,
+        size: first.size,
+        cold: stillCold(first).length,
+        runs: groupRuns,
+        coldKeys: stillCold(first).slice(0, 10),
+      };
+      resumeIndex = (startIndex + 1) % groups.length;
+      groupRuns = 0;
+      console.warn(
+        `precache drip: giving up on "${first.label}" after ${stalledGroup.runs} runs — ` +
+        `${stalledGroup.cold} of ${first.size} cells still cold (${stalledGroup.coldKeys.join(', ')})`
+      );
+    }
+  }
+
+  // No transaction needed anymore. The old flat cursor was an index into
+  // `tiles`, so it had to be recomputed against the array's length at write
+  // time or a concurrent weekly rebuild could land it on a shifted tile. The
+  // resume point is now a group LABEL (`groupKey`), which a rebuild can only
+  // ever append after — resolveGroupIndex() re-finds it by name — so a plain
+  // field-level merge is both sufficient and cheaper. `tiles` and the legacy
+  // `cursor` are untouched by this write.
+  await PRECACHE_ROSTER_DOC.set(
+    { groupCursor: resumeIndex, groupKey: groups[resumeIndex].key, groupRuns },
+    { merge: true }
+  );
 
   const result = {
     attempted: batch.length,
@@ -2573,14 +2900,45 @@ async function runPrecacheDripBatch() {
     failed: failed.length,
     failedKeys: failed.map((t) => t.key),
     rosterSize: tiles.length,
-    cursorBefore: cursor,
-    cursorAfter: nextCursor,
+    groupsTotal: groups.length,
+    // Tiles skipped because their cached copy is still inside
+    // PRECACHE_TILE_REFRESH_AFTER_MS — Overpass calls this run did NOT spend.
+    skippedFresh,
+    // Warm, but zero streets, so the client's ring check still counts them as a
+    // miss. Any neighborhood in `groupsExamined` containing one of these can
+    // never go fast until that client-side rule changes.
+    emptyTileKeys: emptyTileKeys.slice(0, 25),
+    groupsExamined: visited.map((v) => ({
+      label: v.label,
+      size: v.size,
+      warm: v.warm,
+      warming: v.takenKeys.length,
+      cold: stillCold(v).length,
+    })),
+    // Two different things, kept separate on purpose: which examined groups are
+    // fully warm right now, versus which ones THIS run's 8 tiles finished off.
+    // The second is the one that means "a neighborhood just went from ~20s to
+    // instant"; the first will keep listing already-warm neighbors as the drip
+    // walks past them.
+    groupsComplete: visited.filter((v) => !stillCold(v).length).map((v) => v.label),
+    completedThisRun: visited
+      .filter((v) => v.takenKeys.length && !stillCold(v).length)
+      .map((v) => v.label),
+    groupBefore: groups[startIndex].label,
+    groupAfter: groups[resumeIndex].label,
+    groupCursorBefore: startIndex,
+    groupCursorAfter: resumeIndex,
+    groupRuns,
+    ...(stalledGroup ? { stalledGroup } : {}),
+    ...(unmatchedPriority.length ? { unmatchedPriorityLabels: unmatchedPriority } : {}),
     generatedAt: Date.now(),
   };
   await db.collection('precache_status').doc('drip').set(result);
   console.log(
-    `precache drip: refreshed ${result.ok}/${result.attempted} tiles ` +
-    `(roster ${tiles.length}, cursor ${cursor} -> ${nextCursor})`
+    `precache drip: refreshed ${result.ok}/${result.attempted} tiles, ` +
+    `${skippedFresh} already fresh (roster ${tiles.length}, ` +
+    `group "${result.groupBefore}" -> "${result.groupAfter}", ` +
+    `completed this run: ${result.completedThisRun.join(', ') || 'none'})`
   );
   return result;
 }

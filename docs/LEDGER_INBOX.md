@@ -497,3 +497,50 @@ the ledger's actual structure, not paste it verbatim.
   **Method note:** all three were verified by reproducing real MapLibre 4.7.1 with the actual CSS in
   a browser and reading `getBoundingClientRect()`, plus pixel-measuring Jake's own screenshots
   (1170x2532 = 390x844pt @3x). Arithmetic alone was wrong twice; measurement caught it both times.
+
+- 2026-09-09 — **NYC precache drip reworked to complete one neighborhood at a time, priority-ordered
+  by real usage. Implemented, NOT deployed** (Jake's explicit instruction — he triggers the deploy).
+  Functions-only change: `firebase deploy --only functions`, no OTA, no EAS build, no client change.
+  Files: `apps/companion/functions/index.js`, new `apps/companion/functions/shared/precacheGroups.js`.
+  - **Change 1 (grouped drip).** `runPrecacheDripBatch` now fills its batch one neighborhood group at
+    a time and refuses to move on while that group still has cold cells, instead of walking the flat
+    1,226-tile roster in order. The stored `tiles` array is **not reordered** and there is **no cursor
+    migration** — the append-only invariant ("position N is the same tile across rebuilds") is
+    untouched; only the batch *selection strategy* changed. Resume state moved from the flat `cursor`
+    to `groupKey`/`groupCursor`/`groupRuns`, resolved by label first so a roster rebuild or a future
+    priority-list edit can't silently restart a half-finished neighborhood. The legacy `cursor` field
+    is preserved but no longer read or written.
+  - **Change 2 (priority).** `PRECACHE_PRIORITY_LABELS`: Fort Greene and the brownstone-Brooklyn ring
+    first, then Astoria (Litter Legion, Astoria Trash Club), then Jackson Heights (JHBG), then
+    everything else in the roster's own append-only order.
+  - **Overpass budget: rate unchanged (8 tiles / 4h), and the drip now stops re-warming fresh tiles.**
+    `refreshStreetTile` had no freshness check of any kind — it re-fetched unconditionally, so since
+    the 2026-09-08 seed-offset repair reset the cursor 40 -> 0 the drip has been spending its entire
+    budget re-fetching already-warm Brooklyn. Tiles inside `PRECACHE_TILE_REFRESH_AFTER_MS` (30 days,
+    against the client's 52-day ceiling) are now skipped. That reclaimed budget — not a rate increase
+    — is what pays for the priority warm-up. The 8/4h ceiling is deliberately left alone.
+  - **A real bug found and fixed along the way, which the whole change depended on.**
+    `deriveNycNeighborhoodTiles` assigned each grid cell the label of the FIRST neighborhood whose
+    bbox covered it and dropped the rest. Measured against the live GeoJSON: **0 of Jackson Heights'
+    18 bbox cells carried the label "Jackson Heights"** (they were filed under Elmhurst 3, Corona 6,
+    East Elmhurst 4, Astoria 2, Ditmars Steinway 1, College Point 2); Fort Greene 0 of 9, Clinton
+    Hill 0 of 9. Grouping the drip by that label would have "completed" a neighborhood with several
+    of the cells the client's ring check actually asks for still cold — it would have looked fixed
+    and changed nothing. Tiles now carry a `labels` array (union of every neighborhood covering
+    them), and the weekly rebuild enriches `labels` on existing tiles **in place**, without moving
+    any tile. Roster doc grows ~74KB -> ~178KB, well under Firestore's 1MiB.
+  - **Second latent bug fixed:** the weekly rebuild's `tx.set(...)` had no `{merge:true}`, so it
+    would have deleted the drip's new group-progress fields every Monday, restarting whichever
+    neighborhood was half-finished.
+  - **Simulated against a roster rebuilt from the real 312-feature GeoJSON** (offline; production
+    Firestore not touched): Astoria fully ring-ready at run 3 vs run 19 today, Jackson Heights at
+    run 5 (~0.8 day) vs run 103 (~17 days), and neighborhoods ring-ready within one week go 35 -> 72.
+    Holds with a 10% simulated tile-failure rate (run 4 / run 6).
+  - **Two things flagged, not silently fixed.** (1) A tile whose fetch legitimately finds zero
+    streets (water, park interior, cemetery) is warm to the drip but a MISS to the client, which
+    rejects an empty `segments` array — so one such cell permanently blocks its whole neighborhood.
+    Now reported as `emptyTileKeys` in `precache_status/drip` rather than re-fetched every 4 hours.
+    (2) 21 of 268 NYC neighborhoods have more than `MAX_RING_PRECACHE_CELLS` (25) bbox cells and can
+    never hit the ring cache however completely they're warmed (Sunset Park 30, Williamsburg 24 is
+    just under). All three priority areas are safely under: Fort Greene 9, Jackson Heights 18,
+    Astoria 20.
