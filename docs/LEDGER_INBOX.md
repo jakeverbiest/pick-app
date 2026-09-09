@@ -325,3 +325,32 @@ the ledger's actual structure, not paste it verbatim.
   the disclosure edits landed 08:09-08:10, ~27 minutes later. Had the publish come after, it would
   have shipped an unfinished legal surface. `eas update` ships the working tree — a live session
   and a hand-run publish in the same tree is the collision, and nothing currently prevents it.
+
+- **2026-09-09 — `count_confirmed` was shipping into a field the export could not read; fixed and
+  deployed.** `01fa737` ("Record why a session mode is unresolved, and whether the count was
+  looked at") landed in the 07:42 OTA and writes `count_confirmed` on every save. But
+  `detectorExport.js`'s `ALLOWED_TOP_LEVEL_FIELDS` is exhaustive — it drives the Firestore
+  `select()` projection, so an unlisted field is never read at all — and it did not list it. The
+  instrumentation was accumulating where the analysis tool could not see it. Added to the
+  allowlist and to `buildTelemetryRow`, deployed via
+  `firebase deploy --only functions:exportDetectorTelemetry`.
+
+  **Three states, not two, and this is the part worth not losing:** `true` = the correction panel
+  was opened, so `items_count` is a human judgement; `false` = it was not, so `items_count` is
+  `items_detected` under another name; `null` = the walk predates the instrumentation and nothing
+  is known. **Never default null to false** — that relabels every historical walk as "unchecked"
+  when it is genuinely unknown. Verified against all three plus a non-boolean junk value (also
+  falls to null rather than coercing truthy).
+
+  **This retires, in the right way, the recurring "six consecutive walks saved uncorrected" item.**
+  The fix that actually shipped is NOT the forced confirmation an earlier session in this thread
+  recommended: `map.tsx:127-141` records a deliberate product decision against it — *"Deliberately
+  NOT a forced confirmation step: correcting is a face-saver we would rather nobody needed, so the
+  goal is to record whether the number was seen, not to make people touch it."* The shipped
+  approach is a visible affordance plus this boolean. Any future session proposing to force the
+  step should read that comment first.
+
+  **Still not exported, and needs a decision before it can be:** `session_mode` and the new
+  unresolved-reason field from the same commit. Both are collected. Putting either in the export
+  requires a line in the signup disclosure sheet and a `DETECTOR_DISCLOSURE_VERSION` bump — the
+  sheet currently omits `session_mode` deliberately, with a code comment saying exactly this.
