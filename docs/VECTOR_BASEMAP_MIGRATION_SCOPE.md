@@ -216,3 +216,30 @@ still render with the overlay present.
   Both are WebKit and this is strong evidence, but it is not the same process. Worth one check
   during step 1 rather than a separate spike.
 - Performance with thousands of segments, which is the actual claim in §4.1. The spike drew two.
+
+## 5b. On-device verification status — 2026-09-08 (build 8394)
+
+Three maps shipped in update group `d9c82d25`. Verified by Jake on device:
+
+| map | result |
+|---|---|
+| Boundary drawer (`challenge/new`) | ✅ **PASS.** Taps drop vertices under the finger, shape fills in, undo works. This was the port with real failure modes — click handling, live `setData`, and the lat/lon flip — so it is the strongest signal that the coordinate conversion is right across all four maps. |
+| `AreaPreview` | ✅ **PASS.** Navy outline, green fill, street names behind it. |
+| `ImpactMap` | ⚠️ **UNVERIFIED.** Its surfaces were hard to reach (see below); Jake reported "I think it's right", which is not a confirmation of the thing at risk. |
+
+**What remains unverified, precisely:** whether `react-native-view-shot` can capture a WebGL
+canvas inside a WKWebView. Rendering is not in doubt — the spike proved WebGL works in iOS WebKit
+and the component draws correctly in a browser. The failure mode is narrower and only visible in
+the *generated image*: map fine on screen, blank in the shared card. Reproduce by creating and
+sharing an impact post (`ImpactComposer.tsx:141` wraps `ImpactMap` in `<ViewShot>`), then looking
+at the exported image rather than the preview.
+
+**Why this is an acceptable risk to carry forward:** it is isolated to one file, the failure is
+obvious rather than silent, and reverting `ImpactMap.tsx` alone restores the previous behavior
+without touching the other ports.
+
+**Also learned — two surfaces are unreachable, and neither is a basemap bug.** Challenges are
+listed with `end_date >= now` (`challenges.ts:365`), deliberately, because the stored `status`
+field is written once at creation and never updated; all six existing challenges have ended, so
+none appear. The walk recap auto-surfaces once and is not browsable afterwards. Test instructions
+that rely on either surface will fail for reasons unrelated to whatever is being tested.
