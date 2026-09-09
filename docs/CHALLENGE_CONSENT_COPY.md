@@ -98,3 +98,84 @@ Unchecked by default. Blocks step 5 until decided.
    more photos and is defensible given the person is already posting to a shared event — but it
    is the kind of default that reads badly in exactly the situation where it matters.
    **Recommendation: keep it unchecked.**
+
+---
+
+# DECIDED 2026-09-08 — revised copy below supersedes the drafts above
+
+| # | question | decision |
+|---|---|---|
+| 1 | Dialog or inline on the join button | **Confirmation dialog.** One tap, once per event. |
+| 2 | Does leaving remove already-logged pickups | **No — past work stays counted.** Leaving stops future contribution only. |
+| 3 | Photo opt-in default | **Unchecked.** Per photo, on top of event membership. |
+
+## ⚠️ Decision 2 changes the copy, and makes precision load-bearing
+
+The earlier drafts leaned on *"You can leave any time"* as the reassurance that balances the
+disclosure. **That reassurance is now narrower than it sounds.** Leaving stops future walks from
+counting; it does not remove work already logged. Someone who joins, walks, then leaves has
+contributed permanently to that event's public totals.
+
+That is a defensible position — a contribution to a group total is not obviously un-makeable, and
+it keeps an organizer's shared numbers from silently revising downward after they have shown them
+to a funder. **But it means the copy must not imply otherwise.** Saying "leave any time" next to
+a consent disclosure invites exactly the wrong inference: that leaving undoes it.
+
+So the consent sentence has to carry the full, accurate shape: **this is a decision made once, at
+join, and it sticks for the walks you log.**
+
+## Draft A (revised) — explicit join
+
+> **Join "{challenge name}"?**
+>
+> Pickups you log during this event become part of the group's impact map, which the organizer
+> can share publicly. This applies to walks you log from now on — you can leave the event any
+> time to stop contributing.
+>
+> Your walking routes are never shared.
+>
+> [ Not now ]  [ Join ]
+
+Changes from the original draft: *"Pickups you log"* rather than "Your pickups" (scopes it to
+walks, not to the person); the leaving clause now says what leaving actually does — **stops
+contributing**, not undoes.
+
+## Draft B (revised) — deep-link auto-join
+
+Replaces the current "You're in" alert (`app/challenge/[id].tsx:133`). This is the **only** moment
+an invited participant sees anything, so it carries the same facts, not a shortened version.
+
+> **You've joined "{challenge name}"**
+>
+> Pickups you log during this event become part of the group's impact map, which the organizer
+> can share publicly. Your walking routes are never shared.
+>
+> Leave any time to stop contributing — walks already logged stay in the group's total.
+>
+> [ Leave ]  [ Got it ]
+
+The last line is the one that would be tempting to cut for length. **Don't.** On this path the
+person was joined without asking, so the one thing they must not be misled about is what leaving
+does. Two buttons, with Leave present, for the reason already in the code: *"silently opting
+someone in needs an equally obvious way to opt back out."*
+
+## Draft C (revised) — photos, per photo
+
+Unchecked by default, at the point of adding a photo to a challenge post.
+
+> ☐ **Add this photo to {challenge name}'s impact map**
+>   Anyone with the organizer's share link can see it. You can remove it later.
+
+*"You can remove it later"* is included here and deliberately **not** in A/B, because for a photo
+it is true and straightforward — removing the post removes it from the strip. Pickup totals are
+the case where withdrawal does not work, and the copy should not blur the two.
+
+## Implementation notes
+
+- Draft A goes in `toggleJoin` (`app/challenge/[id].tsx:143`) as a confirm before
+  `joinChallenge`, not after.
+- Draft B replaces the `Alert.alert("You're in", …)` at line 133.
+- Draft C blocks step 5 (photo strip) and should ship with it, not before.
+- **All three are prerequisites for minting any real share token** (§11.10). Steps 1-4 are built
+  and deployed and are waiting on this.
+- These are JS-only changes to existing screens — OTA, no native build.
