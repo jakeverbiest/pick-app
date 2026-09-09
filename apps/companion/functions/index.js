@@ -2443,8 +2443,13 @@ async function refreshStreetTile(key, lat, lon) {
   // enforceCooldown doc comment; 2026-09-05 reconciliation).
   const segments = await fetchStreetGeometry(lat, lon, { enforceCooldown: true });
   const stored = segments.map((s) => ({ ...s, coords: flattenCoordPairs(s.coords) }));
+  const epoch = await currentPrecacheEpoch();
   await db.collection(PRECACHE_STREETS_COLLECTION).doc(key).set({
     segments: stored,
+    // Stamp of the invalidation epoch this tile was built under — see
+    // currentPrecacheEpoch. The client rejects anything below the server's
+    // current value.
+    epoch,
     // Denormalized so the drip's freshness scan can project just these two
     // fields (`.select('refreshedAt', 'segmentCount')`) instead of pulling the
     // whole segments array — tens of KB per tile — every four hours purely to
@@ -2628,7 +2633,55 @@ const PRECACHE_DRIP_BATCH_SIZE = 8;
 // Deliberately NOT paired with a rate increase: the 8-tiles/4h ceiling comes
 // from real 429s observed 2026-09-03 and the ledger records it as an inference
 // from one data point, not a verified-safe ceiling.
-const PRECACHE_TILE_REFRESH_AFTER_MS = 30 * 24 * 60 * 60 * 1000;
+// RAISED 30d -> 300d on 2026-09-09, backed by measurement rather than feel.
+// Sampling the app's own sidewalk/road queries across Fort Greene, Sunset Park
+// and Astoria (4,833 ways) found 1.82% of ways edited within 30 days — and of
+// 30 recently-edited ways sampled against their OSM version history, 26 were
+// TAG-only. chopWaysIntoSegments reads only way.geometry, so those refetch to
+// byte-identical documents: roughly 0.24% of ways per 30 days actually change
+// what we store. The old cadence spent ~85% of the Overpass budget re-fetching
+// identical data.
+//
+// 300d against the client's 400d staleness window leaves ~100 days of slack.
+// Only safe BECAUSE of the epoch below: a long TTL raises the cost of shipping
+// bad geometry, so there has to be a way to invalidate that isn't "wait it out
+// or ship an OTA".
+const PRECACHE_TILE_REFRESH_AFTER_MS = 300 * 24 * 60 * 60 * 1000;
+
+// ---------------------------------------------------------------------------
+// Precache invalidation epoch.
+//
+// Lives in precache_status because that collection is ALREADY public-read in
+// firestore.rules; precache_meta is admin-only, so putting it there would need
+// a rules change for no benefit. Every street tile is stamped with the epoch
+// current when it was written, and the client rejects any tile stamped below
+// the server's value. Bumping this one number invalidates every cached tile at
+// once, with no OTA and without waiting out a TTL.
+//
+// Absent doc == epoch 0, and tiles written before this existed have no `epoch`
+// field, also read as 0 — so shipping this changes nothing until it is bumped.
+// ---------------------------------------------------------------------------
+const PRECACHE_EPOCH_DOC = () => db.collection('precache_status').doc('epoch');
+const PRECACHE_EPOCH_TTL_MS = 5 * 60 * 1000;
+let _precacheEpoch = null;
+let _precacheEpochAt = 0;
+
+async function currentPrecacheEpoch() {
+  const now = Date.now();
+  if (_precacheEpoch !== null && now - _precacheEpochAt < PRECACHE_EPOCH_TTL_MS) return _precacheEpoch;
+  try {
+    const snap = await PRECACHE_EPOCH_DOC().get();
+    const v = snap.exists ? Number(snap.data().value) : 0;
+    _precacheEpoch = Number.isFinite(v) ? v : 0;
+    _precacheEpochAt = now;
+  } catch (e) {
+    // Fail closed to 0 rather than throwing: a transient read failure must not
+    // stop a refresh run, and 0 is the value that invalidates nothing.
+    if (_precacheEpoch === null) _precacheEpoch = 0;
+    console.warn(`precache epoch read failed: ${e && e.message}`);
+  }
+  return _precacheEpoch;
+}
 
 // How many neighborhood groups one run may look at. Only matters once the
 // roster is broadly warm, when a run walks past complete groups without

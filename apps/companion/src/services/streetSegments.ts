@@ -126,7 +126,58 @@ const PRECACHE_STREETS_COLLECTION = 'precache_streets';
 // "rarely changes" (this file's own prior framing), but a real, deliberate
 // widening, not a no-op number bump, and a direct consequence of choosing
 // slower/more-compliant Overpass pacing over faster/looser pacing.
-const PRECACHE_STALENESS_MS = 52 * 24 * 60 * 60 * 1000;
+// RAISED 52d -> 400d on 2026-09-09. The server refreshes at 300d (see
+// PRECACHE_TILE_REFRESH_AFTER_MS), so this leaves ~100 days of slack before a
+// tile the drip hasn't reached yet gets rejected and drops its whole
+// neighborhood to a live ~20s Overpass fetch.
+//
+// Justified by measurement, not by feel: across 4,833 real ways in Fort
+// Greene, Sunset Park and Astoria, 1.82% were edited within 30 days, and 26 of
+// 30 sampled edits were TAG-only — invisible to the geometry we store. The
+// effective change rate is ~0.24% per 30 days. The old 52d window meant ~85%
+// of Overpass capacity went on refetching identical data.
+//
+// Safe only because of PRECACHE_EPOCH below: with a window this long, bad
+// geometry would otherwise persist for over a year with no way to recall it.
+const PRECACHE_STALENESS_MS = 400 * 24 * 60 * 60 * 1000;
+
+// ---------------------------------------------------------------------------
+// Precache invalidation epoch (client half).
+//
+// Read from precache_status/epoch, which firestore.rules already exposes
+// public-read. A tile stamped below the server's epoch is treated as invalid
+// however fresh it is, so one server-side number can recall every cached tile
+// without an OTA and without waiting out the 400-day window.
+//
+// Fails OPEN in every direction: a missing doc, an unreadable doc or a tile
+// with no `epoch` field all resolve to 0, which invalidates nothing. Shipping
+// this changes no behaviour until someone bumps the server value.
+// ---------------------------------------------------------------------------
+const PRECACHE_EPOCH_TTL_MS = 5 * 60 * 1000;
+let precacheEpochValue: number | null = null;
+let precacheEpochAt = 0;
+
+async function currentPrecacheEpoch(): Promise<number> {
+  const now = Date.now();
+  if (precacheEpochValue !== null && now - precacheEpochAt < PRECACHE_EPOCH_TTL_MS) {
+    return precacheEpochValue;
+  }
+  try {
+    const snap = await getDoc(doc(db, 'precache_status', 'epoch'));
+    const v = snap.exists() ? Number((snap.data() as any)?.value) : 0;
+    precacheEpochValue = Number.isFinite(v) ? v : 0;
+    precacheEpochAt = now;
+  } catch {
+    if (precacheEpochValue === null) precacheEpochValue = 0;
+  }
+  return precacheEpochValue;
+}
+
+/** True when a precache doc predates the current invalidation epoch. */
+function precacheEpochRejects(data: any, epoch: number): boolean {
+  const stamped = typeof data?.epoch === 'number' ? data.epoch : 0;
+  return stamped < epoch;
+}
 // A ring's bbox can span multiple 0.01° grid cells (see
 // getPrecachedSegmentsForRing below). The seed list writes a bounded 3x3
 // block (9 cells) per neighborhood (functions/index.js's
@@ -455,6 +506,7 @@ async function getPrecachedStreetSegments(lat: number, lon: number): Promise<Str
     const data = snap.data() as any;
     const refreshedAt = typeof data?.refreshedAt === 'number' ? data.refreshedAt : 0;
     if (Date.now() - refreshedAt > PRECACHE_STALENESS_MS) return null;
+    if (precacheEpochRejects(data, await currentPrecacheEpoch())) return null;
     const segments = data?.segments;
     if (!Array.isArray(segments) || segments.length === 0) return null;
     // Firestore rejects nested arrays, so the Cloud Function stores `coords`
@@ -535,11 +587,13 @@ async function getPrecachedSegmentsForRing(ring: [number, number][]): Promise<St
     if (found.size !== cellKeys.length) return null;
 
     const now = Date.now();
+    const epoch = await currentPrecacheEpoch();
     const segById = new Map<string, StreetSegment>();
     for (const key of cellKeys) {
       const data = found.get(key);
       const refreshedAt = typeof data?.refreshedAt === 'number' ? data.refreshedAt : 0;
       if (now - refreshedAt > PRECACHE_STALENESS_MS) return null;
+      if (precacheEpochRejects(data, epoch)) return null;
       const segments = data?.segments;
       if (!Array.isArray(segments) || segments.length === 0) return null;
       for (const s of segments) {
