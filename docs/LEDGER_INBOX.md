@@ -544,3 +544,40 @@ the ledger's actual structure, not paste it verbatim.
     never hit the ring cache however completely they're warmed (Sunset Park 30, Williamsburg 24 is
     just under). All three priority areas are safely under: Fort Greene 9, Jackson Heights 18,
     Astoria 20.
+
+- **2026-09-09 — precache drip neighborhood-ordering DEPLOYED, on Jake's direct "can you deploy for
+  me".** `firebase deploy --only functions:scheduledOverpassPrecacheDrip,scheduledOverpassPrecacheRefresh,runOverpassPrecacheRefresh`
+  — three functions updated clean, deliberately scoped rather than a blanket deploy.
+
+  **Pre-deploy verification done in this session, not taken on trust from the implementing agent:**
+  `node --check` on both files; the new `shared/precacheGroups.js` loaded and exercised directly.
+  Grouping confirmed correct (Fort Greene first, Astoria and Jackson Heights ahead of non-priority,
+  unlisted last) and confirmed to store `indexes` into the tiles array rather than copying tiles —
+  the append-only invariant really is intact. All five `resolveGroupIndex` cases pass, including
+  **label-wins-over-stale-cursor**, which is the one that matters after a Monday rebuild shifts
+  group indexes. One apparent failure during this check turned out to be my own harness passing a
+  string where the function takes a `{groupKey, groupCursor}` state object — noted so it is not
+  re-investigated as a bug.
+
+  **No committed tests.** The agent's 13 unit checks ran in a throwaway harness and were not added
+  to the repo, so they cannot be re-run. The grouping module is now the obvious candidate for the
+  first real test file under `functions/`.
+
+  **Known: first real exercise is the first scheduled run.** The selection loop inside
+  `runPrecacheDripBatch` was mirrored in simulation, not executed — it touches Firestore. Watch
+  `precache_status/drip` on the next 4-hourly run. Healthy: `groupBefore` reads a neighborhood name
+  (expect `"Fort Greene, Brooklyn"`), `skippedFresh` large on early runs (Brooklyn already warm —
+  this is the re-warm waste stopping, and was structurally impossible before since the old code
+  always fetched exactly 8), `attempted` possibly under 8. **Failure signature:**
+  `groupBefore === groupAfter` across several runs with `groupRuns` climbing, then `stalledGroup`
+  appearing. Should stay empty: `stalledGroup`, `emptyTileKeys`, `unmatchedPriorityLabels`,
+  `failedKeys`. End-to-end proof is `completedThisRun` listing `["Astoria"]` (expected ~3 runs)
+  and Astoria then activating instantly instead of ~20s.
+
+  **Two known gaps, flagged not fixed:** (1) a legitimately empty tile (open water, park interior)
+  is warm to the drip but a MISS to the client, which rejects an empty `segments` array — it will
+  permanently block its neighborhood. Fix is a one-line client rule change plus an OTA; not done.
+  (2) 21 of 268 neighborhoods exceed the client's `MAX_RING_PRECACHE_CELLS = 25` and can never hit
+  the ring cache however completely warmed — **Sunset Park (30) is one of the ten
+  `STREET_SEED_POINTS`**, so "precache our way out" is not a plan for those. All three priority
+  areas are safe (Fort Greene 9, Jackson Heights 18, Astoria 20).
