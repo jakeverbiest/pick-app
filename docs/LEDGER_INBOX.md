@@ -739,3 +739,37 @@ the ledger's actual structure, not paste it verbatim.
   loop, and not worth displacing higher-value work. Revisit if the sided share grows, or fold into
   the offline-build work in `STREET_GEOMETRY_DELIVERY_SCOPE.md`, which reuses the chopper unmodified
   and would be the natural place to unify the two decision scopes.
+
+- **2026-09-09 — Phase 0 + Phase 1 of `STREET_GEOMETRY_DELIVERY_SCOPE.md` SHIPPED. The precache
+  sustainability problem is closed for the foreseeable future.** Jake called the drip fix "a
+  band-aid… not a long-term solution" and was right: refresh capacity was ~85% utilised, so
+  adding a city or more users would have pushed tiles past the staleness window and dropped whole
+  neighborhoods back to ~20s opens.
+
+  **The measurement that justified it** (from the scope agent, direction 3): across 4,833 real ways
+  in Fort Greene, Sunset Park and Astoria, only 1.82% were edited within 30 days — and of 30
+  recently-edited ways sampled against OSM version history, **26 of 30 were TAG-only**.
+  `chopWaysIntoSegments` reads only `way.geometry`, so those refetch byte-identical.
+  **Effective change rate ≈ 0.24% per 30 days**; Sunset Park had ZERO geometry-relevant edits.
+  The treadmill was spending ~85% of a rate-limited budget re-fetching identical data.
+  Known undercount: node *moves* don't bump a way's version, so the true rate is somewhat higher.
+
+  **Shipped:** `PRECACHE_TILE_REFRESH_AFTER_MS` 30d → **300d** (functions),
+  `PRECACHE_STALENESS_MS` 52d → **400d** (OTA), ~100 days of slack between them.
+  **~85% capacity utilisation → ~7%, a 14x margin.** Rate untouched at 8 tiles/4h — the 429 ceiling
+  is still an inference from one data point.
+
+  **Phase 0, the precondition — `precache_status/epoch`.** At a 400-day window bad geometry would
+  otherwise persist over a year with only an OTA cache-key bump to recall it. Every tile is now
+  stamped with the epoch it was built under and the client rejects anything below the server's
+  value, so **raising that one number invalidates every cached tile instantly, with no release**.
+  Put in `precache_status` because firestore.rules already exposes it public-read (`precache_meta`
+  is admin-only and would have needed a rules change for nothing). Fails open in every direction —
+  absent doc, unreadable doc, or a tile with no `epoch` field all read as 0. **Seeded at 0, so it
+  shipped as a no-op.**
+
+  **Deliberately NOT done, per Jake's call:** Phases 2-6 (assembly rules, the Geofabrik offline
+  build, retiring the drip, other cities). The offline build remains the right long-term answer,
+  but a 14x margin means it now solves a problem that no longer exists at this scale. Revisit when
+  growth erodes the margin — probably a second city with real users. The scope doc has the number
+  to watch.
