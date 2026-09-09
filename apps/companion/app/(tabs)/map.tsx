@@ -13,7 +13,7 @@ import { itemsToBags, reportedBags, formatBags, formatKitchenBags, BAG_SIZE_OPTI
 import { BagDetails } from '../../src/pick/BagDetails';
 import { getCoverage, markRouteCleaned, getParkCoverage, markParksCleaned, getTileStats, tileId, getCoverageForRing, routeCoverageFraction, nearestStreetSegment, assignRoutePointsToNearestSegment, SNAP_DISTANCE_M, COVERAGE_THRESHOLD, type RenderSegment } from '../../src/services/streetSegments';
 import { saveAdoptedBlock, listMyAdoptions } from '../../src/services/adoptions';
-import { osmNeighborhood, getHoodsInBounds, getOsmHoodsInBounds, hoodLabelsNeeded, hasNeighborhoods, polygonStats, HoodShape, citySlug, isFallbackCityWithNoSubdivision } from '../../src/services/neighborhoods';
+import { osmNeighborhood, getHoodsInBounds, getOsmHoodsInBounds, hoodLabelsNeeded, hasNeighborhoods, polygonStats, HoodShape, citySlug, isFallbackCityWithNoSubdivision, hoodContaining } from '../../src/services/neighborhoods';
 import { getFunctions, httpsCallable } from 'firebase/functions';
 import { app } from '../../src/services/firebaseConfig';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -2025,14 +2025,30 @@ export default function MapScreen() {
       let area = { city: '', neighborhood: '' };
       try {
         const g = (await Location.reverseGeocodeAsync({ latitude: centerLat, longitude: centerLon }))[0];
-        if (g) {
-          const city = resolveCity(g);
-          // Same name resolution as the header: Apple sub-locality → OSM → city,
-          // so a saved walk / community post carries the real neighborhood name.
-          let neighborhood = g.district || '';
-          if (!neighborhood) neighborhood = await osmNeighborhood(centerLat, centerLon);
-          area = { city, neighborhood: neighborhood || city };
-        }
+        const city = g ? resolveCity(g) : '';
+
+        // The CURATED hood list comes first, ahead of Apple and OSM.
+        //
+        // Not a preference — a correctness requirement. Challenge areas, the
+        // neighborhood picker and the level view all label from this same
+        // source, and `cleanupInArea` matches a neighborhood-scoped challenge
+        // by comparing this string to that label. A walk named from any other
+        // source can therefore fail to match its own challenge.
+        //
+        // That is not hypothetical: a 2026-09-09 walk at 40.67832,-73.99518 is
+        // squarely inside Carroll Gardens, but Apple returned no district and
+        // OSM nothing, so the old chain fell through to the CITY and stored
+        // "Brooklyn" — crediting zero to two live Carroll Gardens challenges.
+        let neighborhood = '';
+        try {
+          const fine = await hoodContaining(centerLat, centerLon);
+          if (fine?.name) neighborhood = fine.name;
+        } catch {}
+
+        // Unchanged fallbacks, for anywhere the curated list doesn't cover.
+        if (!neighborhood) neighborhood = (g && g.district) || '';
+        if (!neighborhood) neighborhood = await osmNeighborhood(centerLat, centerLon);
+        area = { city, neighborhood: neighborhood || city };
       } catch {}
 
       await db.addCleanup({
