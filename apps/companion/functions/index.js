@@ -1962,7 +1962,17 @@ function gridKeysAround(lat, lon, radiusCells) {
 }
 
 // ==========================================================================
-// NYC-WIDE EXPANSION (staged 2026-09-05, NOT deployed) — Jake hit real
+// NYC-WIDE EXPANSION — DEPLOYED 2026-09-06, on Jake's own direct go-ahead.
+// (This header read "staged 2026-09-05, NOT deployed" until 2026-09-09, three
+// days after it shipped. It sits directly above the code anyone would read to
+// answer "what isn't deployed?", so the stale label was actively misleading —
+// exactly the failure mode this repo keeps hitting.) Live state per
+// LAUNCH_LEDGER.md: the Cloud Functions are deployed, `precache_meta/
+// nyc_street_roster` is populated, and the drip is advancing on its ~25.7-day
+// full-coverage cycle. Note the roster reports 1,226 tiles against the 1,225
+// computed below — a one-tile discrepancy, unreconciled and not chased.
+//
+// Original rationale, still accurate, kept as written — Jake hit real
 // slowness on the Upper East Side, expected since STREET_SEED_POINTS above
 // is a hand-picked Brooklyn-only list of 10 points. This section replaces
 // "hand-add a neighborhood every time someone hits a cold tile" with
@@ -2006,8 +2016,9 @@ function gridKeysAround(lat, lon, radiusCells) {
 // drained every few hours) instead of just growing the input list and
 // reusing the old synchronous refreshOverpassPrecache(). Full reasoning and
 // the rollout-timeline/cost math are in
-// `~/Desktop/pick-app/docs/LEDGER_INBOX.md`'s 2026-09-05 entry — read that
-// before approving a deploy, not just this comment.
+// `~/Desktop/pick-app/docs/LEDGER_INBOX.md`'s 2026-09-05 entry. That said
+// "read this before approving a deploy"; the deploy has since happened, so
+// read it to understand what is already running.
 // ==========================================================================
 
 // Same GeoJSON source src/services/neighborhoods.ts's `nyc` CITY_SOURCES
