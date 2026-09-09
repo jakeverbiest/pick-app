@@ -581,3 +581,38 @@ the ledger's actual structure, not paste it verbatim.
   the ring cache however completely warmed — **Sunset Park (30) is one of the ten
   `STREET_SEED_POINTS`**, so "precache our way out" is not a plan for those. All three priority
   areas are safe (Fort Greene 9, Jackson Heights 18, Astoria 20).
+
+- **2026-09-09 — challenges credited zero because every walk was named after its BOROUGH. Root
+  cause fixed, 142 historical walks backfilled.** Jake asked whether a walk inside a live challenge
+  would credit. It did not. Traced end to end against real data rather than reasoned about:
+
+  1. **The engine is fine.** "Litchfield Litter Invitational" carries 691 pickups. Crediting works.
+  2. **`cleanupInArea` matches a neighborhood-scoped area by exact lowercased STRING** against
+     `cleanups.neighborhood`.
+  3. **That string is written by a chain that ends at the CITY.** `map.tsx` resolved Apple
+     sub-locality -> OSM -> city. The 20:41 walk at 40.67832,-73.99518 is squarely inside Carroll
+     Gardens; Apple returned no district, OSM nothing, so it stored **"Brooklyn"** and matched
+     neither Carroll Gardens challenge.
+  4. **Scale of it: 142 of Jake's 186 cleanups had the wrong neighborhood. ZERO were correct.**
+     Not an edge case — every walk ever saved. The 610-pickup walk was actually Gowanus.
+
+  **Fixes shipped:** `hoodContaining()` (the curated list the challenge picker, neighborhood picker
+  and level view all label from) is now consulted FIRST at save, with Apple/OSM/city as fallbacks
+  (OTA `fd1b46e9`). Server-side `cleanupInArea` also now resolves a neighborhood area by
+  coordinates against a cached boundary index, keeping the label compare as a fast path and failing
+  open to the old behaviour if the index is cold (deployed to `onCleanupWrite`) — this covers team
+  and org district checks too. 142 of Jake's cleanups backfilled to their true neighborhood
+  (his account only, dry-run verified first).
+
+  **Still zero, and this is the next thing to understand:** `applyChallengeStatsForCleanup` early-
+  returns on `tokenizedChallengeIds()`, and **`challenge_tokens` is EMPTY — zero tokenized
+  challenges exist**. So the server rebuild path is inert for every challenge in the system, and
+  contributor rows are written entirely by the CLIENT. Confirmed by a no-op re-trigger of the walk
+  doc: `updated_at` did not move. Litchfield's 691 was therefore client-written. **Open question:
+  does the client recompute contributions from history on app open, or only publish incrementally
+  during a walk?** If the latter, the backfill will not retroactively credit and a fresh walk is
+  needed. One app-open answers it.
+
+  **Also found, not fixed:** "Da count" is labelled Carroll Gardens but its custom ring is a
+  3-point triangle spanning 40.683-40.696 / -73.986 to -73.978 — roughly Fort Greene, ~1.5km from
+  its own label. A mis-drawn area, not a code defect.
