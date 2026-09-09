@@ -301,3 +301,27 @@ the ledger's actual structure, not paste it verbatim.
   for "nutrition", "App Privacy", "Data Linked", "Data Used to Track" returns nothing, so what was
   answered in App Store Connect is unknown. TestFlight tolerated that. Only Jake can pull the
   current answers. Separate from any submission decision — the gap exists today either way.
+
+- **2026-09-09 — the Draft A disclosure is LIVE, and consent is now recording.** Pushed 39 commits
+  to `origin/main` (pre-push secret scan clean; the repo had been unpushed and climbing since
+  2026-09-06). Then two deliberately narrow deploys, **not** a blanket one:
+  `firebase deploy --only functions:exportDetectorTelemetry` (one function updated, not all 25),
+  and `eas update --branch production` → group **`ff25e087-8dfc-4ba3-b3cd-b6f95f71d8a6`**,
+  commit `7ddcab0`, runtime 1.2.2. Preconditions asserted before publishing: CARTO key set,
+  Sentry DSN set, `apps/companion` tree clean so the bundle equals HEAD.
+  **From this point, accounts created on iOS see the disclosure and get
+  `detector_telemetry_consent` written; `scope=consented` can export them.**
+
+  **Deliberately NOT deployed: the group impact map functions.** `firebase deploy --only functions`
+  would have pushed six `functions/index.js` commits from source — `8ece843`, `c5b5065`,
+  `61e24f1`, `2755d5a` (the GROUP_IMPACT_MAP steps this ledger flagged as committed-but-not-
+  deployed), plus `a367f19` and `e7cbd7f`. `firebase functions:list` shows `challengeImpact` IS
+  live, so *some* of that shipped, but there is no record of which *versions* are deployed, and
+  `61e24f1` enforces a privacy floor server-side — not something to ship as a ride-along. **Open:
+  reconcile deployed vs. source for `functions/index.js` before the next broad deploy.**
+
+  **Near-miss worth recording.** An unrelated OTA went out at 07:42 ("instrumentation: unresolved
+  reason + count_confirmed") while a live session had the consent UI half-built in the same tree;
+  the disclosure edits landed 08:09-08:10, ~27 minutes later. Had the publish come after, it would
+  have shipped an unfinished legal surface. `eas update` ships the working tree — a live session
+  and a hand-run publish in the same tree is the collision, and nothing currently prevents it.
