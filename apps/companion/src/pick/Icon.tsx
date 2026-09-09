@@ -47,6 +47,14 @@ export const ICONS: Record<string, Def[]> = {
   ],
   back: [{ d: 'M15 6l-6 6 6 6' }],
   chevron: [{ d: 'M9.5 6l6 6-6 6' }],
+  // Map tools trigger. Deliberately NOT `plus`: the map's zoom-in control sits
+  // directly below this button and is also a plus, so two near-identical
+  // glyphs stacked ~20pt apart gave no way to tell "open tools" from "zoom in".
+  layers: [
+    { d: 'M12 3 3.5 7.5 12 12l8.5-4.5L12 3Z' },
+    { d: 'M3.5 12 12 16.5 20.5 12' },
+    { d: 'M3.5 16.5 12 21l8.5-4.5' },
+  ],
   close: [{ d: 'M6 6l12 12M18 6 6 18' }],
   link: [
     { d: 'M10 13a4 4 0 0 0 5.7.4l2.6-2.6a4 4 0 0 0-5.7-5.7L11.2 6.5' },
