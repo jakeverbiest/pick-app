@@ -391,3 +391,23 @@ the ledger's actual structure, not paste it verbatim.
   **Also seen:** `processqueue` reports **no hash at all** and matches nothing in
   `functions/index.js` — likely an orphaned or extension-managed function. Not investigated;
   flagged so it is not mistaken for project code.
+
+- **2026-09-09 — `onCleanupWrite` redeployed; the challenge-stats question is settled.** Ran
+  `firebase deploy --only functions:onCleanupWrite` (narrow, not the full deploy — the full one was
+  proven behaviorally inert for 27 of 28 functions, so it bought tidiness rather than correctness,
+  and 27 needless redeploys is the wrong trade). Verified by hash: `onCleanupWrite` moved from
+  `ad9df8f0…` (shared with `getChallengeToken`, a snapshot provably ≥18:48 but not provably ≥18:54)
+  to a new `6c09bf68…` built from current HEAD. **`applyChallengeStatsForCleanup(before, after)` is
+  now definitely wired into the cleanup trigger** — the six-minute window hash equality could not
+  resolve is closed.
+
+  **Honest side effect, against the framing used when choosing this option:** distinct source
+  hashes went **9 → 10**, not down. The narrow deploy gives `onCleanupWrite` its own snapshot and
+  makes production slightly *more* fragmented, not less. That was the accepted trade — correctness
+  now, tidiness folded into whatever functions deploy ships next — but it is the opposite of
+  consolidation and should not be mistaken for it.
+
+  Pre-deploy safety checks that made either option viable, recorded so they are not re-derived:
+  nothing `require`s the deleted `detectorExport.staged.js` (every surviving reference is a
+  comment), and `functions/package.json` and `functions/shared/` are byte-unchanged since the
+  2026-09-07 baseline — so no dependency drift underlies any of the nine snapshots.
