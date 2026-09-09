@@ -616,3 +616,19 @@ the ledger's actual structure, not paste it verbatim.
   **Also found, not fixed:** "Da count" is labelled Carroll Gardens but its custom ring is a
   3-point triangle spanning 40.683-40.696 / -73.986 to -73.978 — roughly Fort Greene, ~1.5km from
   its own label. A mis-drawn area, not a code defect.
+
+- **2026-09-09 — CONFIRMED WORKING. "Da sweep" credits 46 pickups / 2 cleanups / 1.15 bags**
+  (Jake-confirmed in-app, then verified directly in Firestore: `updated_at` 1788988225900, after
+  the backfill). Arithmetic reconciles exactly — the 20:41 walk (22) plus the 14:02 walk (24) = 46,
+  both inside the Sep 9-15 window and both backfilled to Carroll Gardens. **The 610-pickup 13:53
+  walk is correctly EXCLUDED** because it backfilled to Gowanus, so area scoping is demonstrably
+  working rather than merely permissive.
+
+  **This resolves the open question from the previous entry: the client RECOMPUTES contributions
+  from history, it does not only publish incrementally.** It picked up the older 14:02 walk off
+  backfilled data, not just the walk that triggered the republish. Consequence worth carrying
+  forward: a group joining a challenge is credited for qualifying walks they already saved, not
+  only ones after joining — so the backfill was load-bearing, not cosmetic.
+
+  "Da count" remains 0 as predicted, its ring being ~1.5km from its own label. Worth deleting or
+  redrawing before any real group sees it.
