@@ -121,6 +121,12 @@ const PAGE_SIZE = 500;
 const ALLOWED_TOP_LEVEL_FIELDS = [
   'items_detected',
   'items_count',
+  // Whether the walker actually opened the correction panel before saving.
+  // Not new collection so much as the key to data already exported: a matching
+  // items_count/items_detected pair is ambiguous without it — "checked and the
+  // detector was right" and "skipped straight past it" are opposite evidence,
+  // and as of 2026-09-09 45 of 50 walks with both fields sat in that bucket.
+  'count_confirmed',
   'pace_median_mps',
   'pace_slow_share',
   'pace_low_confidence',
@@ -219,6 +225,14 @@ function buildTelemetryRow(data) {
     date: dayBucket(data.timestamp),
     items_detected: typeof data.items_detected === 'number' ? data.items_detected : null,
     items_count: typeof data.items_count === 'number' ? data.items_count : null,
+    // THREE states, and collapsing them loses the whole point. `true` = the
+    // panel was opened, so items_count is a human judgement. `false` = it was
+    // not, so items_count is just items_detected wearing a different name.
+    // `null` = the walk predates this instrumentation (shipped 2026-09-09,
+    // commit 01fa737) and nothing is known either way. Never default a null
+    // to false — that would silently relabel every historical walk as
+    // "unchecked" when it is genuinely unknown.
+    count_confirmed: typeof data.count_confirmed === 'boolean' ? data.count_confirmed : null,
     pace_median_mps: typeof data.pace_median_mps === 'number' ? data.pace_median_mps : null,
     pace_slow_share: typeof data.pace_slow_share === 'number' ? data.pace_slow_share : null,
     pace_low_confidence: typeof data.pace_low_confidence === 'boolean' ? data.pace_low_confidence : null,
