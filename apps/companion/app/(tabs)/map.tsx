@@ -2882,9 +2882,13 @@ ${MAPLIBRE_ANCHOR_FN}
       if (s) s.setData(data); else pendingData[id] = data;
     };
     var pendingLabels = false;
+    // Same pre-load race as setData above: layers do not exist until 'load',
+    // so a visibility toggle sent before then would be silently lost. Buffer it.
+    var pendingVis = {};
     var setVisible = function (ids, on) {
       ids.forEach(function (id) {
         if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', on ? 'visible' : 'none');
+        else pendingVis[id] = on;
       });
     };
 
@@ -3013,6 +3017,10 @@ ${MAPLIBRE_ANCHOR_FN}
         var s = src(id); if (s) s.setData(pendingData[id]);
       });
       pendingData = {};
+      Object.keys(pendingVis).forEach(function (id) {
+        if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', pendingVis[id] ? 'visible' : 'none');
+      });
+      pendingVis = {};
       setVisible(['hood-labels'], pendingLabels);
 
       ready = true;
