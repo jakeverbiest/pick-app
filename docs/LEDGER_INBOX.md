@@ -141,3 +141,163 @@ the ledger's actual structure, not paste it verbatim.
   blocking the causal claim either way:** "battery drain cuts walks short" has no proxy in the
   data — battery level at walk start/end is not recorded. If this question is worth settling,
   that field is the prerequisite.
+
+- 2026-09-09 — **`GROUP_IMPACT_MAP_SPEC.md` §11.7 steps 4/4a confirmed DEPLOYED to production**,
+  not just committed. `e7cbd7f` (`warmStreetTilesForChallenge`, called inline from
+  `createChallengeToken`; warms up to 12 Overpass street tiles when a challenge share link is
+  minted, fixing a real bug where non-NYC challenges like Litchfield got `streets:[]`) and
+  `a367f19` (new `challengeImpact` HTTPS function, token-gated, serves only pre-aggregated docs
+  via `segment_status`/`precache_streets` joined on `gridKey`).
+  **Verification.** `firebase functions:list --json` (from `apps/companion/functions`) shows
+  `challengeImpact` live (v2 HTTPS, us-central1, ACTIVE) — it did not exist before `a367f19`, so
+  its presence alone confirms the deploy. Each function's Cloud Storage source object's
+  `generation` timestamp lines up with a real `firebase deploy` run immediately after each commit:
+  `challengeImpact` source uploaded 2026-09-08 19:20:18 ET (12s after the 19:20:06 ET commit);
+  `createChallengeToken` source uploaded 2026-09-08 19:23:56 ET (13s after the 19:23:43 ET
+  commit). `git log -- apps/companion/functions/index.js` confirms `e7cbd7f` is the last commit
+  touching that file, so HEAD matches what's live. Neither commit touched `firestore.rules`.
+  **Gap worth flagging:** unlike steps 1-3 (which got a real end-to-end Litchfield verification,
+  see the 2026-09-08 entry above), nobody has smoke-tested `challengeImpact` end-to-end yet — no
+  confirmed real call, no check that it returns the expected `streets`/`stats`/`markers` shape.
+  Deployed, not verified.
+
+- 2026-09-09 — **Detector telemetry export widened to consent-gated NEW SIGNUPS (Jake's
+  2026-09-09 approval). Client plumbing + Cloud Function param implemented; NOTHING DEPLOYED,
+  NOTHING PUBLISHED.** Scoping brief said "plan, implement only if small and self-contained" —
+  it was, so it is written, typechecked and test-harnessed, but no `eas update`, `eas build` or
+  `firebase deploy` was run.
+
+  **Consent record.** `users/{uid}` gets three fields, written once at account creation:
+  `detector_telemetry_consent: true` (the queryable predicate — Firestore can't index "field
+  exists"), `detector_telemetry_consent_at` (epoch **millis**, matching that doc's existing
+  `created_at`/`updated_at` convention), and `detector_telemetry_disclosure_version` (the exact
+  copy version shown — without it the first reword makes every prior consent unauditable).
+  Durability checked rather than assumed: every writer of `users/{uid}` in the app
+  (`firebaseDatabase.ts`, `notifications.ts`, `moderation.ts`) uses `setDoc(...{merge:true})` or
+  `updateDoc`, so nothing overwrites the doc wholesale and the flag can't be clobbered by an
+  unrelated write. Absence means NO, never "unknown" — every pre-existing account simply lacks
+  the field and is not returned by the export's `== true` query. No backfill.
+
+  **Where it lands:** `app/auth/signup.tsx` → `authService.signup()` → `initializeUserSettings()`,
+  and `authService.loginWithApple()` **only on its `isNewUser` branch** (re-signing-in is not a
+  fresh disclosure). The disclosure block renders *outside* signup.tsx's collapsed
+  `showEmailForm` section on purpose — Sign in with Apple sits above that block and creates an
+  account in two taps, so copy nested inside the email form would be invisible to the fastest
+  signup path.
+
+  **Fail-closed on the copy, which `safety` owns.** `DETECTOR_DISCLOSURE_TEXT` /
+  `DETECTOR_DISCLOSURE_VERSION` in `src/constants/legal.ts` ship EMPTY. Empty text renders no
+  disclosure and passes no version, which records no consent at all — so this can ship before the
+  copy lands without ever claiming consent for a disclosure nobody was shown; it just yields zero
+  consenting accounts. Filling in those two constants is the entire go-live step, no further code
+  change.
+
+  **Cloud Function (`apps/companion/functions/detectorExport.js`).** The brief's description of
+  the current filter was wrong in a way worth recording: it is **not** a hardcoded single-account
+  scope. `user=<uid>` has been an optional query param since 2026-09-07; the Jake-only 2026-09-08
+  run was an *invocation* choice, not a code constant. Added a new optional `scope=consented`
+  (mutually exclusive with `user`): queries `users` for consent (selecting only the consent
+  timestamp — no name/email/neighborhood enters function memory), then runs one scan per
+  consenting account floored at `max(since, that account's consent moment)`. **Strictly
+  additive** — with no `scope` param every existing path behaves exactly as on the 2026-09-08
+  run, so this file landing in an unrelated `firebase deploy --only functions` cannot change what
+  an existing invocation does. Rows are unchanged: no `userId`, no doc id, no per-user key —
+  consent is a *filter*, not a field, so the spec's "no cross-walk linkage" guarantee holds.
+  Flagged-but-undatable accounts are skipped rather than exported, and counted in the response as
+  `skipped_no_consent_at`.
+
+  **Bug found and fixed in this session's own code, recorded because it is the second instance
+  of one pattern.** The first cut reused `toEpochSeconds()` for the consent timestamp; that
+  helper passes plain numbers through as *seconds*, but consent is written as `Date.now()` —
+  *millis* — so every consent moment resolved to roughly the year 57000, filtered out every walk,
+  and reported a clean, successful, ZERO-ROW export. Identical failure shape to the
+  `cleanups.timestamp` bug this function's header already documents (silent null/empty result, no
+  error), one collection over. Fixed with a dedicated `consentEpochSeconds()`.
+
+  **Verified:** `npx tsc --noEmit` clean; `scope=consented` exercised end-to-end against a
+  stubbed Firestore/Storage (throwaway harness, not committed) with four fixture accounts and
+  seven walks — pre-consent walks excluded, unconsented account excluded, undatable account
+  skipped and counted, `since` + consent floor resolving to the stricter of the two, rows sorted
+  oldest-first, no `userId` on any row, and the `user=` path byte-identical to prior behavior.
+
+  **OTA-able. No native build. Build 36 is untouched** — the client change is pure TS/TSX, no
+  native module, no `app.json` change, so nothing here invalidates the App Review candidate. The
+  Cloud Function ships via `firebase deploy --only functions`, a separate action from any OTA.
+  **No Firestore rules change needed:** `match /users/{userId}` already allows `read, write: if
+  isOwner(userId)`, and the export runs on the admin SDK, which bypasses rules entirely.
+
+  **⚠️ LEDGER CORRECTION NEEDED — the Public-beta "Detector export CF" row is stale on one
+  point.** It ends with *"`carry_mode`/`device_model` stay excluded from any export —
+  collection-disclosed, not use-disclosed."* **That is not what the live code or the live policy
+  say.** Both fields have been IN `ALLOWED_TOP_LEVEL_FIELDS` since 2026-09-07 and were in the
+  2026-09-08 174-row export. Re-verified this session against both content-carrying copies of the
+  policy: `src/constants/legal.ts:34` and `~/pick-app/web/privacy.html` ("To improve pickup
+  detection") each disclose the **use** in as many words — *"your walking pace, and the device
+  model and carry position above — to measure and improve detection accuracy"* — and the
+  collection clause adds they are *"kept only to make the detection-accuracy work below
+  meaningful."* There is no live policy text supporting the exclusion; the ledger row is carrying
+  the superseded pre-2026-09-07 reading forward, and it was repeated back to this session as a
+  standing constraint, which is how a stale line becomes a durable one. **Not changed
+  unilaterally — Jake's call**, since reversing it would delete real stratification data
+  (`carry_mode`/`device_model` are the two fields that let a multi-tester corpus be split by phone
+  and carry position, which is the whole point of getting past n=1). A banner recording the same
+  discrepancy was added to `docs/DETECTOR_EXPORT_SPEC.md`, whose §2/§6 carried the identical
+  stale claim.
+
+  **Open for Jake, beyond the above.** (1) `app/auth/login.tsx` also offers Sign in with Apple,
+  which silently creates an account for anyone who has never signed up — that screen shows no
+  disclosure, so those new accounts land un-consented and excluded. Fail-closed, not a leak, but
+  it means a real share of new signups won't be in the corpus until `safety` puts the copy on
+  login.tsx too. (2) Apple's `isNewUser` is inferred from `creationTime === lastSignInTime`; if
+  it ever misfires for a returning user, consent would be stamped on a pre-existing account —
+  harmless here because the per-account cutoff still excludes all of that account's earlier
+  walks. (3) One Firestore query per consenting account is fine at new-signup scale; at hundreds
+  of accounts, replace the per-account cutoff with a single global disclosure-date floor and
+  batch the `userId in [...]` queries.
+
+---
+
+- **2026-09-09 — `publish-detector.sh` had no Sentry guard, and no hard failure when `.env` is
+  missing. Both fixed (uncommitted).** Found while verifying whether `EXPO_PUBLIC_SENTRY_DSN` was
+  set. **It is** — registered in the EAS `production` environment alongside
+  `EXPO_PUBLIC_CARTO_API_KEY`, so native builds get it injected server-side. But EAS-registered
+  vars apply only to `eas build`; `eas update` bundles locally and Metro inlines `EXPO_PUBLIC_*`
+  from the shell's own `process.env`. The script already sources a `.env` to cover that — the
+  `$APP/.env` branch is dead (that file does not exist), but the `elif "$REPO/.env"` fallback
+  catches it, so sourcing does work today. *An earlier reading of this session claimed the guard
+  had never worked; that was wrong and is retracted — the grep had cut off before the `elif`.*
+  Two real gaps remained and are now closed: (1) if **neither** `.env` existed the chain fell
+  through silently and published a bundle with every `EXPO_PUBLIC_*` var inlined as an empty
+  string — now a hard `exit 1`; (2) **`EXPO_PUBLIC_SENTRY_DSN` had no assert at all**, unlike
+  CARTO. That is the worse of the two: a missing CARTO key shows a map watermark and gets caught
+  in minutes, while a missing DSN has *no symptom* — `errorMonitoring.ts` just no-ops, and since
+  OTA JS replaces the native build's JS, an OTA publish can silently disable Sentry on a build
+  that shipped with it. Now prompts the same way CARTO does. Verified: `bash -n` clean, and
+  sourcing simulated from a shell with both vars explicitly unset resolves both (no spurious
+  prompts on real runs). shellcheck not installed, so that lint was skipped. **Residual gap:** the
+  guard only covers the script path — a hand-run `eas update` still has none.
+
+- **2026-09-09 — Draft A detector-telemetry disclosure approved by Jake and built; staged, not
+  shipped.** `DETECTOR_DISCLOSURE_TEXT`/`_VERSION` filled (`'2026-09-09'`), new
+  `DETECTOR_DISCLOSURE_DETAIL` holds the "What gets analyzed" sheet, and `app/auth/signup.tsx`
+  gained the link row (`What gets analyzed · Privacy Policy · Terms`) plus a **single** `<Modal>`
+  with a switched body — deliberately not three modals, since two mounted at once stack behind
+  each other on iOS (ShareComposer and RecapHistory both hit this). `tsc --noEmit` clean; theme is
+  `as const` so that check validates the `C.*`/`Fonts.*` keys rather than passing vacuously.
+  **Not visually verified** — no simulator run; the open question is whether the three links fit
+  one line on a small iPhone or wrap. Draft A's Terms-acceptance line was deliberately NOT
+  included (separate decision — there is no contract-acceptance moment anywhere in the app).
+  `session_mode` deliberately absent from the sheet. **Consequence to know: the working tree is
+  now armed.** `eas update` ships the working tree, so the next OTA publish for any reason
+  carries this disclosure live and starts recording consent.
+
+- **2026-09-09 — two things live-but-uncommitted, flagged not fixed.** (1) `~/pick-app/web/privacy.html`
+  and `web/terms.html` are modified against `90c4c61` while matching what is live on
+  `pickglobal.org` — production is *ahead* of the repo, so a stray `git checkout` on either
+  silently reverts the live policy text in the repo of record. (2) `docs/LAUNCH_LEDGER.md` itself
+  carries the 2026-09-08 scheduled-task reconciliation, uncommitted.
+
+- **2026-09-09 — no App Store privacy-nutrition-label record exists in either repo.** Grepping both
+  for "nutrition", "App Privacy", "Data Linked", "Data Used to Track" returns nothing, so what was
+  answered in App Store Connect is unknown. TestFlight tolerated that. Only Jake can pull the
+  current answers. Separate from any submission decision — the gap exists today either way.
