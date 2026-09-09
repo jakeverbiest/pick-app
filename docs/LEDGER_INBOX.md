@@ -632,3 +632,110 @@ the ledger's actual structure, not paste it verbatim.
 
   "Da count" remains 0 as predicted, its ring being ~1.5km from its own label. Worth deleting or
   redrawing before any real group sees it.
+
+- **2026-09-09 — street-geometry precache replacement SCOPED, not built. New doc:
+  `docs/STREET_GEOMETRY_DELIVERY_SCOPE.md`.** Jake called today's drip-based fix a band-aid and
+  asked for a long-term replacement, scope-and-spec only. Nothing implemented, nothing deployed.
+
+  **The measurement that drives it — the 30/52-day refresh cadence is roughly two orders of
+  magnitude too aggressive, and this is now measured rather than assumed.** Ran the app's own
+  sidewalk/path Overpass query with `out tags meta` against three real NYC neighborhoods and
+  binned every way by its current-version timestamp:
+
+  | | ways | edited ≤30d | ≤365d | ≤730d |
+  |---|---:|---:|---:|---:|
+  | Fort Greene | 671 | 71 (10.58%) | 26.08% | 29.06% |
+  | Sunset Park | 1,723 | **0 (0.00%)** | 2.38% | 32.10% |
+  | Astoria | 2,439 | 17 (0.70%) | 9.10% | 17.51% |
+  | pooled | 4,833 | **88 (1.82%)** | 9.06% | 24.31% |
+
+  Two findings matter more than the headline. (1) **Change is bursty and spatially concentrated,
+  not a steady rate** — Fort Greene's 71 recent edits are ONE mapper across EIGHT changesets;
+  Sunset Park had zero in 30 days but 32% in the 730-day window (a finished import burst). A fixed
+  TTL is the wrong instrument for that shape. (2) **Most edits do not change what we store** —
+  sampling 30 of Fort Greene's recently-edited ways against
+  `api.openstreetmap.org/api/0.6/way/{id}/history` and diffing consecutive versions' node-ref
+  lists: **26 of 30 were tag-only (node list unchanged)**, 4 were real geometry edits.
+  `chopWaysIntoSegments` reads only `way.geometry`, so a tag-only edit refetches to a
+  byte-identical document. Net: **~0.24% of ways per 30 days actually change served geometry**, and
+  even ignoring the tag-only finding entirely, **98.2% of every refresh cycle returns identical
+  data**. Caveat stated in the doc: node MOVES don't bump a way's version, so this undercounts by
+  an unmeasured amount.
+
+  **The other measurement, which killed a proposed direction.** Ran real Overpass `out geom`
+  responses through **this repo's own** `functions/shared/streetGeometry.js#chopWaysIntoSegments`
+  and serialized exactly as `refreshStreetTile` stores it: Fort Greene 1,122 segments = **130 KiB**;
+  Astoria 4,472 segments = **504 KiB** (and that bbox was ~12 cells, vs. the roster's real 20 — so
+  true Astoria is closer to 800 KiB). Density ~30-38 KiB per 0.01° cell. Extrapolated, a 63-cell
+  neighborhood is **~2,520 KiB — 246% of Firestore's 1 MiB document cap**. So
+  **one-document-per-neighborhood does not work**, and it fails on *the same 21 neighborhoods* that
+  break `MAX_RING_PRECACHE_CELLS` today — the same failure set through a different mechanism.
+  The insight survives (cache the unit you serve) but the store cannot be a Firestore document.
+  Compression is 14-15% gzip / 10-11% brotli, so the same content is 16-70 KiB compressed.
+
+  **Recommendation, in shippable order (all OTA — nothing here needs a native build):**
+  Phase 0 server-controlled invalidation epoch (precondition — a long TTL raises the cost of
+  shipping bad data, and today's only lever is bumping `@pick_sidewalks_v4_` via OTA); Phase 1
+  lengthen the TTLs (30d -> 270-365d server, 52d -> ~400d client) which turns **85% capacity
+  utilization into ~7%, a 14x margin**, and is two constants; Phase 2 fix the assembly rules
+  (empty-is-a-hit, allow partial hits, delete the 25-cell cap); Phase 3 replace the drip with an
+  **offline Geofabrik build** — verified `new-york-latest.osm.pbf` is **473 MiB, rebuilt daily,
+  free, no rate limit** — importing the existing chopper unmodified so segment ids stay identical
+  and every `segment_status` doc ever written stays valid; Phases 4-6 client artifact reads, retire
+  the drip, then the other cities. **Phase 1 is the one to ship this week.**
+
+  Vector tiles (MVT) rejected as the primary format for a verified reason, not a preference:
+  segment ids are `${wayId}_${index}` computed over a way's FULL geometry, so a way clipped at a
+  tile boundary chops to different indices and silently orphans its `segment_status` history. The
+  *delivery* model is adopted — static compressed files on a CDN, which is already the pattern
+  every `CITY_SOURCES` entry uses for boundary GeoJSON.
+
+  **A third defect found while reading, not in the brief and live today.** The sidewalk-vs-road
+  fallback (`MIN_SIDEWALK_SEGMENTS = 30`) is applied at **different scopes** by the two fetch
+  paths: `fetchStreetGeometry` decides **per 0.01° cell**, `fetchStreetGeometryForRing`
+  (`streetSegments.ts:770`) decides **once for the whole ring**. So the same street can be
+  `123456_4` on one path and `123456_4_L`/`_R` on the other, and since `segment_status` is keyed by
+  segment id, **cleaning credit written under one id set does not render under the other**. This
+  reproduces the exact symptom of the 2026-09-08 seed-offset bug (overview shows nothing cleaned,
+  tapping in shows full history) via a second, independent mechanism the seed-offset fix did not
+  touch. It predates the precache. **Blast radius unmeasured** — nobody has counted how many real
+  NYC cells fall under the 30-segment threshold. Flagged for `qa` or a follow-up before it is
+  filed as low-priority.
+
+  **Two things I could NOT check, stated rather than worked around:** (1) the literal
+  stored-doc-vs-live diff Jake asked for — reading `~/.secrets/pick-app/serviceAccountKey.json` was
+  blocked by this session's permission layer, so `precache_streets` was never read; the OSM-side
+  measurement above substitutes for it and the ~30-line script is still worth running in a session
+  with that key. (2) Overpass attic (`[date:]`) queries, which would have given a direct
+  "cached-30-days-ago vs today" diff — the public instance OOM'd at 2048 MB on a single 0.01° cell.
+
+  **Also: the brief said "8 other curated cities"; `CITY_SOURCES` currently holds ELEVEN entries**
+  (`nyc, atl, sf, sea, la, chi, bos, sd, mia, ams, bri`), two of them non-US, which changes the
+  extract list for the offline build. **Cost is explicitly NOT done here** — the doc flags that
+  `finance` must price the real substitution (Firestore egress ~700 KiB per cold ring activation
+  today vs. ~240 KiB of CDN egress, and CDN egress is the one genuinely new recurring cost).
+  Note `firebase.json` configures Storage but **not Hosting**, so Hosting's CDN is a config
+  addition to price, not an assumption.
+
+- **2026-09-09 — MIN_SIDEWALK_SEGMENTS scope mismatch: MEASURED, ~5%, filed not fixed.** The
+  fallback threshold (30) is applied per 0.01° cell by `functions/shared/streetGeometry.js:158` and
+  once per whole ring by `streetSegments.ts:796`. A neighborhood almost always clears 30 while a
+  single cell may not, so the same street can be `123456_4` on one path and `123456_4_L`/`_R` on
+  the other, and cleaning credit written under one id set will not render under the other.
+
+  **Blast radius, measured off live Firestore (no Overpass):** 103 cached cells — **5 fell back to
+  road centerlines (all segments sided), 98 are true sidewalk data, 0 mixed.** `segment_status`
+  holds 556 cleaned-street records, of which **27 (4.9%) carry `_L`/`_R` ids** — consistent with
+  the same ~5% of cells. Cross-check: 511 of 556 credit ids appear in cached geometry, 45 do not,
+  but the cache covers only 103 of 1,226 cells so that 45 is an upper bound dominated by uncached
+  area, not evidence of orphaning.
+
+  **Measurement caveat, stated because it changes what the numbers mean:** stored `segmentCount` is
+  POST-fallback, so "0 cells under the 30 threshold, min 36" does NOT show that no cell triggered
+  the fallback. The five fully-sided cells are the real signal.
+
+  **Call (Jake's session, 2026-09-09): file, do not fix now.** ~1 cleaned street in 20, confined to
+  sparse-sidewalk pockets (likely park- and water-adjacent edges). Real but not breaking the core
+  loop, and not worth displacing higher-value work. Revisit if the sided share grows, or fold into
+  the offline-build work in `STREET_GEOMETRY_DELIVERY_SCOPE.md`, which reuses the chopper unmodified
+  and would be the natural place to unify the two decision scopes.
