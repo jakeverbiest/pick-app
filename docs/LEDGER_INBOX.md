@@ -773,3 +773,25 @@ the ledger's actual structure, not paste it verbatim.
   but a 14x margin means it now solves a problem that no longer exists at this scale. Revisit when
   growth erodes the margin — probably a second city with real users. The scope doc has the number
   to watch.
+
+- **2026-09-09 — manual roster rebuild run ahead of Monday, per Jake's direct "do it".** Triggered
+  `runOverpassPrecacheRefresh?rebuildRoster=1` via HTTP (secret retrieved from
+  `firebase functions:secrets:access PRECACHE_REFRESH_KEY`, not hardcoded anywhere). Response:
+  `{"ok":true,"roster":{"total":1226,"added":0,"relabeled":1226},"boundaries":{"attempted":2,"ok":2,"failed":0}}`.
+  No street-side Overpass calls — this function only ever recomputes labels from the already-cached
+  GeoJSON and refreshes the small boundary set, per its own header comment.
+
+  **Confirmed the label bug (logged two entries above) is fixed:** 1225 of 1226 tiles now carry a
+  `labels[]` array (one tile likely has no neighborhood — water/park edge, consistent with the
+  known empty-tile case). **Fort Greene: 9 tiles labelled (was 0). Jackson Heights: 18 tiles
+  labelled (was 0).** Both were in `unmatchedPriorityLabels` on the drip's most recent run
+  (20:27:28, pre-rebuild); the correction takes effect on the NEXT 4-hourly tick, not retroactively
+  — `precache_status/drip` still shows the pre-rebuild snapshot as of this entry. Watch for
+  `unmatchedPriorityLabels` to drop to empty and `groupsExamined`/`completedThisRun` to include
+  Fort Greene and Jackson Heights on the next run.
+
+  **State as of this entry, for anyone checking:** drip is mid-cycle on Astoria (`groupAfter =
+  "Astoria"`, `groupCursorAfter = 6` of 20), 6 neighborhoods fully complete this run
+  (Clinton Hill, Downtown Brooklyn, Brooklyn Heights, Prospect Heights, Park Slope, Carroll
+  Gardens), `skippedFresh = 23` confirming the freshness-skip reclaim from the TTL change is
+  already paying for itself in the very first run after deploy.
