@@ -354,3 +354,40 @@ the ledger's actual structure, not paste it verbatim.
   unresolved-reason field from the same commit. Both are collected. Putting either in the export
   requires a line in the signup disclosure sheet and a `DETECTOR_DISCLOSURE_VERSION` bump — the
   sheet currently omits `session_mode` deliberately, with a code comment saying exactly this.
+
+- **2026-09-09 — deployed-vs-source reconciled for `functions/index.js`. Nothing is waiting on a
+  deployment.** Opened because a blanket `firebase deploy --only functions` was held back earlier
+  the same day: six commits sat in `functions/index.js` with no record of which versions were live,
+  including `61e24f1`, which enforces the marker privacy floor server-side.
+
+  **Method (reusable — there is no deploy log, but `firebase functions:list --json` exposes a
+  `hash` per function, and functions deployed together share one).** `exportDetectorTelemetry` was
+  deployed from current HEAD minutes earlier, so its hash labels "current". Result: **28 functions,
+  9 distinct source hashes** — production is fragmented by months of scoped deploys, with a
+  19-function group on the 2026-09-07 `d93873b` baseline and eight singletons deployed since.
+
+  **But the fragmentation is cosmetic, not behavioral, and that is the finding.**
+  `git diff --numstat d93873b..HEAD` on `index.js` is **674 added, 0 deleted**, and
+  `diff --unified=0` contains no `-` line at all — every pre-existing line is untouched. Of the
+  four hunks, three are pure appends after an existing function, defining the new exports
+  (`createChallengeToken`, `getChallengeToken`, `challengeImpact`) plus their helpers; all three
+  exports are confirmed live. **So the 19 "stale-looking" baseline functions run byte-identical
+  code to HEAD** — they merely lack function definitions they never call.
+
+  **One residual uncertainty, stated rather than papered over.** The fourth hunk is a single line
+  inside an existing function — `ops.push(applyChallengeStatsForCleanup(before, after))` in
+  `onCleanupWrite`, added by `c5b5065` (2026-09-08 18:54). `onCleanupWrite` carries a
+  non-baseline hash shared with `getChallengeToken` (added 18:48), which proves it was redeployed
+  from a snapshot at or after 18:48 — but **not** that the snapshot is at or after 18:54, six
+  minutes later. Hash equality cannot settle those six minutes. If `onCleanupWrite` predates
+  `c5b5065`, challenge stats are not being applied on cleanup writes.
+
+  **Consequence, which reverses the earlier caution on evidence:** a full
+  `firebase deploy --only functions` is now known to be **behaviorally a no-op for 27 of 28
+  functions**, and it would both unify the 9 hashes and settle the `onCleanupWrite` question. It
+  was right to hold it when the contents were unknown; it is now the cheapest way to close this.
+  Alternatively `--only functions:onCleanupWrite` settles just the open part.
+
+  **Also seen:** `processqueue` reports **no hash at all** and matches nothing in
+  `functions/index.js` — likely an orphaned or extension-managed function. Not investigated;
+  flagged so it is not mistaken for project code.
