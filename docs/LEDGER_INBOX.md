@@ -411,3 +411,32 @@ the ledger's actual structure, not paste it verbatim.
   nothing `require`s the deleted `detectorExport.staged.js` (every surviving reference is a
   comment), and `functions/package.json` and `functions/shared/` are byte-unchanged since the
   2026-09-07 baseline — so no dependency drift underlies any of the nine snapshots.
+
+- **2026-09-09 — the MapLibre port shipped a visible control collision; fixed and published.**
+  Jake reported from a real device that the map tools "+" and the zoom pill were "partially
+  mixing." Measured off his screenshot (1170x2532 = a 390x844pt phone at @3x): pill 181pt above the
+  screen bottom, "+" bottom ~249pt, **overlap ~8pt**.
+
+  **Root cause, and the code had already documented its own dependency.** `styles.adoptButton`'s
+  comment read *"Centered over the LEAFLET zoom control below it. That control's own margin is
+  zeroed in CSS"* — its `bottom: 170` was tuned against a zero-margin control. The 2026-09-08
+  MapLibre port set `.maplibregl-ctrl-bottom-right { margin-bottom: 84px }`, lifting a 76px-tall
+  control into 84-160 and leaving 10px, which renders as an overlap once borders and shadows draw.
+
+  **Ruled out before concluding, not assumed:** MapLibre is innocent — reproduced 4.7.1 with the
+  port's exact CSS in a browser and the control renders clean (group 38x76, buttons 38x38, zero
+  overflow). `scaleInfoButton` is dead style (only `scaleInfoButton2` is used) and `mapControls`
+  is top-anchored, so neither was the circle. A viewport-scaling theory was also tested and
+  refuted — the meta tag is present and the numbers reconcile once the ~97pt tab bar is accounted
+  for, which is why 84px CSS renders at 181pt from the screen bottom.
+
+  **Fix: moved the button, not the control.** Start cleanup's top edge is only ~63px above the
+  map's bottom, so the control's 84px is already near-minimal and lowering it trades one collision
+  for another. `bottom: 170 → 190`, which also matches the `190 + 58 * n` baseline the tool options
+  already used. Both sides now carry a comment naming the coupling. Published as update group
+  **`b49f52c0-6282-420f-8e72-0bed4996b98e`**.
+
+  **Caveat: not visually verified.** No simulator build was run; the fix is reasoned from measured
+  geometry. Worth a glance on the next app open. **Process note — third occurrence of this class:**
+  an implicit coupling (CARTO key behind a variable, the `$APP/.env` path, now two hard-coded
+  offsets in different coordinate systems) broke silently because nothing named the dependency.
