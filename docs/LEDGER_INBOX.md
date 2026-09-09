@@ -114,8 +114,17 @@ the ledger's actual structure, not paste it verbatim.
      `startCleanup()` would save as `unresolved`. **This matters for the permission question
      specifically: `unresolved` is ambiguous and could be masking a foreground walk**, so "zero
      foreground" is strictly 0 of 17 known, with 6 unknown.
-  2. **`route_points` is present on all 217 docs and EMPTY on all 217.** Distance cannot be
-     backfilled from it. Flagging because it reads as populated data until you check `.length`.
+  2. ~~**`route_points` is present on all 217 docs and EMPTY on all 217.**~~ **WRONG — RETRACTED
+     2026-09-09, same day, on verification.** `route_points` is **populated on 216 of 217** docs
+     (empty on exactly one; longest walk holds 73 points). Re-checked directly by parsing every
+     doc and counting `.length`. Distance CAN in principle be derived from it, and the historical
+     route corridors on the Map tab draw from it — a claim that it was universally empty would
+     have implied several shipped features were rendering nothing.
+     *Kept visible rather than deleted because of what it was:* this analysis was explicitly
+     briefed on the "check `.length`, not `Array.isArray()`" trap, and then produced a
+     mirror-image version of the same error — reporting real data as empty instead of empty data
+     as real. **Verify any claim that a whole field is empty or absent before acting on it**; the
+     cost of being wrong in that direction is concluding a working feature is broken.
   3. **`distance_m` exists on only 7 of 217 docs (3.2%)**, all from 2026-09-08. It is not yet a
      usable comparison metric for any cohort question, mode-related or not.
   4. `items_count` vs `items_detected`: both present on 50 docs, **differing on 5 (10%)** — i.e.
