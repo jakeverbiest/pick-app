@@ -129,3 +129,9 @@ the ledger's actual structure, not paste it verbatim.
   **`exitLevel()` remains entirely unconfirmed** — same three-way fix landed together, but neither
   the map-jump half nor a label-restore half (it doesn't have this gap; it doesn't touch
   `currentArea` at all, only re-centers) has been tested.
+
+- **2026-09-10 — CONFIRMED by Jake: recenter()'s label-restore fix (`74304d42`) works — text
+  correctly returns to Brooklyn.** Tested from the overview, NOT from inside a neighborhood level —
+  Jake explicitly flagged this distinction, correctly, since that's a different code path.
+  `exitLevel()` (triggered by backing OUT of a neighborhood level, not by the recenter button)
+  remains completely unconfirmed — same map.setView -> jumpTo fix, never tested.
