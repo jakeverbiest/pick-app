@@ -967,3 +967,42 @@ the ledger's actual structure, not paste it verbatim.
   (bears on whether this is a delivery-timing issue vs. a wake-from-idle rendering issue). Updates
   the "Watch stale-payload handling" Watching row — this is the first real-world hit on the exact
   named symptom (a) since the Aug 24 fix shipped; (b) and (c) remain unobserved.
+
+- **2026-09-10 — watch-flashing follow-up: Jake's answers narrow this from a watch-side race to a
+  likely phone-side gap. Instrumented, not yet fixed.** Answers to the previous entry's 3 questions:
+  happened the ENTIRE walk (not localized to start/end), REPEATEDLY (not once), while watching
+  NEARLY CONTINUOUSLY. Jake also flagged a real methodological caveat worth carrying forward: the
+  full-stop-then-wrist-tap protocol itself imposes atypical pacing, so detector-side pace
+  conclusions from these two walks shouldn't be over-generalized to ordinary use.
+
+  **"Entire walk, continuously watched" rules out what the previous entry was chasing.**
+  `cached: true` (the activation/cached-snapshot branch) only fires from
+  `activationDidCompleteWith` — full WCSession reactivation, not a screen wake/dim cycle — so it
+  cannot explain a pattern recurring throughout an actively-watched walk. Checked and ruled out.
+
+  **Traced the phone-side push effect (`app/(tabs)/map.tsx`) instead, and found a real structural
+  asymmetry.** `walkIntent` has an explicit remount-recovery effect — re-derives itself from
+  `isSessionActiveFresh()` + `isBackgroundLocationTaskRunning()` after a remount, documented in its
+  own comment as necessary because ordinary remounts (backgrounding, tab switch, memory pressure —
+  "anything React Navigation does") happen mid-walk. **`pickupCount`, the plain `useState` that gets
+  pushed to the watch AND saved as `items_count`, has no equivalent.** Its only recovery path
+  (`subscribeToWalkRestore`) is scoped to the crash/relaunch "Restore your last walk?" flow, not an
+  ordinary still-running remount. Checked `heartbeat()`'s `pickups` field as a possible durable
+  fallback — it turned out to be a short delta ("since last location record"), not a running total,
+  so no recovery source for `pickupCount` exists today even if recovery logic were written.
+
+  **If confirmed, this is bigger than a watch cosmetic bug: `items_count` reads from the same
+  state, so a remount could zero the SAVED count, not just the display — genuinely undecided,
+  since walk `duUjXUiQfl2ZWu2KTCrC`'s saved total (34) shows no obvious sign of a catastrophic
+  mid-walk reset.** Two explanations for that either way: remounts didn't actually fire during
+  this specific walk's live picking, or something not yet found reconciles the total before save.
+
+  **Not fixed — instrumented, same discipline as the detector work.** `screenRemountsThisWalk`,
+  deliberately module-level (not a ref/useState, since the open question IS whether the component
+  survives remounts — those state kinds reset WITH the remount and couldn't count it). Reset at
+  walk start, incremented once per mount, saved as `screen_remounts` on the cleanup doc. **Published
+  OTA, update group `d6c806bf-b0ec-4c85-8cc3-6e3b0ed4c4b4`.** A walk that saves `screen_remounts > 0`
+  is direct proof the screen remounted; `0` rules the whole theory out rather than leaving it a
+  guess. This is phone-side JS — if the theory holds, the eventual fix is very likely OTA-shippable
+  (extend the existing walkIntent-recovery pattern to also restore pickupCount), unlike the watch
+  Swift changes already shipped for the adjacent "resurrected count" symptom, which needed a build.
