@@ -42,3 +42,29 @@ the ledger's actual structure, not paste it verbatim.
   5 double-count clusters in 13 real picks (rate between the two outdoor walks) — consistent with
   the existing slow-pace-drives-double-counting finding, not a new anomaly. Indoor testing does not
   meaningfully extend the pace-gate/double-count investigation, exactly as anticipated.
+
+- **2026-09-10 — city search was silently overridden by the idle-recenter effect; fixed, likely
+  broken since launch, not a recent regression.** Jake: typed "Amsterdam," selected it, map stayed
+  on Brooklyn. Root cause: the idle-recenter effect (`6094187`, 2026-07-14) fires on every
+  `currentLocation` change while not mid-walk, unconditionally re-centering the map AND
+  re-resolving the area name to the real GPS fix. It shipped ONE DAY before the city switcher
+  (`712b12c`, 2026-07-15) and has no awareness `goToCity()` exists — the next location tick after
+  any city selection eased the map straight back and overwrote `currentArea.city`, often within
+  seconds. **This has likely been broken since the city switcher launched two months ago**, not
+  something that recently broke — a latent conflict between two features nobody happened to test
+  against each other in exactly this timing window.
+
+  Confirmed scope before fixing rather than assumed: the city switcher only renders `!isListening`
+  (the header's own condition), and the idle-recenter effect carries the identical guard, so the
+  fix only needed to touch that one effect. Checked the other two `window.updateLocation` call
+  sites — one is `isListening`-gated (walk-time route drawing; city switcher isn't reachable during
+  a walk anyway) and one fires only once on initial WebView load (a legitimate default, not part of
+  the repeating symptom) — neither needed to change.
+
+  **Fix:** `viewingOtherCityRef`, set `true` in `goToCity()`, checked as an early-return guard in
+  the idle-recenter effect, cleared only by `recenter()` — the one explicit "snap back to me"
+  action. A ref rather than state since nothing needs to re-render when it flips. A fresh mount
+  resets it to `false` automatically. Published OTA, update group
+  `ab272758-de2e-40ef-b618-138476584fdc`. `tsc --noEmit` clean. **Not yet tested live** — static
+  analysis only, no simulator/device run before shipping; worth a real check on the next
+  city-search attempt.
