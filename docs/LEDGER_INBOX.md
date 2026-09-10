@@ -108,3 +108,24 @@ the ledger's actual structure, not paste it verbatim.
   the identical fix and were shipped in the same commit, but neither has been explicitly confirmed
   by Jake yet — flagged so a future session doesn't assume they're verified just because city
   search is.
+
+- **2026-09-10 — recenter() partially confirmed by Jake (map correctly snaps to Brooklyn), and the
+  half he flagged as still off is real: the header kept the browsed-away city ("Hickory") instead
+  of showing Brooklyn immediately.** Root cause: `goToCity()` has always optimistically set the
+  city label the instant a city is picked, then refines it via an async geocode — its own comment
+  says as much. `recenter()` never had the matching optimistic half, only the async `refreshArea()`
+  call. That gap predates today — it was invisible while the map itself wasn't moving at all (the
+  `setView` bug), so there was no instant snap to look wrong against. Now that `jumpTo` is instant,
+  the stale label is the visible symptom.
+
+  **Fixed:** `homeAreaRef` stashes the real-location `{city, neighborhood}` the moment `goToCity()`
+  is about to overwrite it, guarded on `!viewingOtherCityRef` so hopping between multiple other
+  cities (Amsterdam, then Hickory) only ever captures the true home value once. `recenter()`
+  restores it instantly alongside the map jump, then still calls `refreshArea()` to refine/confirm
+  it — same pattern `goToCity` already uses safely. `tsc --noEmit` clean. Published OTA, update
+  group `74304d42-8b1d-455e-820f-dbc95ab1cd5a`. **Not yet confirmed by Jake** — this is a fix for
+  what he just reported, not something he's seen live yet.
+
+  **`exitLevel()` remains entirely unconfirmed** — same three-way fix landed together, but neither
+  the map-jump half nor a label-restore half (it doesn't have this gap; it doesn't touch
+  `currentArea` at all, only re-centers) has been tested.
