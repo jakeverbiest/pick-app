@@ -824,3 +824,39 @@ the ledger's actual structure, not paste it verbatim.
   remove a deployed function; a deploy of the whole functions set, or `firebase functions:delete
   backfillDetectorConsentOnce`, is what actually takes it out of production) to stop the live
   endpoint from still existing, since removing the export locally does not undeploy it.
+
+- **2026-09-10 — the pause-at-each-pick walk landed: closes the still-missing experiment flagged
+  2026-09-09, with a real finding.** Walk `GvKc5PMlbyfGbagCc1RS`, 12:49 UTC, Carroll Gardens, pocket,
+  294s, wrist LOG PICK ground truth = 26 taps. Saved `items_count=23`, `items_detected=23`,
+  `count_confirmed=false` (correction panel still not opened — the wrist log is independent ground
+  truth so this didn't cost the analysis, but the walk isn't self-auditing through the normal save
+  flow either). Raw `motion_log` shows 24 counted events, one more than `items_detected` — an
+  unexplained off-by-one between the raw log and the saved field, not chased further.
+
+  **The headline "23 vs 26, close" is misleading — decomposed by matching ground-truth tap times
+  against counted-event times (±8s window):**
+  - **19 of 26 real picks detected cleanly**, one motion event each.
+  - **4 of 26 (15%) DOUBLE-COUNTED** — two motion events ~1s apart for one physical pickup
+    (event pairs at 75/76, 81/82, 114/115, 284/285, each pair matching exactly one ground-truth
+    tap). This is the bend-then-straighten double-count bug flagged since June
+    (`countDistinctPeaks()`'s own doc comment). **It happened despite full stops before every
+    pick** — kills the assumption that stopping prevents it; it's the phone's motion signature
+    on one bend-and-rise, not stride confusion.
+  - **7 of 26 (27%) MISSED entirely — and NOT scattered noise.** Checked rejection reasons at
+    each miss timestamp: **5 of 7 rejected by the pace gate**, logged as *"still at own pace: X
+    m/s vs Y median (not paused to pick?)"* — the detector's speed signal said motion was still
+    happening when the walker had actually stopped. Same GPS-speed-lag mechanism named in the
+    2026-08-16 entry ("GPS had not caught the stop"), now recurring under a walk specifically
+    designed to eliminate it via full stops. One miss was the pocket low-rotation filter (gyro
+    1.02 < 1.5, read as "handling" not picking). One was an amplitude rejection (peak outside
+    the 0.9-3.5g accepted band).
+  - **One extra event at t=294, exactly the walk's `duration_seconds`** — almost certainly a
+    save/stop artifact, not a real pickup; no nearby ground-truth tap.
+
+  **What this does and doesn't settle.** Does NOT resolve the 2026-09-08 bimodal (0.87x-1.21x)
+  finding on its own — one walk, same standing rule against tuning on n=1. **Does** surface a
+  cleaner, more actionable target than the bimodal mystery: even under ideal technique (full stop,
+  then pick), the pace gate still misjudges "paused" roughly 1 time in 5, and that miss mechanism
+  is now identified rather than diffuse. Worth a second pause-at-each-pick walk to see if the same
+  ~20% pace-gate miss rate replicates, and worth checking `speedAgeMs` on the 5 pace-gate misses
+  specifically — the field exists on every motion_log event and was not yet analyzed here.
