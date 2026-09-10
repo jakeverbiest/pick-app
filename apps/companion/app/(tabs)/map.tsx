@@ -50,7 +50,31 @@ import { postToBluesky } from '../../src/services/bluesky';
 const LAST_BAG_SIZE_KEY = '@pick_last_bag_size';
 const LOCATION_EXPLAINER_SHOWN_KEY = '@pick_location_explainer_shown';
 
+// Diagnostic only — added 2026-09-10, not yet acted on. Module-level (not a
+// ref or state) so it survives a remount of MapScreen within the same JS
+// process, which useRef/useState cannot: the whole open question is whether
+// this SCREEN is remounting mid-walk (backgrounding, tab switch, memory
+// pressure — the walkIntent recovery effect's own comment says this already
+// happens) and, if so, whether `pickupCount` — a plain useState with no
+// recovery mechanism, unlike `walkIntent` which explicitly re-derives itself
+// after a remount — is silently resetting to 0 along with it. Reset at
+// walk start/end (see startCleanup/finishCleanup), incremented once per
+// mount below, saved on the cleanup doc as `screen_remounts`. A walk that
+// saves screen_remounts > 0 has proof the screen remounted during it; a
+// walk that saves 0 is proof this theory is not what caused whatever was
+// observed. See docs/LEDGER_INBOX.md's 2026-09-10 entry for the reasoning
+// this exists to test before any recovery logic is written.
+let screenRemountsThisWalk = 0;
+
 export default function MapScreen() {
+  // Fires once per actual mount (empty deps). The FIRST mount of a walk is
+  // not itself a remount, so this only becomes informative relative to
+  // whatever startCleanup/finishCleanup reset it to — see the module-level
+  // declaration above for why this can't be a ref or state.
+  useEffect(() => {
+    screenRemountsThisWalk += 1;
+  }, []);
+
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const webviewRef = useRef<WebView>(null);
@@ -1555,6 +1579,7 @@ export default function MapScreen() {
     // its Start screen right after you tapped Start on it.
     watchSessionRef.current = `w${Date.now()}`;
     setWalkIntent(true);
+    screenRemountsThisWalk = 0; // see the module-level declaration's comment
     try {
     // One-line context before the cold OS location dialog — first tap only.
     // trackLocation() below is what actually triggers the system prompt (via
@@ -2132,6 +2157,12 @@ export default function MapScreen() {
         session_mode:
           sessionModeRef.current ??
           (sessionModeFailureRef.current ? `unresolved:${sessionModeFailureRef.current}` : 'unresolved'),
+        // Diagnostic, 2026-09-10 — see the module-level screenRemountsThisWalk
+        // declaration near the top of this file. >0 means MapScreen actually
+        // remounted during this walk, which resets pickupCount (no recovery
+        // mechanism, unlike walkIntent) to 0 with nothing to restore it from.
+        // Not yet acted on — this exists to confirm or rule that out first.
+        screen_remounts: screenRemountsThisWalk,
       } as any);
 
       const updatedStats = await db.getCleanupStats();
