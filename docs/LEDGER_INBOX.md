@@ -68,3 +68,37 @@ the ledger's actual structure, not paste it verbatim.
   `ab272758-de2e-40ef-b618-138476584fdc`. `tsc --noEmit` clean. **Not yet tested live** — static
   analysis only, no simulator/device run before shipping; worth a real check on the next
   city-search attempt.
+
+- **2026-09-10 — the ACTUAL root cause of city search doing nothing, found after the first fix
+  didn't resolve it: `map.setView` doesn't exist on MapLibre GL. Three silently-broken calls
+  fixed, verified against the real library before shipping.** Jake's answer to "did it move at all
+  vs. never moved" — never moved — ruled out the earlier `viewingOtherCityRef` fix (real, still
+  correct, but irrelevant here) and pointed at the map command itself never taking effect.
+
+  **Verified, not assumed:** loaded real `maplibre-gl 4.7.1` (the exact CDN version pinned in this
+  app) in a browser and called `map.setView` directly. `typeof map.setView` is `"undefined"`;
+  calling it throws `"map.setView is not a function"`. `jumpTo`/`easeTo` both exist.
+
+  **Root cause:** the 2026-09-08 MapLibre port (`1929786`) replaced the WebView's OWN Leaflet
+  initialization and internal calls, but missed three places OUTSIDE the WebView's script —
+  `exitLevel()`, `goToCity()`, `recenter()` — that inject `map.setView(...)` as a JS string from the
+  React Native side at runtime. **All three have silently done nothing for two days**: each sits
+  inside an EMPTY `try {} catch (e) {}`, so the thrown error was swallowed with no log, no crash,
+  nothing visible — exactly "didn't move at all." **`recenter()` — the "snap back to me" button,
+  used far more than city search — has also been silently broken since the port**, and so has
+  exitLevel's recenter-after-leaving-a-neighborhood.
+
+  **Fixed all three:** `jumpTo` (instant, matching Leaflet's `setView` semantics — not an animation
+  change) and `[lon, lat]` order (MapLibre's convention, matching `window.updateLocation`'s own
+  `easeTo` already inside the WebView, which already had this right). Every catch block now logs
+  instead of swallowing, so a failure like this can't hide silently again.
+
+  **Re-verified before shipping, learning from the first fix's failure:** loaded the exact new call
+  shape (`map.jumpTo({center:[lon,lat], zoom})`) against the real library — center moved from
+  `40.7128,-74.006` to `52.3730796,4.8924534` at zoom 13, matching `goToCity`'s Amsterdam call
+  precisely, zero errors. Published OTA, update group `671eca98-42a3-4d19-9f68-c19f445f924e`.
+
+  **This morning's `viewingOtherCityRef` fix (previous entry) was real and is still correct** — the
+  idle-recenter effect really did conflict with `goToCity`, and that fix stops it from fighting a
+  future `easeTo`/`jumpTo` call. It just never got the chance to matter, since the map was never
+  moving in the first place. Both fixes are needed together, not either instead of the other.
