@@ -860,3 +860,47 @@ the ledger's actual structure, not paste it verbatim.
   is now identified rather than diffuse. Worth a second pause-at-each-pick walk to see if the same
   ~20% pace-gate miss rate replicates, and worth checking `speedAgeMs` on the 5 pace-gate misses
   specifically — the field exists on every motion_log event and was not yet analyzed here.
+
+- **2026-09-10 — pace-gate misses corroborated across the WHOLE ground-truth corpus (n=4 walks,
+  not just the pause-at-each-pick one), and the corpus's own doc-comment explanation is ruled out.**
+  Extended the previous entry's single-walk analysis to all 4 of Jake's wrist-logged walks
+  (`GvKc5PMlbyfGbagCc1RS`, `LIEYG6ezcsDcQpxIIOF2`, `TVfzDQzgfOJ5vkfuZNRT`, `fzuTByEWTnPlXrwZZVjB`).
+
+  **72 `isStillAtOwnPace` rejections total across the 3 walks where it's implicated (walk 4 has an
+  unrelated data problem, `pace_median_mps=-1`, and shows zero pace-gate misses — not chased).**
+  Explains 6/7, 18/20 and 6/6 of those walks' respective misses (30 of 33, 91%).
+
+  **Every one of the 72 rejections happened on a fresh GPS fix**, `speedAgeMs` 67-1366ms, all under
+  the gate's own 1800ms freshness cutoff (mean 559ms). Mean `speedAgeMs` on the SAME corpus's
+  correctly-counted events is 527ms — statistically indistinguishable. **Fix age does not
+  discriminate rejected from accepted events at all.** That rules out the specific failure mode
+  `isStillAtOwnPace`'s own doc comment names as load-bearing ("stale GPS fix... on the B2 walk a
+  frozen fix made the absolute gate reject REAL pickups") — these are not frozen/old fixes.
+  Something else is producing a fresh-but-elevated speed reading immediately after a real stop.
+
+  **Working theory, explicitly NOT confirmed:** CoreLocation's own speed computation may lag a
+  just-completed stop by a beat even on a fresh fix (smoothing/momentum in how instantaneous speed
+  is derived from recent position deltas), so the value the gate reads can still say "moving" for
+  up to ~1.4s after the walker actually paused. **Could not test this against existing data** —
+  `motion_log` stored only the single speed value at rejection time, not the trend leading into it,
+  so there was no way to see whether speed was actively decelerating (supports the theory) or
+  already flat (theory is wrong, something else is happening).
+
+  **Action taken: instrumentation only, no gate logic touched.** Added `speedTrend` to every
+  `MotionEventRecord` — up to the 4 most recent `speedHistory` samples strictly before the event, as
+  `[ageMs, speedMps]` pairs (`apps/companion/src/services/motionDetection.ts`). Zero behavioral
+  change: `npm run test:detector` passes unchanged. Reaches the telemetry export automatically —
+  `detectorExport.js` `JSON.parse`s and re-emits `motion_log` verbatim with no per-field allowlist
+  inside it, confirmed by reading the export code before shipping — so no server-side change was
+  needed. **Published OTA, update group `4fe92267-bc5c-4ca2-87f6-43ccbd0b7632`.**
+
+  **Deliberately did NOT ship a code fix for the pace gate itself.** A deceleration-trend-based
+  grace period is the obvious next move if the theory holds, but building it on an unverified
+  mechanism risks repeating the exact failure class this project's working-style memory names
+  ("theory over observation") and risks reopening the false-positive leak the ratio-based gate was
+  specifically built to close (per `isStillAtOwnPace`'s own doc comment on the walks 1a/2a/2b
+  history). **Next step: one more walk using the SAME wrist-log pause-at-each-pick protocol.** If
+  `speedTrend` shows a clean decelerating run into most pace-gate misses, the theory is confirmed
+  and a grace-period fix is the next natural change. If trends are flat or noisy instead, the
+  mechanism is something else and a different fix is needed — GPS jitter, a genuinely too-tight
+  ratio, or something not yet considered.
