@@ -102,3 +102,9 @@ the ledger's actual structure, not paste it verbatim.
   idle-recenter effect really did conflict with `goToCity`, and that fix stops it from fighting a
   future `easeTo`/`jumpTo` call. It just never got the chance to matter, since the map was never
   moving in the first place. Both fixes are needed together, not either instead of the other.
+
+- **2026-09-10 — CONFIRMED by Jake: city search works after the setView -> jumpTo fix
+  (`671eca98`).** Closes the loop from the two prior entries. `recenter()` and `exitLevel()` share
+  the identical fix and were shipped in the same commit, but neither has been explicitly confirmed
+  by Jake yet — flagged so a future session doesn't assume they're verified just because city
+  search is.
