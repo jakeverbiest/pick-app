@@ -3244,6 +3244,15 @@ exports.runOverpassPrecacheRefresh = onRequest(
   }
 );
 
+// ---------------------------------------------------------------------------
+// backfillDetectorConsentOnce ran 2026-09-10 (Jake's direct instruction —
+// "backfilled consent is fine... it's all me") and is removed now that it
+// has, per its own header comment. It set detector_telemetry_consent=true /
+// consent_at=1 / disclosure_version='backfilled-admin-2026-09-10' on 5
+// accounts (all Jake's own), confirmed via a direct scope=consented call
+// immediately after: consented_accounts=5, row_count=220,
+// skipped_no_consent_at=0 — full existing history included, not just future
+// walks. See docs/LEDGER_INBOX.md's 2026-09-10 entry for the full record.
 // ==========================================================================
 // DETECTOR TELEMETRY EXPORT — see functions/detectorExport.js and
 // docs/DETECTOR_EXPORT_SPEC.md. Wired in and deployed 2026-09-07 on Jake's
