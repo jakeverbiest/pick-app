@@ -135,3 +135,30 @@ the ledger's actual structure, not paste it verbatim.
   Jake explicitly flagged this distinction, correctly, since that's a different code path.
   `exitLevel()` (triggered by backing OUT of a neighborhood level, not by the recenter button)
   remains completely unconfirmed — same map.setView -> jumpTo fix, never tested.
+
+- **2026-09-10 — recenter() from inside a neighborhood level: dimming stayed stuck, confirmed by
+  precise repro before touching code, and fixed.** Jake followed exact steps (tap into a
+  neighborhood, don't back out, open tools, tap Recenter) and confirmed the dimmed veil + its %
+  stat stayed locked on the original neighborhood even though the camera moved. This matched a
+  prediction made from reading the code BEFORE asking Jake to test — only `exitLevel()` (the
+  explicit back button) ever cleared `activeLevel`; `recenter()` never did, and the tools menu's
+  Recenter option is deliberately reachable from inside a level (gated on `!isListening &&
+  !activating`, unlike the header/city switcher which hide there) — a real, directly reachable path,
+  not a theoretical edge case.
+
+  **Fix:** extracted the React-state half of `exitLevel()`'s teardown into a shared
+  `teardownLevelState()` (activation token bump, `activeLevel`/`activating`/`selectedHood`/
+  `liveNowCount`/`activationError` cleared, `levelSegmentsRef` reset), so `exitLevel()` and
+  `recenter()` share one sequence instead of risking drift between two copies. `recenter()` now
+  calls it when `activeLevel` is set, and its injected JS also calls `window.exitLevel()` (tears
+  down the visual veil) before the `jumpTo` — the same call `exitLevel()` already makes
+  unconditionally, so this follows existing precedent. `tsc --noEmit` clean. Published OTA, update
+  group `62024161-9a4e-436f-9a10-2b28c2003078`. **Not yet re-tested by Jake** — same repro steps as
+  before should now show the dimming clearing.
+
+  **This is now the fourth real bug found from one original report** ("map doesn't change when I
+  enter a new city"): the setView/jumpTo API mismatch (3 call sites), the idle-recenter-effect
+  conflict with goToCity, the missing optimistic label restore on recenter, and now this
+  level-mode teardown gap. Each was found by testing the PREVIOUS fix rather than assuming it was
+  complete — worth keeping as the model for how this class of bug gets fully closed out rather than
+  declared fixed after the first plausible cause.
