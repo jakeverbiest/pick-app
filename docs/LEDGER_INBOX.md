@@ -904,3 +904,66 @@ the ledger's actual structure, not paste it verbatim.
   and a grace-period fix is the next natural change. If trends are flat or noisy instead, the
   mechanism is something else and a different fix is needed — GPS jitter, a genuinely too-tight
   ratio, or something not yet considered.
+
+- **2026-09-10 — SECOND wrist-tap walk analyzed with the new speedTrend instrumentation: the
+  deceleration-lag theory does NOT hold up. Redirects the recommended fix.** Walk
+  `duUjXUiQfl2ZWu2KTCrC`, 13:26 UTC, 290s, 22 ground-truth taps, `session_mode=background`.
+  `items_count=items_detected=34` (`count_confirmed=false` again — still not opened).
+
+  **Recall this time: 19 of 22 (86%) — better than the first pause-at-each-pick walk. But
+  double-counting exploded: 36 raw counted events for 22 real picks, 12 separate <3s clusters**
+  (vs. the first walk's 4). `pace_median_mps=0.86, pace_slow_share=0.58` — markedly slower than the
+  first walk's 1.18/0.34. **This directly reproduces the 2026-08-16 C4 slow-stroll bend-then-
+  straighten finding with real wrist ground truth for the first time** — pace and double-count
+  rate move together, now shown twice independently.
+
+  **The 3 misses, checked against `speedTrend` (4 prior speed samples, [ageMs, speedMps]):**
+  none show a clean decelerating run into the pace-gate rejection. Miss #1 (gt=7s) sits in the
+  walk's first 9 seconds — a COLD-START case, the trailing median (windowMs=30s, minSamples=3) is
+  barely past its minimum sample count and still unstable, not a speed-lag issue. Misses #2 and #3
+  (gt=118s, gt=221s) show speed FLAT or INCREASING in the seconds before the pace-gate rejection
+  fires (e.g. 0.86→1.31→1.21→1.37 m/s into one rejection) — consistent with the walker still being
+  in genuine motion (or actively re-accelerating after an earlier stop) at pick time, not a fresh
+  fix lagging behind a completed stop. **The working theory from the previous entry is refuted by
+  this walk's data, not confirmed.** Correctly NOT acted on before verification — exactly why the
+  instrumentation shipped instead of a blind fix.
+
+  **Revised read, now with 2 independent walks:** misses split into (a) cold-start median
+  instability early in a walk, and (b) genuine incomplete/resumed stops — real behavioral
+  variance, not obviously a code bug. Neither has enough evidence yet for a specific fix. The
+  double-counting side is now the better-evidenced target — but checked and **the "obvious" fix
+  isn't available**: `appliedCooldownMs = notStriding ? COOLDOWN.stationaryMs : this.tuning.cooldownMs`
+  (`motionDetection.ts`) shows the cooldown is ALREADY pace-adaptive. The short stationary cooldown
+  is deliberate, specifically to let genuine rapid same-spot picks (cigarette-pile case) all count
+  — extending it would violate that standing constraint. A real fix needs to distinguish "one bend
+  + one straighten, one physical pick" from "two genuine rapid picks" some other way (motion shape/
+  `peaks` field, most likely) — harder than a constant change, matches the Aug 16 entry's own
+  admission that its adaptive-cooldown attempt only partially closed this ("~5 remain unexplained").
+  **No fix implemented this pass — flagged as the next real detector target, not yet designed.**
+
+- **2026-09-10 — watch count flashing (0 → real total → 0) reported live during a walk, matching
+  the exact symptom the 2026-08-24 fix (`7b19cd8`, confirmed shipped on TestFlight Build 36) claims
+  to close. Not yet root-caused — needs Jake's answers to pin down, logged here so it isn't lost.**
+  Both walks analyzed this session ran `session_mode=background` (screen off, phone in pocket) with
+  heavy LOG PICK use throughout — exactly the scenario `PhoneLink.swift`'s staleness guard targets
+  (JS timer throttling in the background driving delayed/queued `applicationContext` deliveries).
+  The guard's own comment claims *"either check alone is enough to reject the re-delivery"* for
+  precisely this flashing pattern, yet it was observed live.
+
+  **Checked: `logPick()` is not a direct cause.** It sends via `transferUserInfo`, a channel
+  entirely separate from the incoming `apply()`/`lastAppliedAt` staleness logic — it never touches
+  the guarded path. Circumstantial link only: each LOG PICK tap likely prompts the phone to
+  re-push state, so heavy LOG PICK use plausibly increases the RATE of phone→watch pushes,
+  giving more chances to hit whatever gap remains — not proven, just the mechanism that would
+  make LOG PICK-heavy walks more likely to surface this than an ordinary walk.
+
+  **This is native watch code — any fix needs a real device build to test (not OTA), so a third
+  guess after two adjacent-symptom fixes already shipped is not worth the build cycle without
+  better diagnostic detail.** Three questions that would actually narrow this down, asked of Jake,
+  answer pending: (1) did the flashing happen near the START of the walk (activation-edge case,
+  `lastAppliedAt` still 0), mid-walk, or at the end/save moment — these hit different branches in
+  `apply()`; (2) did it happen once or repeatedly through the walk; (3) was he actively looking at
+  the watch face continuously, or did it happen on a wrist-raise after not looking for a while
+  (bears on whether this is a delivery-timing issue vs. a wake-from-idle rendering issue). Updates
+  the "Watch stale-payload handling" Watching row — this is the first real-world hit on the exact
+  named symptom (a) since the Aug 24 fix shipped; (b) and (c) remain unobserved.
