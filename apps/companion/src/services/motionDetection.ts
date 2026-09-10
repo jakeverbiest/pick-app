@@ -72,6 +72,12 @@ export interface MotionEventRecord {
   // speed values in the export; now it's measured. If the pause gate ever
   // misbehaves again, check this column before touching the threshold.
   speedAgeMs: number;
+  // Sep 10: up to the 4 most recent speedHistory samples strictly before this
+  // event, each [ageMs, speedMps] — see the push site's comment for why. Lets
+  // a future walk show whether a pace-gate rejection sits at the tail of an
+  // active deceleration (speed dropping sample to sample) or is already flat,
+  // which `speed`/`speedAgeMs` alone cannot distinguish.
+  speedTrend: [number, number][];
 }
 
 export const CARRY_MODE_KEY = '@pick_carry_mode_v2'; // 'auto' | 'pocket' | 'hand'
@@ -622,6 +628,30 @@ class MotionDetector {
             peaks,
             speed: this.lastLocation?.speed ?? -1,
             speedAgeMs: speedAgeMs === null ? -1 : speedAgeMs,
+            // Trend instrumentation only — does not change any detection
+            // decision. Added 2026-09-10 after analyzing all 4 wrist-logged
+            // ground-truth walks: 72 of the corpus's pace-gate rejections
+            // (isStillAtOwnPace) were ALL on fresh fixes (max 1366ms,
+            // freshness cutoff 1800ms), so a stale-fix explanation is ruled
+            // out — the gate's own doc comment only guards against that case.
+            // Working theory, NOT yet confirmed: CoreLocation's speed value
+            // itself lags a just-completed stop by a beat even on a fresh
+            // fix, so `speed` above can read elevated seconds after the
+            // walker has actually paused. This can't be tested against
+            // motion_log as it existed before this field, because it stored
+            // the single speed value at rejection time, not the trend
+            // leading up to it. `speedTrend` is up to the 4 most recent
+            // speedHistory samples strictly before `now`, each as
+            // [ageMs, speedMps] — enough to see whether speed was actively
+            // dropping into this rejection (supports the theory) or already
+            // flat/noisy (theory would be wrong; something else is
+            // happening). Do not build a fix on this mechanism until a walk
+            // with this field shows the trend directly — see
+            // docs/LEDGER_INBOX.md's 2026-09-10 entry.
+            speedTrend: this.speedHistory
+              .filter((s) => s.atMs < now)
+              .slice(-4)
+              .map((s) => [Math.round(now - s.atMs), Math.round(s.speedMps * 100) / 100]),
           });
 
           console.log(`⏸️ Motion stopped. Duration: ${profile.duration}ms, Peak: ${profile.peakAccel.toFixed(2)}g, Gyro: ${profile.peakGyro.toFixed(2)}, Confidence: ${finalConfidence}%${accepted && !counted ? ' (cooldown — not counted)' : ''}`);
