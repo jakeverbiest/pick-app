@@ -30,7 +30,7 @@
     "android": {
       "package": "com.jakeverbiest.pickapp",
       "adaptiveIcon": {
-        "backgroundColor": "#05286E",
+        "backgroundColor": "#0F2F66",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
         "backgroundImage": "./assets/images/android-icon-background.png",
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
@@ -57,7 +57,7 @@
         "expo-splash-screen",
         {
           "image": "./assets/images/splash-icon.png",
-          "imageWidth": 200,
+          "imageWidth": 260,
           "resizeMode": "contain",
           "backgroundColor": "#0F2F66",
           "dark": {
@@ -85,7 +85,7 @@
       [
         "expo-notifications",
         {
-          "color": "#05286E"
+          "color": "#0F2F66"
         }
       ],
       "expo-secure-store",
