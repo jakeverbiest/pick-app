@@ -103,3 +103,18 @@ the ledger's actual structure, not paste it verbatim.
   summary-sheet state (`userCount`/`countEditing`/`showAdjust`) rendered after a walk ends, while
   the remount fix touches active-walk state before the summary sheet exists. Status unchanged from
   the existing Launch-gates row otherwise — **still not shipped or device-tested.**
+- 2026-09-16 — `code` resolved the one open question `d233bea` deliberately left undecided:
+  long-press acceleration on the hero-row count stepper. Committed as `a314c53`. Holding `-`/`+`
+  now auto-repeats via a `setInterval` started in `onPressIn`/stopped in `onPressOut` on the
+  existing `TouchableOpacity`s (no existing long-press-repeat helper found anywhere in the
+  companion app, and this file uses no `Pressable`, so nothing to reuse); a plain tap is unchanged
+  (`adjustCount(+-1)` via `onPress`, guarded against double-counting by a ref-based `repeated`
+  flag that skips `onPress` if the hold interval already fired). Timing: repeats at +-1 every
+  130ms, accelerating to +-5 once held past 500ms. Per Jake, the coarse +-5 step is a deliberate
+  product signal (a chunky jump tells the walker this count is an estimate to correct, not a
+  precise reading), captured as a code comment so it isn't mistaken for an unexplained
+  inconsistency later. `countEditing`/keypad entry, the 0 floor, and `BagDetails.tsx` untouched.
+  `tsc --noEmit` and `npm test` (all 6 suites) clean. Isolated from this working tree's large
+  pre-existing unrelated uncommitted changes via a hand-built 3-hunk patch applied with `git apply
+  --cached` (same technique as `d233bea`) — not a broad `git add`. JS/TS only (OTA-shippable);
+  **not yet shipped via `eas update`** — publishing is Jake's separate call.
