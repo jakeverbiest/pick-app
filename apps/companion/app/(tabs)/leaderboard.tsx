@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useState } from 'react';
 import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
@@ -97,12 +97,10 @@ export default function LeaderboardScreen() {
   // uids whose owner allows their profile to be opened (profiles/{uid}.hidden !== true)
   const [openProfiles, setOpenProfiles] = useState<Set<string>>(new Set());
   const [personal, setPersonal] = useState<Personal>({ pickups: 0, bags: 0, days: 0, cleanups: 0 });
-  const [loading, setLoading] = useState(true);
   const router = useRouter();
 
   const load = useCallback(async () => {
     try {
-      setLoading(true);
       const db = await getDatabase();
       const currentUser = getAuthService().getCurrentUser();
       // Needed further down to scope team-only challenges, so it can't stay
@@ -167,14 +165,8 @@ export default function LeaderboardScreen() {
       } catch {}
     } catch (error) {
       console.error('Failed to load leaderboard:', error);
-    } finally {
-      setLoading(false);
     }
   }, []);
-
-  useEffect(() => {
-    load();
-  }, [load]);
 
   useFocusEffect(
     useCallback(() => {
@@ -222,16 +214,6 @@ export default function LeaderboardScreen() {
   const teamRank = teamIndex >= 0 ? teamIndex + 1 : null;
   const teamGap = teamIndex > 0 ? teamValue(teamRanked[teamIndex - 1]) - teamValue(teamRanked[teamIndex]) : 0;
 
-
-  if (loading) {
-    return (
-      <SafeAreaView style={styles.root} edges={['top']}>
-        <View style={styles.center}>
-          <Text style={styles.loading}>Loading…</Text>
-        </View>
-      </SafeAreaView>
-    );
-  }
 
   return (
     <SafeAreaView style={styles.root} edges={['top']}>

@@ -70,7 +70,6 @@ export default function ActivityScreen() {
   const [editing, setEditing] = useState<any | null>(null);
   const [editValue, setEditValue] = useState<BagDetailsValue | null>(null);
   const [badges, setBadges] = useState<any[]>([]);
-  const [loading, setLoading] = useState(true);
 
   // "My Path" recap: whichever closed week/month/year the user hasn't seen
   // yet, surfaced as a banner (year takes priority over month over week —
@@ -94,7 +93,6 @@ export default function ActivityScreen() {
   );
 
   useEffect(() => {
-    loadActivity();
     checkRecap();
   }, []);
 
@@ -154,7 +152,6 @@ export default function ActivityScreen() {
       const db = await getDatabase();
       const currentUser = getAuthService().getCurrentUser();
       if (!currentUser) {
-        setLoading(false);
         return;
       }
       const userStats = await db.getCleanupStats();
@@ -165,8 +162,6 @@ export default function ActivityScreen() {
       setBadges(userBadges || []);
     } catch (error) {
       console.error('Failed to load activity:', error);
-    } finally {
-      setLoading(false);
     }
   };
 
@@ -292,16 +287,6 @@ export default function ActivityScreen() {
       ]
     );
   };
-
-  if (loading) {
-    return (
-      <SafeAreaView style={styles.root}>
-        <View style={styles.center}>
-          <Text style={styles.loading}>Loading…</Text>
-        </View>
-      </SafeAreaView>
-    );
-  }
 
   const totalBags = (stats?.total_bags as number) || 0;
   const totalPickups = (stats?.total_pickups as number) || 0;

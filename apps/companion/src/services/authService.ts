@@ -96,6 +96,25 @@ class AuthService {
   }
 
   /**
+   * Keep Firebase Auth's display name aligned with the editable profile name.
+   * Settings is the durable in-app source, but Auth is what restores the name
+   * at the next launch. Leaving only one updated made a saved name appear to
+   * disappear after an app restart for accounts whose Auth profile was blank.
+   */
+  async updateDisplayName(displayName: string): Promise<void> {
+    const next = displayName.trim();
+    if (!next) throw new Error('Enter a name before saving.');
+    const user = auth.currentUser;
+    if (!user) throw new Error('Not signed in.');
+
+    await updateProfile(user, { displayName: next });
+    if (this.currentUser) {
+      this.currentUser = { ...this.currentUser, displayName: next };
+      this.notifyListeners();
+    }
+  }
+
+  /**
    * @param detectorDisclosureVersion The version string of the detector-telemetry
    *   disclosure the caller actually RENDERED on the signup screen. Pass it only
    *   from a screen that showed the copy — see initializeUserSettings' doc and

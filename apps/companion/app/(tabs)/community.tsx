@@ -59,14 +59,12 @@ export default function CommunityScreen() {
   // uid → @handle / avatar for post authors (name + handle display, design audit)
   const [handles, setHandles] = useState<Record<string, string>>({});
   const [avatars, setAvatars] = useState<Record<string, string>>({});
-  const [loading, setLoading] = useState(true);
   const [mode, setMode] = useState<FeedMode>('everyone');
   const [composerOpen, setComposerOpen] = useState(false);
   const [blockedUids, setBlockedUids] = useState<string[]>([]);
 
   const load = useCallback(async (feedMode: FeedMode) => {
     try {
-      setLoading(true);
       const db = await getDatabase();
       const user = getAuthService().getCurrentUser();
       setUid(user?.uid || '');
@@ -97,8 +95,6 @@ export default function CommunityScreen() {
       } catch {}
     } catch (error) {
       console.error('Failed to load community feed:', error);
-    } finally {
-      setLoading(false);
     }
   }, []);
 
@@ -111,7 +107,6 @@ export default function CommunityScreen() {
   const switchMode = (m: FeedMode) => {
     if (m === mode) return;
     setMode(m);
-    load(m);
   };
 
   const toggleLike = async (post: Post) => {
@@ -231,11 +226,7 @@ export default function CommunityScreen() {
 
         <LiveNow />
 
-        {loading ? (
-          <View style={styles.center}>
-            <Text style={styles.loading}>Loading…</Text>
-          </View>
-        ) : posts.length === 0 ? (
+        {posts.length === 0 ? (
           <View style={styles.emptyCard}>
             <View style={styles.emptyWell}>
               <Icon name={mode === 'following' ? 'user' : 'camera'} size={26} color={C.primary} sw={1.7} />
