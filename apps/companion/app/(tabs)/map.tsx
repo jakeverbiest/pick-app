@@ -148,6 +148,23 @@ export default function MapScreen() {
   // detector's number stands. Deliberately separate from pickupCount: that
   // stays the RAW sensor figure and is stored as items_detected for tuning.
   const [userCount, setUserCount] = useState<number | null>(null);
+  // Hero-row count control (2026-09-16 redesign): the stepper's number is a
+  // Text by default and swaps to a TextInput while `countEditing` is true, so
+  // a large correction (e.g. 15 -> 35) doesn't need 20 taps on "+". Mirrors
+  // BagDetails' own countDraft pattern (raw text while focused, so
+  // backspacing to empty doesn't snap to "0" mid-edit) rather than importing
+  // BagDetails' input directly, since this one renders on the navy hero
+  // background instead of BagDetails' bordered white panel.
+  const [countEditing, setCountEditing] = useState(false);
+  const [countDraft, setCountDraft] = useState<string | null>(null);
+  const countInputRef = useRef<TextInput>(null);
+  // +/- taps on the hero-row stepper. Floors at 0 (never negative pickups);
+  // no ceiling beyond BagDetails' own clampCount's 100000, which the keypad
+  // path already enforces — a +/- tap can't realistically reach it.
+  const adjustCount = (delta: number) => {
+    setUserCount((prev) => Math.max(0, (prev ?? pickupCount) + delta));
+    setCountConfirmed(true);
+  };
   /**
    * Did the walker actually LOOK at the count before saving?
    *
@@ -157,10 +174,13 @@ export default function MapScreen() {
    * the second is an absence of evidence — and 45 of 50 walks with both fields
    * sit in that ambiguous bucket (2026-09-09 field-data pass).
    *
-   * Set when the correction panel is opened, whether or not the number is then
-   * changed. Deliberately NOT a forced confirmation step: correcting is a
-   * face-saver we would rather nobody needed, so the goal is to record whether
-   * the number was seen, not to make people touch it.
+   * Redefined 2026-09-16 alongside the always-visible count stepper: there is
+   * no more "correction panel" to open for the count, so this now records
+   * whether a finger touched the stepper's -/+ buttons or the number field
+   * itself, independent of whether the value changed. Deliberately NOT a
+   * forced confirmation step: correcting is a face-saver we would rather
+   * nobody needed, so the goal is to record whether the number was seen, not
+   * to make people touch it.
    */
   const [countConfirmed, setCountConfirmed] = useState(false);
   const [showAdjust, setShowAdjust] = useState(false);
@@ -1244,9 +1264,15 @@ export default function MapScreen() {
       if (shown) return;
       await AsyncStorage.setItem(LOCATION_EXPLAINER_SHOWN_KEY, '1');
       await new Promise<void>((resolve) => {
+        // 2026-09-16: named the Always-vs-While-Using choice here for the
+        // first time — previously only a reactive mid-walk Alert (below,
+        // after a session already degraded to foreground-only) and a human
+        // reading VOLUNTEER_ONE_PAGER.md's organizer script covered this.
+        // Self-directed signups get no organizer, so the in-app copy needs
+        // to say it before the OS dialog fires, not after tracking breaks.
         Alert.alert(
           'One quick thing',
-          'PICK uses your location to map the streets you clean. The next prompt is the standard iOS location request — allow it to start tracking.',
+          'PICK uses your location to map the streets you clean while you walk. The next screen may offer “While Using the App” first — choose “Always” instead, so tracking keeps working with your phone in your pocket and the screen off. (Picked the wrong one? Fix it later in Settings → PICK → Location → Always.)',
           [{ text: 'Continue', onPress: () => resolve() }],
         );
       });
@@ -1817,6 +1843,8 @@ export default function MapScreen() {
     setUserCount(null);
     setCountConfirmed(false);
     setShowAdjust(false);
+    setCountEditing(false);
+    setCountDraft(null);
 
     // SAVE-FIRST: persist the whole walk to disk the instant Stop is pressed —
     // BEFORE the summary sheet renders. If the summary is dismissed, the app is
@@ -3789,16 +3817,73 @@ ${MAPLIBRE_ANCHOR_FN}
               <Text style={styles.doneSub}>Here’s what you logged.</Text>
 
               <View style={styles.heroRow}>
-                <TouchableOpacity
-                  style={styles.heroStat}
-                  activeOpacity={0.7}
-                  onPress={() => setShowAdjust(true)}
-                  accessibilityRole="button"
-                  accessibilityLabel={`${userCount ?? pickupCount} pickups. Tap to correct the count.`}
-                >
-                  <Text style={[styles.heroNum, styles.heroNumEditable]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.5}>{userCount ?? pickupCount}</Text>
+                <View style={styles.heroStat}>
+                  {/* Always-visible stepper (2026-09-16 redesign) replacing a
+                      dotted-underline number that only revealed a disclosure
+                      panel — that panel was confirmed unused on every
+                      ground-truth walk on record (see LAUNCH_UX_PLAN.md Part
+                      1). Reuses the same -/+ stepper language BagDetails
+                      already teaches for bag quantity on this same screen. */}
+                  <View style={styles.countStepperRow}>
+                    <TouchableOpacity
+                      style={styles.countStepperBtn}
+                      activeOpacity={0.7}
+                      onPress={() => adjustCount(-1)}
+                      accessibilityRole="button"
+                      accessibilityLabel="Decrease pickup count by 1"
+                    >
+                      <Text style={styles.countStepperBtnText}>−</Text>
+                    </TouchableOpacity>
+                    {countEditing ? (
+                      <TextInput
+                        ref={countInputRef}
+                        style={[styles.heroNum, styles.countInput]}
+                        keyboardType="number-pad"
+                        value={countDraft ?? String(userCount ?? pickupCount)}
+                        autoFocus
+                        selectTextOnFocus
+                        returnKeyType="done"
+                        onSubmitEditing={() => countInputRef.current?.blur()}
+                        onChangeText={(t) => {
+                          const digits = t.replace(/[^0-9]/g, '').slice(0, 6);
+                          setCountDraft(digits);
+                          setCountConfirmed(true);
+                          // Same as BagDetails' clampCount: keep applying as
+                          // they type so the estimate line below stays live.
+                          if (digits.length) setUserCount(Math.min(parseInt(digits, 10), 100000));
+                        }}
+                        onBlur={() => {
+                          // Left blank mid-edit? Keep the last applied value
+                          // rather than snapping to 0 — same fix BagDetails'
+                          // own count field already carries.
+                          const digits = (countDraft ?? '').replace(/[^0-9]/g, '');
+                          if (digits.length) setUserCount(Math.min(parseInt(digits, 10), 100000));
+                          setCountDraft(null);
+                          setCountEditing(false);
+                        }}
+                      />
+                    ) : (
+                      <TouchableOpacity
+                        activeOpacity={0.7}
+                        onPress={() => { setCountEditing(true); setCountConfirmed(true); }}
+                        accessibilityRole="button"
+                        accessibilityLabel={`${userCount ?? pickupCount} pickups. Tap to type an exact count.`}
+                      >
+                        <Text style={styles.heroNum} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.5}>{userCount ?? pickupCount}</Text>
+                      </TouchableOpacity>
+                    )}
+                    <TouchableOpacity
+                      style={styles.countStepperBtn}
+                      activeOpacity={0.7}
+                      onPress={() => adjustCount(1)}
+                      accessibilityRole="button"
+                      accessibilityLabel="Increase pickup count by 1"
+                    >
+                      <Text style={styles.countStepperBtnText}>+</Text>
+                    </TouchableOpacity>
+                  </View>
                   <Text style={styles.heroLabel}>{(userCount ?? pickupCount) === 1 ? 'pickup' : 'pickups'}</Text>
-                </TouchableOpacity>
+                </View>
                 <View style={styles.heroDivider} />
                 <View style={styles.heroStat}>
                   <Text style={styles.heroNum} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.5}>{formatTime(elapsedSeconds)}</Text>
@@ -3806,26 +3891,17 @@ ${MAPLIBRE_ANCHOR_FN}
                 </View>
               </View>
 
-              {/* The count has always been tappable, but with no affordance it
-                  read as a finished stat, so nobody corrected it — and
-                  `items_count` silently inherited `items_detected`. That is not
-                  a cosmetic problem: measured 2026-09-08 against per-pick watch
-                  ground truth, the detector caught 15 of 35 real pickups (0.43x
-                  recall, zero false positives), and the walk saved as 15 because
-                  the number was never touched. Every "confirmed" total in the
-                  corpus is detector output unless a human actively edited it.
-                  This prompt is the cheapest fix available: it costs nobody a
-                  tap, and each correction turns an ordinary walk into a real
-                  recall measurement. */}
-              {!showAdjust && (
-                <TouchableOpacity onPress={() => setShowAdjust(true)} activeOpacity={0.7} accessibilityRole="button">
-                  <Text style={styles.countNudge}>
-                    {userCount === null
-                      ? 'Counted automatically — tap if we missed any'
-                      : 'Your count — tap to change'}
-                  </Text>
-                </TouchableOpacity>
-              )}
+              {/* Permanent caption, not gated behind showAdjust — there's no
+                  more disclosure panel for the count itself to hide it
+                  behind. Measured 2026-09-08 against per-pick watch ground
+                  truth: the detector caught 15 of 35 real pickups (0.43x
+                  recall, zero false positives), and every walk on record
+                  saved uncorrected because the old tap-to-reveal number was
+                  never touched. This line and the stepper above it are the
+                  fix — always on screen, not one tap away from it. */}
+              <Text style={styles.countCaption}>
+                Counted automatically from your phone’s motion — adjust if it’s off.
+              </Text>
 
               <Text style={styles.estLine}>
                 Est. {formatKitchenBags(itemsToBags(userCount ?? pickupCount))} collected
@@ -3871,11 +3947,11 @@ ${MAPLIBRE_ANCHOR_FN}
                   : 'Optional — we’ll estimate from your pickups if you skip.'}
               </Text>
 
-              {/* Count correction. The detector runs well over on a slow stroll and
-                  that is a sensor limit, not a bug we can filter away — so the
-                  honest thing is to let people fix the number. Tucked behind a
-                  disclosure so the one-tap path above stays the default. */}
-              <TouchableOpacity style={styles.adjustToggle} activeOpacity={0.7} onPress={() => { setShowAdjust((v) => !v); setCountConfirmed(true); }}>
+              {/* Bag size/fullness correction only, now that the count has its
+                  own always-visible stepper above — count no longer shares a
+                  hiding spot with these (2026-09-16). Tucked behind a
+                  disclosure since size/fullness are genuinely secondary. */}
+              <TouchableOpacity style={styles.adjustToggle} activeOpacity={0.7} onPress={() => setShowAdjust((v) => !v)}>
                 <Text style={styles.adjustToggleText}>{showAdjust ? 'Hide details' : 'Adjust details'}</Text>
               </TouchableOpacity>
 
@@ -3883,9 +3959,9 @@ ${MAPLIBRE_ANCHOR_FN}
                 <BagDetails
                   value={{ count: userCount ?? pickupCount, size: bagSize, qty: bagCount, fullness: bagFullness }}
                   detectedCount={pickupCount}
+                  showCount={false}
                   showSize={false}
                   onChange={(v) => {
-                    setUserCount(v.count);
                     setBagCount(v.qty);
                     setBagFullness(v.fullness);
                     // Touching anything here is an explicit report, so it wins
@@ -4561,19 +4637,29 @@ const styles = StyleSheet.create({
   heroStat: { flex: 1, alignItems: 'center', minWidth: 0, paddingHorizontal: 8 },
   heroDivider: { width: 1, height: 40, backgroundColor: 'rgba(254,252,221,0.22)' },
   heroNum: { fontSize: 44, fontFamily: Fonts.displayBold, color: C.creamText, letterSpacing: -1 },
-  // The pickup figure is the only editable number on this card. A dotted
-  // underline says so without shouting; a solid one would read as a link and
-  // compete with the primary action.
-  heroNumEditable: {
-    textDecorationLine: 'underline',
-    textDecorationStyle: 'dotted',
-    textDecorationColor: C.heroSub2,
-  },
   heroLabel: { fontSize: 13, color: C.heroSub, marginTop: 3 },
-  countNudge: {
+  // Always-visible pickup-count stepper (2026-09-16 redesign), replacing a
+  // dotted-underline number that only revealed a disclosure panel further
+  // down the sheet. Same interaction shape as BagDetails' stepperRow/
+  // stepperBtn/stepperValue, recolored for the navy hero background instead
+  // of BagDetails' white panel.
+  countStepperRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  countStepperBtn: {
+    width: 34,
+    height: 34,
+    borderRadius: 10,
+    borderWidth: 1.5,
+    borderColor: 'rgba(254,252,221,0.4)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  countStepperBtnText: { fontSize: 20, fontFamily: Fonts.bodyBold, color: C.creamText, lineHeight: 22 },
+  // Matches heroNum visually; width caps it so a long typed number doesn't
+  // push the +/- buttons off the hero row.
+  countInput: { minWidth: 70, maxWidth: 110, textAlign: 'center', padding: 0 },
+  countCaption: {
     fontSize: 12.5,
-    color: C.rust,
-    fontFamily: Fonts.bodySemibold,
+    color: C.muted,
     textAlign: 'center',
     marginTop: 12,
   },
