@@ -165,6 +165,56 @@ export default function MapScreen() {
     setUserCount((prev) => Math.max(0, (prev ?? pickupCount) + delta));
     setCountConfirmed(true);
   };
+  // Long-press acceleration on the hero-row stepper (2026-09-16). Holding
+  // -/+ auto-repeats the same way iOS's native Stepper does: it starts at
+  // the tap's own +/-1 and, once held past STEPPER_ACCEL_MS, steps up to
+  // the coarser +/-5. That coarseness is deliberate, not just a speed trick
+  // — a chunky +/-5 jump is itself a signal to the walker that this number
+  // is an ESTIMATE to correct, not a precise instrument reading, the way a
+  // single +/-1 tap could be misread. Don't "simplify" the two tiers back
+  // to one step size; that reasoning is the reason they're different.
+  const STEPPER_TICK_MS = 130;
+  const STEPPER_ACCEL_MS = 500;
+  const STEPPER_BASE_STEP = 1;
+  const STEPPER_FAST_STEP = 5;
+  const stepperHoldRef = useRef<{
+    timer: ReturnType<typeof setInterval> | null;
+    startedAt: number;
+    // Did the hold interval below fire at least once this press? If so,
+    // the matching onPress on release is the END of that hold, not a
+    // separate tap, and must be skipped so its own +/-1 doesn't double up
+    // on whatever the hold already applied.
+    repeated: boolean;
+  }>({ timer: null, startedAt: 0, repeated: false });
+  const stopStepperHold = () => {
+    if (stepperHoldRef.current.timer) {
+      clearInterval(stepperHoldRef.current.timer);
+      stepperHoldRef.current.timer = null;
+    }
+  };
+  const startStepperHold = (direction: 1 | -1) => {
+    stopStepperHold();
+    stepperHoldRef.current.repeated = false;
+    stepperHoldRef.current.startedAt = Date.now();
+    stepperHoldRef.current.timer = setInterval(() => {
+      const heldMs = Date.now() - stepperHoldRef.current.startedAt;
+      const step = heldMs >= STEPPER_ACCEL_MS ? STEPPER_FAST_STEP : STEPPER_BASE_STEP;
+      adjustCount(direction * step);
+      stepperHoldRef.current.repeated = true;
+    }, STEPPER_TICK_MS);
+  };
+  // Wired to onPress, not called directly: a plain tap (interval never
+  // ticked) still moves by exactly `delta`, same as before this existed.
+  const handleStepperTap = (delta: number) => {
+    if (stepperHoldRef.current.repeated) {
+      stepperHoldRef.current.repeated = false;
+      return;
+    }
+    adjustCount(delta);
+  };
+  // Safety net, not the normal path (onPressOut already stops it on
+  // release) — don't leave the interval ticking past unmount.
+  useEffect(() => stopStepperHold, []);
   /**
    * Did the walker actually LOOK at the count before saving?
    *
@@ -3828,7 +3878,9 @@ ${MAPLIBRE_ANCHOR_FN}
                     <TouchableOpacity
                       style={styles.countStepperBtn}
                       activeOpacity={0.7}
-                      onPress={() => adjustCount(-1)}
+                      onPress={() => handleStepperTap(-1)}
+                      onPressIn={() => startStepperHold(-1)}
+                      onPressOut={stopStepperHold}
                       accessibilityRole="button"
                       accessibilityLabel="Decrease pickup count by 1"
                     >
@@ -3875,7 +3927,9 @@ ${MAPLIBRE_ANCHOR_FN}
                     <TouchableOpacity
                       style={styles.countStepperBtn}
                       activeOpacity={0.7}
-                      onPress={() => adjustCount(1)}
+                      onPress={() => handleStepperTap(1)}
+                      onPressIn={() => startStepperHold(1)}
+                      onPressOut={stopStepperHold}
                       accessibilityRole="button"
                       accessibilityLabel="Increase pickup count by 1"
                     >
