@@ -1328,7 +1328,7 @@ export default function MapScreen() {
           'One quick thing',
           Platform.OS === 'ios'
             ? 'PICK uses your location to map the streets you clean while you walk. The next screen may offer “While Using the App” first — choose “Always” instead, so tracking keeps working with your phone in your pocket and the screen off. (Picked the wrong one? Fix it later in Settings → PICK → Location → Always.)'
-            : 'PICK needs precise location while you clean, then background location so tracking keeps working with your phone in your pocket and the screen off. Android may open PICK’s Location settings for the second step — choose “Allow all the time.”',
+            : 'PICK collects precise location data to map your cleanup route and the streets you clean, including while the app is in the background during an active cleanup. Your exact route is saved to your private account and is never shown on the public map. Android may open PICK’s Location settings for the second step — choose “Allow all the time” so tracking keeps working with your phone in your pocket and the screen off.',
           [{ text: 'Continue', onPress: () => resolve() }],
         );
       });
