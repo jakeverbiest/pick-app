@@ -74,3 +74,32 @@ the ledger's actual structure, not paste it verbatim.
   has already degraded to foreground-only). `VOLUNTEER_ONE_PAGER.md` currently plugs this gap with
   an organizer reading a script aloud, which doesn't scale to self-directed public-beta
   onboarding. Full detail in `LAUNCH_UX_PLAN.md`.
+- 2026-09-16 — `code` implemented two items from `LAUNCH_UX_PLAN.md` (Jake approved Part 1;
+  Part 2 item 2 was a confirmed gap, not a new proposal), committed as `d233bea`. **(1) Count-
+  correction stepper redesign (Part 1):** `map.tsx`'s summary sheet replaces the dotted-underline
+  pickup count — which every ground-truth walk on record confirmed was never touched — with an
+  always-visible `[-] N [+]` stepper in the hero row; tapping the number opens a numeric keypad in
+  place for larger corrections. Reuses `BagDetails`' own stepper/countDraft interaction patterns,
+  recolored for the hero row, rather than a new control style. `countConfirmed` is now set by
+  touching the stepper/number directly, not by opening a panel — telemetry intent preserved per
+  the plan's note. "Adjust details" stays as a link, now scoped to bag size/fullness only;
+  `BagDetails` renders with `showCount={false}` on the summary sheet, removing the duplicate count
+  field. "Save & log" availability is unchanged — no new gate. Two items from the plan's open
+  questions were deliberately left undecided rather than guessed: stepper increment is plain ±1
+  (no long-press/±5 accelerator built); the optional Stop-confirm-Alert echo (labeled P1/optional
+  in the plan) was not added. **(2) Location-permission explainer (Part 2 item 2):**
+  `explainLocationPermissionIfNeeded()` now names the Always-vs-While-Using choice and recommends
+  Always before the OS dialog fires, reusing `VOLUNTEER_ONE_PAGER.md`'s language, since previously
+  only an organizer's spoken script covered this. Both changes are JS/TS only (OTA-shippable, no
+  native build); `tsc --noEmit` and `npm run test:detector` clean; **not yet shipped via `eas
+  update`** — publishing is Jake's separate call.
+- 2026-09-16 — Re-confirmed the Launch-gates mid-walk stats-reset fix ("entering a neighborhood
+  mid-walk can reset an active walk's stats to zero") is still present and intact in the working
+  tree, unchanged by the stepper work above: `attachWalkListeners()` still calls
+  `MotionDetector.stopListening()` before re-attaching, `resumeWalkAfterRemount()` still restores
+  route/pickups/count from the walk-draft mechanism, and the `walkIntent`-recovery effect still
+  calls it on remount. `tsc --noEmit` clean project-wide (checked together with the stepper
+  changes above in the same pass). No overlap between the two: the stepper touches only the
+  summary-sheet state (`userCount`/`countEditing`/`showAdjust`) rendered after a walk ends, while
+  the remount fix touches active-walk state before the summary sheet exists. Status unchanged from
+  the existing Launch-gates row otherwise — **still not shipped or device-tested.**
