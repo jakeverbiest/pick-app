@@ -8,6 +8,7 @@ import { Accelerometer, Gyroscope, Pedometer } from 'expo-sensors';
 import * as Location from 'expo-location';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import PickupAggregator from './pickupAggregator';
+import { recordMotionDiagnostic } from './motionDiagnostics';
 import GroundTruthCapture from './groundTruthCapture';
 import MotionShapeDetector from './motionShapeDetector';
 import {
@@ -188,6 +189,7 @@ class MotionDetector {
       this.lastRhythmicTime = 0;
       this.hasStartedWalking = false; // arm counting only once real walking begins
       this.sessionStartTime = Date.now();
+      recordMotionDiagnostic('detectorAttached', { detectorStartedAtMs: this.sessionStartTime });
       this.recentCandidateTimes = [];
       this.recentCandidateShapes = [];
       this.lastStepAt = null;
@@ -225,12 +227,16 @@ class MotionDetector {
       Accelerometer.setUpdateInterval(100);
       Gyroscope.setUpdateInterval(100);
 
-      this.accelSubscription = Accelerometer.addListener(({ x, y, z }) => {
+      this.accelSubscription = Accelerometer.addListener((sample) => {
+        const { x, y, z } = sample;
+        recordMotionDiagnostic('accelerometer', { sample });
         this.lastAccel = { x, y, z };
         this.handleAcceleration(x, y, z);
       });
 
-      this.gyroSubscription = Gyroscope.addListener(({ x, y, z }) => {
+      this.gyroSubscription = Gyroscope.addListener((sample) => {
+        const { x, y, z } = sample;
+        recordMotionDiagnostic('gyroscope', { sample });
         this.lastGyro = { x, y, z };
       });
 
@@ -270,6 +276,7 @@ class MotionDetector {
               distanceInterval: 0,
             },
             (location) => {
+              recordMotionDiagnostic('location', { measuredAtMs: location.timestamp, speed: location.coords.speed, accuracy: location.coords.accuracy });
               this.lastLocation = {
                 latitude: location.coords.latitude,
                 longitude: location.coords.longitude,
@@ -308,7 +315,8 @@ class MotionDetector {
       try {
         const pedometerAvailable = await Pedometer.isAvailableAsync();
         if (pedometerAvailable) {
-          this.pedometerSubscription = Pedometer.watchStepCount(() => {
+          this.pedometerSubscription = Pedometer.watchStepCount((sample) => {
+            recordMotionDiagnostic('steps', { sample });
             this.lastStepAt = Date.now();
             // A step means the session is genuinely under way — this is one of
             // the ways the onset gate arms now, so standing-still picking is
@@ -333,6 +341,7 @@ class MotionDetector {
   }
 
   stopListening() {
+    recordMotionDiagnostic('detectorDetached', {});
     if (!this.isListening) return;
 
     this.accelSubscription?.remove?.();
@@ -471,6 +480,7 @@ class MotionDetector {
           // under way. Steps arm it sooner (see the Pedometer listener).
           if (now - this.sessionStartTime > ONSET_FALLBACK_MS) this.hasStartedWalking = true;
 
+          recordMotionDiagnostic('candidate', { startedAtMs: profile.startTime, durationMs: profile.duration, peakAccel: profile.peakAccel, peakGyro: profile.peakGyro, peaks, speed: evSpeed, speedReceiptAgeMs: speedAgeMs, trailingMedianMps: trailingMps, lastStepAtMs: this.lastStepAt, pedometerActive: this.pedometerActive, carryMode: this.carryMode, autoCarry: this.lastAutoCarry, profileReason: result.reason });
           const finalConfidence = result.confidence;
           const accepted = finalConfidence > 30;
 
@@ -654,6 +664,7 @@ class MotionDetector {
               .map((s) => [Math.round(now - s.atMs), Math.round(s.speedMps * 100) / 100]),
           });
 
+          recordMotionDiagnostic('decision', { event: this.sessionEvents[this.sessionEvents.length - 1] });
           console.log(`⏸️ Motion stopped. Duration: ${profile.duration}ms, Peak: ${profile.peakAccel.toFixed(2)}g, Gyro: ${profile.peakGyro.toFixed(2)}, Confidence: ${finalConfidence}%${accepted && !counted ? ' (cooldown — not counted)' : ''}`);
 
           if (!accepted) {
@@ -754,6 +765,7 @@ class MotionDetector {
       );
     }
 
+    recordMotionDiagnostic('pickupCallback', { count: this.pickupEvents.length, timestamp: event.timestamp, callbackAttached: !!this.onPickupCallback });
     this.onPickupCallback?.(event);
     return true;
   }

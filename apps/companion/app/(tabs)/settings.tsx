@@ -24,7 +24,7 @@ import { PRIVACY_POLICY_TEXT, TERMS_OF_SERVICE_TEXT } from '../../src/constants/
 import { FitnessApp } from '../../src/types';
 import { SPACING, RADIUS } from '../../src/constants/colors';
 import { C, radius, Fonts } from '../../src/pick/theme';
-import { getProfile, setHandle as claimHandle, uploadAvatar, setProfileHidden } from '../../src/services/profiles';
+import { ensureProfile, getProfile, setHandle as claimHandle, uploadAvatar, setProfileHidden } from '../../src/services/profiles';
 import { Icon, IconName } from '../../src/pick/Icon';
 import {
   getCrashReports,
@@ -37,6 +37,7 @@ import { TeamSection } from '../../src/pick/TeamSection';
 import { listMyAdoptions, removeAdoption, Adoption } from '../../src/services/adoptions';
 import { isSegmentHapticsEnabled, setSegmentHapticsEnabled, segmentCompleteHaptic } from '../../src/services/haptics';
 import { isGroundTruthMode, setGroundTruthMode } from '../../src/services/groundTruthMode';
+import { isMotionDiagnosticsEnabled, setMotionDiagnosticsEnabled, motionDiagnosticStatus, subscribeMotionDiagnostics, shareMotionDiagnostics } from '../../src/services/motionDiagnostics';
 import { connectBluesky, disconnectBluesky, getBlueskyAccount, type BlueskyAccount } from '../../src/services/bluesky';
 
 // Beta invite (TestFlight public link) + the public community dashboard.
@@ -97,7 +98,6 @@ export default function SettingsScreen() {
   const [fitnessRecommendation, setFitnessRecommendation] = useState('');
   const [teamName, setTeamName] = useState('');
   const [isEditing, setIsEditing] = useState(false);
-  const [loading, setLoading] = useState(true);
   const [legalDoc, setLegalDoc] = useState<'privacy' | 'terms' | null>(null);
   const [healthSync, setHealthSync] = useState(true);
   const [weeklyGoal, setWeeklyGoalState] = useState(3);
@@ -141,6 +141,19 @@ export default function SettingsScreen() {
   const [communityAutoPost, setCommunityAutoPost] = useState(false);
   const [segmentHaptics, setSegmentHaptics] = useState(true);
   const [groundTruth, setGroundTruth] = useState(false);
+  const [motionTests, setMotionTests] = useState(false);
+  const [motionTestStatus, setMotionTestStatus] = useState(motionDiagnosticStatus);
+  useEffect(() => subscribeMotionDiagnostics(setMotionTestStatus), []);
+  const toggleMotionTests = async () => {
+    try {
+      await setMotionDiagnosticsEnabled(!motionTests);
+      setMotionTests(!motionTests);
+    } catch { Alert.alert('Could not change recording', 'Please try again.'); }
+  };
+  const exportMotionTests = async () => {
+    try { await shareMotionDiagnostics(); }
+    catch (error) { Alert.alert('Motion test export', String(error)); }
+  };
   const [blueskyAccount, setBlueskyAccount] = useState<BlueskyAccount | null>(null);
   const [blueskyAutoPost, setBlueskyAutoPost] = useState(false);
   const [blueskyModalOpen, setBlueskyModalOpen] = useState(false);
@@ -153,6 +166,7 @@ export default function SettingsScreen() {
     getBlueskyAccount().then(setBlueskyAccount);
     isSegmentHapticsEnabled().then(setSegmentHaptics);
     isGroundTruthMode().then(setGroundTruth);
+    isMotionDiagnosticsEnabled().then(setMotionTests);
     AsyncStorage.getItem(HEALTH_SYNC_KEY).then((v) => {
       if (v !== null) setHealthSync(v === 'true');
     });
@@ -274,7 +288,10 @@ export default function SettingsScreen() {
 
       if (currentUser) {
         setUid(currentUser.uid);
-        setDisplayName(currentUser.displayName);
+        // Auth can legitimately be blank for an older Apple sign-in, while
+        // the user's settings document still has their chosen name. Do not
+        // replace the field with an empty Auth value on launch.
+        if (currentUser.displayName?.trim()) setDisplayName(currentUser.displayName.trim());
         setEmail(currentUser.email || '');
         setNeighborhood(currentUser.neighborhood);
         try {
@@ -287,6 +304,8 @@ export default function SettingsScreen() {
         const userSettings = await db.getUserSettings(currentUser.uid);
 
         if (userSettings) {
+          const savedName = userSettings.display_name?.trim();
+          if (savedName) setDisplayName(savedName);
           setDistanceUnit(userSettings.distance_unit || 'mi');
           setTeamName(userSettings.team_name || '');
           setLeaderboardHidden(!!userSettings.leaderboard_hidden);
@@ -311,8 +330,6 @@ export default function SettingsScreen() {
       }
     } catch (error) {
       console.error('Failed to load settings:', error);
-    } finally {
-      setLoading(false);
     }
   };
 
@@ -323,10 +340,16 @@ export default function SettingsScreen() {
 
       if (!currentUser) return;
 
+      const nextDisplayName = displayName.trim();
+      if (!nextDisplayName) {
+        Alert.alert('Add your name', 'Your profile name cannot be blank.');
+        return;
+      }
+
       // Update database
       const db = await getDatabase();
-      await db.updateUserSettings(currentUser.uid, {
-        display_name: displayName,
+      const saved = await db.updateUserSettings(currentUser.uid, {
+        display_name: nextDisplayName,
         neighborhood,
         distance_unit: distanceUnit,
         fitness_apps: JSON.stringify(enabledFitnessApps),
@@ -337,6 +360,13 @@ export default function SettingsScreen() {
         community_auto_post: communityAutoPost,
         weekly_goal: weeklyGoal,
       } as any);
+      if (!saved) throw new Error('Could not save your settings.');
+
+      // Settings, Firebase Auth, and the public profile all render this name
+      // in different places. Save one chosen name to all three together.
+      await userService.updateDisplayName(nextDisplayName);
+      await ensureProfile({ display_name: nextDisplayName, neighborhood });
+      setDisplayName(nextDisplayName);
 
       // Handle claim — only when changed; uniqueness enforced server-side.
       const cleaned = handleInput.trim().replace(/^@/, '');
@@ -655,17 +685,6 @@ export default function SettingsScreen() {
     ]);
   };
 
-  if (loading) {
-    return (
-      <SafeAreaView style={styles.container}>
-        <View style={styles.centerContent}>
-          <Text style={styles.title}>You</Text>
-          <Text style={styles.subtitle}>Loading…</Text>
-        </View>
-      </SafeAreaView>
-    );
-  }
-
   const initial = (displayName || 'You').trim().charAt(0).toUpperCase() || 'Y';
   const connectedFitness = enabledFitnessApps.length;
   const teamLabel = teamName && teamName.toLowerCase() !== 'solo' ? teamName : 'Solo picker';
@@ -822,6 +841,17 @@ export default function SettingsScreen() {
             value={groundTruth}
             onPress={toggleGroundTruth}
           />
+          <View style={styles.divider} />
+          <Toggle
+            label="Record motion tests (local only)"
+            sub="Save motion and speed during your next cleanups to investigate missed pickups. Stored only on this phone; shared only when you export. Keeps the last four tests, up to 20 minutes each. Turn off after testing."
+            value={motionTests}
+            onPress={toggleMotionTests}
+          />
+          <Text style={{ padding: 12, color: C.primary }}>{motionTestStatus}</Text>
+          <TouchableOpacity onPress={exportMotionTests} accessibilityRole="button" style={{ padding: 16 }}>
+            <Text style={{ color: C.primary, fontWeight: '600' }}>Export motion tests (last four)</Text>
+          </TouchableOpacity>
           <View style={styles.divider} />
           <Toggle
             label="Show me on the leaderboard"

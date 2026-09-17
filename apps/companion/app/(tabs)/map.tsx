@@ -21,6 +21,7 @@ import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import Constants from 'expo-constants';
 import { startBackgroundSession, stopBackgroundSession, drainBackgroundLocations, isBackgroundLocationTaskRunning } from '../../src/services/backgroundSession';
 import { beginSessionTrace, heartbeat, endSessionTrace, isSessionActiveFresh } from '../../src/services/crashRecorder';
+import { startMotionDiagnostics, stopMotionDiagnostics, recordMotionDiagnostic, motionDiagnosticStatus, subscribeMotionDiagnostics } from '../../src/services/motionDiagnostics';
 import { saveWalkDraft, clearWalkDraft, subscribeToWalkRestore } from '../../src/services/sessionRecovery';
 import { startPresence, pingPresence, endPresence, getLiveWalks } from '../../src/services/presence';
 import { computeNeed, parseRoute, needColor, needTileKey, type NeedTile } from '../../src/services/needMap';
@@ -283,6 +284,9 @@ export default function MapScreen() {
   /** Tester ground truth: walk-seconds of each LOG PICK tap on the watch.
    *  Never feeds the count — it is the measuring stick, not a measurement. */
   const groundTruthRef = useRef<number[]>([]);
+  const [motionTestStatus, setMotionTestStatus] = useState(motionDiagnosticStatus);
+  useEffect(() => subscribeMotionDiagnostics(setMotionTestStatus), []);
+  useEffect(() => { recordMotionDiagnostic('visibleCount', { pickupCount }); }, [pickupCount]);
   /** The walk's power path, kept in a ref because the state version is reset to
    *  null the moment `isListening` goes false — which happens in finishCleanup,
    *  BEFORE the summary sheet's Save reads it. The first version of this logged
@@ -1717,6 +1721,7 @@ export default function MapScreen() {
     lastFixRef.current = null; jumpRejectsRef.current = 0;
     setPickupLocations([]);
     PickupAggregator.resetSession();
+    await startMotionDiagnostics(watchSessionRef.current);
 
     // Get initial location
     await trackLocation();
@@ -1833,6 +1838,7 @@ export default function MapScreen() {
       // Start failed (permissions, sensors) — release the watch so it doesn't
       // sit on a "starting" screen for a walk that never began.
       console.error('Start cleanup failed:', e);
+      void stopMotionDiagnostics('cleanup start failed');
       setWalkIntent(false);
       watchSessionRef.current = '';
       Alert.alert('Could not start', 'Please try again in a moment.');
@@ -1883,6 +1889,8 @@ export default function MapScreen() {
     // Pocket-removal guard: pulling the phone out to tap Stop looks like a pickup
     // (June 11: 3.5s missed a removal — people take a beat before tapping Stop)
     const correctedCount = MotionDetector.trimRecentPickups(6000);
+    recordMotionDiagnostic('cleanupEnd', { detectedBeforeTrim: pickupCount, detectedAfterTrim: correctedCount, truthMarks: groundTruthRef.current, sessionStartedAtMs: sessionStartRef.current });
+    void stopMotionDiagnostics();
     setPickupCount(correctedCount);
     setIsListening(false);
     setShowSummary(true);
@@ -2000,6 +2008,7 @@ export default function MapScreen() {
         if (startedAt > 0) {
           const at = atMs > 0 ? atMs : Date.now();
           groundTruthRef.current.push(Math.round((at - startedAt) / 1000));
+          recordMotionDiagnostic('watchMark', { capturedAtMs: at, sessionStartedAtMs: startedAt, walkSeconds: (at - startedAt) / 1000 });
         }
       }
     });
@@ -3724,6 +3733,9 @@ ${MAPLIBRE_ANCHOR_FN}
 
       {/* Main Controls - Always at bottom */}
       <View style={[styles.controls, { paddingBottom: Math.max(6, insets.bottom - 8) }, isListening && styles.controlsCompact]}>
+        {isListening && motionTestStatus !== 'Motion test recording off' && (
+          <Text style={{ fontSize: 11, color: C.primary, textAlign: 'center', marginBottom: 4 }} accessibilityLiveRegion="polite">{motionTestStatus}</Text>
+        )}
         {!isListening ? (
           <TouchableOpacity
             style={[styles.button, styles.buttonStart]}
