@@ -1305,11 +1305,11 @@ export default function MapScreen() {
   }, []);
 
   // One-line explainer before the OS location prompt fires, first "Start
-  // cleanup" tap only. iOS's system dialog is cold — just our Info.plist
-  // usage string, no room for us to add anything to it — so this is the one
-  // chance to say why before that sheet appears. Skipped entirely once the
-  // OS has already recorded a decision (granted or denied) so we're never
-  // showing our own dialog with nothing behind it.
+  // cleanup" tap only. Android 11+ opens Settings for the background-location
+  // step, while iOS starts with its own system sheet. In both cases this is
+  // the one chance to explain the two-stage permission flow before it begins.
+  // Skipped once the OS has already recorded a decision so we never show our
+  // own dialog with nothing behind it.
   const explainLocationPermissionIfNeeded = async () => {
     try {
       const { status } = await Location.getForegroundPermissionsAsync();
@@ -1326,7 +1326,9 @@ export default function MapScreen() {
         // to say it before the OS dialog fires, not after tracking breaks.
         Alert.alert(
           'One quick thing',
-          'PICK uses your location to map the streets you clean while you walk. The next screen may offer “While Using the App” first — choose “Always” instead, so tracking keeps working with your phone in your pocket and the screen off. (Picked the wrong one? Fix it later in Settings → PICK → Location → Always.)',
+          Platform.OS === 'ios'
+            ? 'PICK uses your location to map the streets you clean while you walk. The next screen may offer “While Using the App” first — choose “Always” instead, so tracking keeps working with your phone in your pocket and the screen off. (Picked the wrong one? Fix it later in Settings → PICK → Location → Always.)'
+            : 'PICK needs precise location while you clean, then background location so tracking keeps working with your phone in your pocket and the screen off. Android may open PICK’s Location settings for the second step — choose “Allow all the time.”',
           [{ text: 'Continue', onPress: () => resolve() }],
         );
       });
@@ -1812,7 +1814,9 @@ export default function MapScreen() {
           fgWarnedRef.current = true;
           Alert.alert(
             'Keep the screen on for this walk',
-            'This phone hasn’t granted “Always” location, so PICK can’t track with the screen locked — locking it will pause your timer and pickups.\n\nThe screen will stay on during this walk, or enable Settings → PICK → Location → Always to walk with the phone locked.',
+            Platform.OS === 'ios'
+              ? 'This phone hasn’t granted “Always” location, so PICK can’t track with the screen locked — locking it will pause your timer and pickups.\n\nThe screen will stay on during this walk, or enable Settings → PICK → Location → Always to walk with the phone locked.'
+              : 'This phone hasn’t granted background location, so PICK can’t track reliably with the screen locked.\n\nThe screen will stay on during this walk, or open Android Settings → Apps → PICK → Permissions → Location and choose “Allow all the time.”',
             [{ text: 'Got it' }],
           );
         }

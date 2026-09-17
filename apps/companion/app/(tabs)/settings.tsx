@@ -236,7 +236,9 @@ export default function SettingsScreen() {
     await stopBackgroundSession();
     Alert.alert(
       'Tracking stopped',
-      'Any leftover background location tracking has been turned off. If the iOS location arrow was on with no active cleanup, it should clear now.'
+      Platform.OS === 'ios'
+        ? 'Any leftover background location tracking has been turned off. If the iOS location arrow was on with no active cleanup, it should clear now.'
+        : 'Any leftover background location tracking has been turned off. If PICK had a persistent cleanup notification with no active cleanup, it should clear now.'
     );
   };
 
@@ -830,17 +832,23 @@ export default function SettingsScreen() {
           <View style={styles.divider} />
           <Toggle
             label="Buzz when I finish a block"
-            sub="A short vibration the moment your route covers a whole street segment — so you feel progress with the phone in your pocket. Your watch buzzes too."
+            sub={Platform.OS === 'ios'
+              ? 'A short vibration the moment your route covers a whole street segment — so you feel progress with the phone in your pocket. Your watch buzzes too.'
+              : 'A short vibration the moment your route covers a whole street segment — so you feel progress with the phone in your pocket.'}
             value={segmentHaptics}
             onPress={toggleSegmentHaptics}
           />
-          <View style={styles.divider} />
-          <Toggle
-            label="Log my picks on my watch (testing)"
-            sub="Adds a LOG PICK button to the watch during a walk. Tapping it records when you actually picked something up, so the automatic count can be checked against what really happened. It never changes your count. Leave this off unless you're helping test detection."
-            value={groundTruth}
-            onPress={toggleGroundTruth}
-          />
+          {Platform.OS === 'ios' ? (
+            <>
+              <View style={styles.divider} />
+              <Toggle
+                label="Log my picks on my watch (testing)"
+                sub="Adds a LOG PICK button to the watch during a walk. Tapping it records when you actually picked something up, so the automatic count can be checked against what really happened. It never changes your count. Leave this off unless you're helping test detection."
+                value={groundTruth}
+                onPress={toggleGroundTruth}
+              />
+            </>
+          ) : null}
           <View style={styles.divider} />
           <Toggle
             label="Record motion tests (local only)"
@@ -943,79 +951,85 @@ export default function SettingsScreen() {
           </View>
         ) : null}
 
-        {/* ---------- Integrations ---------- */}
-        <View style={styles.section}>
-          <GroupHead icon="link" label="Integrations" />
-          <Toggle
-            label="Log cleanups to Apple Health"
-            sub="Each cleanup becomes a walking workout — counts toward your rings and exercise minutes."
-            value={healthSync}
-            onPress={toggleHealthSync}
-          />
-          <View style={styles.divider} />
-          <Pressable style={styles.rowLink} onPress={() => setFitnessOpen((v) => !v)}>
-            <View style={{ flex: 1, paddingRight: 12 }}>
-              <Text style={styles.rowLinkLabel}>Fitness apps</Text>
-              <Text style={styles.rowLinkSub}>
-                {connectedFitness > 0 ? `${connectedFitness} connected` : 'None connected'}
-                {!isEditing ? ' · tap Edit to change' : ''}
-              </Text>
-            </View>
-            <Text style={styles.chev}>{fitnessOpen ? '▾' : '▸'}</Text>
-          </Pressable>
+        {/* Apple Health is the only fitness integration that actually writes
+            workouts today. The legacy picker below also listed Google Health,
+            Strava and Adidas, but none has a working Android sync path. Hide
+            this entire section on Android rather than advertising controls
+            that can only save preferences and never deliver a workout. */}
+        {Platform.OS === 'ios' ? (
+          <View style={styles.section}>
+            <GroupHead icon="link" label="Integrations" />
+            <Toggle
+              label="Log cleanups to Apple Health"
+              sub="Each cleanup becomes a walking workout — counts toward your rings and exercise minutes."
+              value={healthSync}
+              onPress={toggleHealthSync}
+            />
+            <View style={styles.divider} />
+            <Pressable style={styles.rowLink} onPress={() => setFitnessOpen((v) => !v)}>
+              <View style={{ flex: 1, paddingRight: 12 }}>
+                <Text style={styles.rowLinkLabel}>Fitness apps</Text>
+                <Text style={styles.rowLinkSub}>
+                  {connectedFitness > 0 ? `${connectedFitness} connected` : 'None connected'}
+                  {!isEditing ? ' · tap Edit to change' : ''}
+                </Text>
+              </View>
+              <Text style={styles.chev}>{fitnessOpen ? '▾' : '▸'}</Text>
+            </Pressable>
 
-          {fitnessOpen && (
-            <>
-              <View style={styles.fitnessGrid}>
-                {Object.entries(FITNESS_APPS).map(([appKey, appConfig]) => {
-                  const app = appKey as FitnessApp;
-                  const isEnabled = enabledFitnessApps.includes(app);
-                  const platformLabel =
-                    appConfig.platform === 'ios'
-                      ? 'iOS'
-                      : appConfig.platform === 'android'
-                      ? 'Android'
-                      : 'iOS & Android';
+            {fitnessOpen && (
+              <>
+                <View style={styles.fitnessGrid}>
+                  {Object.entries(FITNESS_APPS).map(([appKey, appConfig]) => {
+                    const app = appKey as FitnessApp;
+                    const isEnabled = enabledFitnessApps.includes(app);
+                    const platformLabel =
+                      appConfig.platform === 'ios'
+                        ? 'iOS'
+                        : appConfig.platform === 'android'
+                        ? 'Android'
+                        : 'iOS & Android';
 
-                  return (
-                    <TouchableOpacity
-                      key={app}
-                      style={[styles.fitnessButton, isEnabled && styles.unitButtonActive]}
-                      onPress={() => isEditing && toggleFitnessApp(app)}
-                      disabled={!isEditing}
-                      activeOpacity={0.8}
-                    >
-                      <Text
-                        style={[styles.fitnessName, isEnabled && styles.unitButtonTextActive]}
-                        numberOfLines={1}
+                    return (
+                      <TouchableOpacity
+                        key={app}
+                        style={[styles.fitnessButton, isEnabled && styles.unitButtonActive]}
+                        onPress={() => isEditing && toggleFitnessApp(app)}
+                        disabled={!isEditing}
+                        activeOpacity={0.8}
                       >
-                        {appConfig.name}
-                      </Text>
-                      <Text style={[styles.fitnessPlatform, isEnabled && styles.fitnessPlatformActive]}>
-                        {platformLabel}
-                      </Text>
-                    </TouchableOpacity>
-                  );
-                })}
-              </View>
+                        <Text
+                          style={[styles.fitnessName, isEnabled && styles.unitButtonTextActive]}
+                          numberOfLines={1}
+                        >
+                          {appConfig.name}
+                        </Text>
+                        <Text style={[styles.fitnessPlatform, isEnabled && styles.fitnessPlatformActive]}>
+                          {platformLabel}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
 
-              <View style={styles.recommendationBox}>
-                <Text style={styles.recommendationLabel}>Smart deduplication</Text>
-                <Text style={styles.recommendationText}>{fitnessRecommendation}</Text>
-              </View>
+                <View style={styles.recommendationBox}>
+                  <Text style={styles.recommendationLabel}>Smart deduplication</Text>
+                  <Text style={styles.recommendationText}>{fitnessRecommendation}</Text>
+                </View>
 
-              <View style={styles.configBox}>
-                <Text style={styles.configTitle}>Recommended configurations</Text>
-                {RECOMMENDED_CONFIGS.map((config, index) => (
-                  <View key={index} style={styles.configItem}>
-                    <Text style={styles.configName}>{config.name}</Text>
-                    <Text style={styles.configDesc}>{config.description}</Text>
-                  </View>
-                ))}
-              </View>
-            </>
-          )}
-        </View>
+                <View style={styles.configBox}>
+                  <Text style={styles.configTitle}>Recommended configurations</Text>
+                  {RECOMMENDED_CONFIGS.map((config, index) => (
+                    <View key={index} style={styles.configItem}>
+                      <Text style={styles.configName}>{config.name}</Text>
+                      <Text style={styles.configDesc}>{config.description}</Text>
+                    </View>
+                  ))}
+                </View>
+              </>
+            )}
+          </View>
+        ) : null}
 
         {/* ---------- Support ---------- */}
         <View style={styles.section}>
@@ -1110,7 +1124,9 @@ export default function SettingsScreen() {
                 <Text style={styles.buttonText}>Force-stop background tracking</Text>
               </TouchableOpacity>
               <Text style={[styles.sectionSubtext, { marginTop: SPACING.xs, marginBottom: 0 }]}>
-                Use this if the iOS location arrow stays on when no cleanup is running.
+                {Platform.OS === 'ios'
+                  ? 'Use this if the iOS location arrow stays on when no cleanup is running.'
+                  : 'Use this if PICK keeps showing a cleanup notification when no cleanup is running.'}
               </Text>
             </View>
 
@@ -1321,7 +1337,7 @@ export default function SettingsScreen() {
           <Pressable style={styles.fbBackdrop} onPress={() => setInviteOpen(false)} />
           <View style={styles.inviteSheet}>
             <Text style={styles.fbTitle}>Invite a friend</Text>
-            <Text style={styles.inviteSub}>Have them point their iPhone camera at this code to join the PICK beta.</Text>
+            <Text style={styles.inviteSub}>Have them scan this code to join the current iPhone beta.</Text>
             <View style={styles.qrWrap}>
               <QRCode value={TESTFLIGHT_URL} size={196} color={C.dark} backgroundColor="#ffffff" />
             </View>
