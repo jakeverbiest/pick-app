@@ -57,8 +57,10 @@ const { DiagnosticBuffer } = load('motionDiagnosticBuffer');
     '@react-native-async-storage/async-storage': { default: { getItem: async () => enabled, setItem: async (_, v) => { enabled = v; } } },
     'expo-file-system/legacy': fakeFS,
     'expo-sensors': { DeviceMotion: { isAvailableAsync: async () => true, setUpdateInterval() {}, addListener(fn) { fused = fn; return { remove() { fused = null; } }; } } },
-    'expo-device': { modelName: 'iPhone 14' }, 'expo-updates': { updateId: 'test' },
-    'react-native': { AppState: { currentState: 'active', addEventListener(_, fn) { app = fn; return { remove() { app = null; } }; } }, Platform: { OS: 'ios', Version: 'test' }, Share: { share: async data => { shared = data; } } },
+    'expo-device': { modelName: 'Android test device' },
+    'expo-sharing': { isAvailableAsync: async () => true, shareAsync: async (uri, options) => { shared = { uri, options }; } },
+    'expo-updates': { updateId: 'test' },
+    'react-native': { AppState: { currentState: 'active', addEventListener(_, fn) { app = fn; return { remove() { app = null; } }; } }, Platform: { OS: 'android', Version: 'test' } },
     './motionDiagnosticBuffer': { DiagnosticBuffer },
   });
   await svc.startMotionDiagnostics('disabled'); assert.equal(files.size, 0);
@@ -70,7 +72,8 @@ const { DiagnosticBuffer } = load('motionDiagnosticBuffer');
   await svc.startMotionDiagnostics('real-picks'); svc.recordMotionDiagnostic('watchMark', { capturedAtMs: Date.now() });
   await assert.rejects(svc.shareMotionDiagnostics(), /End this cleanup/);
   await svc.stopMotionDiagnostics(); await svc.shareMotionDiagnostics();
-  const exported = files.get(shared.url).trim().split('\n').map(JSON.parse);
+  const exported = files.get(shared.uri).trim().split('\n').map(JSON.parse);
+  assert.equal(shared.options.mimeType, 'application/x-ndjson');
   assert.equal(exported.filter(r => r.type === 'start').length, 2);
   assert.equal(exported.filter(r => r.type === 'end').length, 2);
   assert.equal(exported.find(r => r.type === 'location').speed, 0);

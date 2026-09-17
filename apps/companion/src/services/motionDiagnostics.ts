@@ -3,8 +3,9 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as FS from 'expo-file-system/legacy';
 import { DeviceMotion } from 'expo-sensors';
 import * as Device from 'expo-device';
+import * as Sharing from 'expo-sharing';
 import * as Updates from 'expo-updates';
-import { AppState, Platform, Share } from 'react-native';
+import { AppState, Platform } from 'react-native';
 import { DiagnosticBuffer } from './motionDiagnosticBuffer';
 const KEY = '@pick_motion_diagnostics_v1';
 const root = FS.documentDirectory ? `${FS.documentDirectory}motion-tests/` : null;
@@ -116,6 +117,10 @@ export async function shareMotionDiagnostics() {
   }
   const uri = `${root}pick-motion-tests.jsonl`;
   await FS.writeAsStringAsync(uri, parts.join(''));
-  if (Platform.OS !== 'ios') throw new Error('File sharing for this tester tool currently requires iPhone.');
-  await Share.share({ url: uri, title: 'Pick motion test recordings' });
+  if (!(await Sharing.isAvailableAsync())) throw new Error('File sharing is unavailable on this device.');
+  await Sharing.shareAsync(uri, {
+    dialogTitle: 'Share Pick motion test recordings',
+    mimeType: 'application/x-ndjson',
+    UTI: 'public.json',
+  });
 }

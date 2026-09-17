@@ -7,6 +7,7 @@
 import { Accelerometer, Gyroscope, Pedometer } from 'expo-sensors';
 import * as Location from 'expo-location';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { Platform } from 'react-native';
 import PickupAggregator from './pickupAggregator';
 import { recordMotionDiagnostic } from './motionDiagnostics';
 import GroundTruthCapture from './groundTruthCapture';
@@ -309,22 +310,33 @@ class MotionDetector {
       // pause-and-bend pickup — see stepCorroboratesCadence() in
       // motionEvaluation.ts. CMPedometer's live callback timing is
       // batched/coarse, so this only corroborates the motion-based cadence
-      // check; it never runs alone. No-ops safely if unavailable (Android needs
-      // the ACTIVITY_RECOGNITION permission for step counting, not currently
-      // declared in app.json — cadence suppression falls back to motion-only there).
+      // check; it never runs alone. No-ops safely if unavailable or denied;
+      // cadence suppression falls back to motion-only in either case.
       try {
         const pedometerAvailable = await Pedometer.isAvailableAsync();
         if (pedometerAvailable) {
-          this.pedometerSubscription = Pedometer.watchStepCount((sample) => {
-            recordMotionDiagnostic('steps', { sample });
-            this.lastStepAt = Date.now();
-            // A step means the session is genuinely under way — this is one of
-            // the ways the onset gate arms now, so standing-still picking is
-            // no longer stranded behind a GPS speed threshold it can't reach.
-            this.hasStartedWalking = true;
-          });
-          this.pedometerActive = true;
-          console.log('👣 Pedometer available — step corroboration on');
+          let pedometerGranted = true;
+          if (Platform.OS === 'android') {
+            let permission = await Pedometer.getPermissionsAsync();
+            if (!permission.granted && permission.canAskAgain) {
+              permission = await Pedometer.requestPermissionsAsync();
+            }
+            pedometerGranted = permission.granted;
+          }
+          if (pedometerGranted) {
+            this.pedometerSubscription = Pedometer.watchStepCount((sample) => {
+              recordMotionDiagnostic('steps', { sample });
+              this.lastStepAt = Date.now();
+              // A step means the session is genuinely under way — this is one of
+              // the ways the onset gate arms now, so standing-still picking is
+              // no longer stranded behind a GPS speed threshold it can't reach.
+              this.hasStartedWalking = true;
+            });
+            this.pedometerActive = true;
+            console.log('👣 Pedometer available — step corroboration on');
+          } else {
+            console.log('👣 Motion permission denied — cadence check runs motion-only');
+          }
         } else {
           console.log('👣 Pedometer unavailable on this device — cadence check runs motion-only');
         }
