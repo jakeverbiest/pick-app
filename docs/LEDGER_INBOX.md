@@ -19,146 +19,58 @@ the ledger's actual structure, not paste it verbatim.
   longer an open item.
 -->
 
-- **2026-09-10 — first walk with `screen_remounts` instrumentation: consistent with the remount
-  theory, not yet proof.** Indoor test walk `sBQYJnYXAotRtVqEImYL`, 129s, `session_mode=background`
-  (correct test conditions), 13 ground-truth taps. **`screen_remounts=0`, and Jake reports NO watch
-  flashing this time** — the first walk since the fix without the symptom.
-
-  **Read honestly, not as confirmation:** this walk is notably shorter than the two that showed the
-  bug (129s vs ~290s each). Less time plausibly means less chance for whatever OS-level pressure
-  triggers a remount (memory pressure, backgrounding) to occur AT ALL, independent of whether the
-  theory is correct — so a clean 0-remounts/no-flash result on a short walk doesn't yet distinguish
-  "the theory is right" from "this walk was too quick to hit the trigger conditions either way."
-  Needs one more background walk closer to 5 minutes (matching the two problem walks' duration) to
-  actually move this from consistent-with to confirmed. If a remount does occur on that walk, check
-  whether pickupCount/the displayed count drops at that same timestamp — that would be direct proof
-  rather than correlation.
-
-  **Detector-side, as predicted before the walk (see the prior entry's explicit caveat about indoor
-  testing):** overcounted more than either outdoor walk (18 raw counted / 13 real ≈ 1.4x) —
-  explained, not new. `pace_low_confidence=true`, 13 of 57 motion events (23%) had no or stale GPS
-  (`speedAgeMs` -1 or >1800ms), a much higher rate than outdoors. The pace gate depends on real GPS
-  speed and stands down when it can't judge, so it caught less overcounting than it would outside.
-  5 double-count clusters in 13 real picks (rate between the two outdoor walks) — consistent with
-  the existing slow-pace-drives-double-counting finding, not a new anomaly. Indoor testing does not
-  meaningfully extend the pace-gate/double-count investigation, exactly as anticipated.
-
-- **2026-09-10 — city search was silently overridden by the idle-recenter effect; fixed, likely
-  broken since launch, not a recent regression.** Jake: typed "Amsterdam," selected it, map stayed
-  on Brooklyn. Root cause: the idle-recenter effect (`6094187`, 2026-07-14) fires on every
-  `currentLocation` change while not mid-walk, unconditionally re-centering the map AND
-  re-resolving the area name to the real GPS fix. It shipped ONE DAY before the city switcher
-  (`712b12c`, 2026-07-15) and has no awareness `goToCity()` exists — the next location tick after
-  any city selection eased the map straight back and overwrote `currentArea.city`, often within
-  seconds. **This has likely been broken since the city switcher launched two months ago**, not
-  something that recently broke — a latent conflict between two features nobody happened to test
-  against each other in exactly this timing window.
-
-  Confirmed scope before fixing rather than assumed: the city switcher only renders `!isListening`
-  (the header's own condition), and the idle-recenter effect carries the identical guard, so the
-  fix only needed to touch that one effect. Checked the other two `window.updateLocation` call
-  sites — one is `isListening`-gated (walk-time route drawing; city switcher isn't reachable during
-  a walk anyway) and one fires only once on initial WebView load (a legitimate default, not part of
-  the repeating symptom) — neither needed to change.
-
-  **Fix:** `viewingOtherCityRef`, set `true` in `goToCity()`, checked as an early-return guard in
-  the idle-recenter effect, cleared only by `recenter()` — the one explicit "snap back to me"
-  action. A ref rather than state since nothing needs to re-render when it flips. A fresh mount
-  resets it to `false` automatically. Published OTA, update group
-  `ab272758-de2e-40ef-b618-138476584fdc`. `tsc --noEmit` clean. **Not yet tested live** — static
-  analysis only, no simulator/device run before shipping; worth a real check on the next
-  city-search attempt.
-
-- **2026-09-10 — the ACTUAL root cause of city search doing nothing, found after the first fix
-  didn't resolve it: `map.setView` doesn't exist on MapLibre GL. Three silently-broken calls
-  fixed, verified against the real library before shipping.** Jake's answer to "did it move at all
-  vs. never moved" — never moved — ruled out the earlier `viewingOtherCityRef` fix (real, still
-  correct, but irrelevant here) and pointed at the map command itself never taking effect.
-
-  **Verified, not assumed:** loaded real `maplibre-gl 4.7.1` (the exact CDN version pinned in this
-  app) in a browser and called `map.setView` directly. `typeof map.setView` is `"undefined"`;
-  calling it throws `"map.setView is not a function"`. `jumpTo`/`easeTo` both exist.
-
-  **Root cause:** the 2026-09-08 MapLibre port (`1929786`) replaced the WebView's OWN Leaflet
-  initialization and internal calls, but missed three places OUTSIDE the WebView's script —
-  `exitLevel()`, `goToCity()`, `recenter()` — that inject `map.setView(...)` as a JS string from the
-  React Native side at runtime. **All three have silently done nothing for two days**: each sits
-  inside an EMPTY `try {} catch (e) {}`, so the thrown error was swallowed with no log, no crash,
-  nothing visible — exactly "didn't move at all." **`recenter()` — the "snap back to me" button,
-  used far more than city search — has also been silently broken since the port**, and so has
-  exitLevel's recenter-after-leaving-a-neighborhood.
-
-  **Fixed all three:** `jumpTo` (instant, matching Leaflet's `setView` semantics — not an animation
-  change) and `[lon, lat]` order (MapLibre's convention, matching `window.updateLocation`'s own
-  `easeTo` already inside the WebView, which already had this right). Every catch block now logs
-  instead of swallowing, so a failure like this can't hide silently again.
-
-  **Re-verified before shipping, learning from the first fix's failure:** loaded the exact new call
-  shape (`map.jumpTo({center:[lon,lat], zoom})`) against the real library — center moved from
-  `40.7128,-74.006` to `52.3730796,4.8924534` at zoom 13, matching `goToCity`'s Amsterdam call
-  precisely, zero errors. Published OTA, update group `671eca98-42a3-4d19-9f68-c19f445f924e`.
-
-  **This morning's `viewingOtherCityRef` fix (previous entry) was real and is still correct** — the
-  idle-recenter effect really did conflict with `goToCity`, and that fix stops it from fighting a
-  future `easeTo`/`jumpTo` call. It just never got the chance to matter, since the map was never
-  moving in the first place. Both fixes are needed together, not either instead of the other.
-
-- **2026-09-10 — CONFIRMED by Jake: city search works after the setView -> jumpTo fix
-  (`671eca98`).** Closes the loop from the two prior entries. `recenter()` and `exitLevel()` share
-  the identical fix and were shipped in the same commit, but neither has been explicitly confirmed
-  by Jake yet — flagged so a future session doesn't assume they're verified just because city
-  search is.
-
-- **2026-09-10 — recenter() partially confirmed by Jake (map correctly snaps to Brooklyn), and the
-  half he flagged as still off is real: the header kept the browsed-away city ("Hickory") instead
-  of showing Brooklyn immediately.** Root cause: `goToCity()` has always optimistically set the
-  city label the instant a city is picked, then refines it via an async geocode — its own comment
-  says as much. `recenter()` never had the matching optimistic half, only the async `refreshArea()`
-  call. That gap predates today — it was invisible while the map itself wasn't moving at all (the
-  `setView` bug), so there was no instant snap to look wrong against. Now that `jumpTo` is instant,
-  the stale label is the visible symptom.
-
-  **Fixed:** `homeAreaRef` stashes the real-location `{city, neighborhood}` the moment `goToCity()`
-  is about to overwrite it, guarded on `!viewingOtherCityRef` so hopping between multiple other
-  cities (Amsterdam, then Hickory) only ever captures the true home value once. `recenter()`
-  restores it instantly alongside the map jump, then still calls `refreshArea()` to refine/confirm
-  it — same pattern `goToCity` already uses safely. `tsc --noEmit` clean. Published OTA, update
-  group `74304d42-8b1d-455e-820f-dbc95ab1cd5a`. **Not yet confirmed by Jake** — this is a fix for
-  what he just reported, not something he's seen live yet.
-
-  **`exitLevel()` remains entirely unconfirmed** — same three-way fix landed together, but neither
-  the map-jump half nor a label-restore half (it doesn't have this gap; it doesn't touch
-  `currentArea` at all, only re-centers) has been tested.
-
-- **2026-09-10 — CONFIRMED by Jake: recenter()'s label-restore fix (`74304d42`) works — text
-  correctly returns to Brooklyn.** Tested from the overview, NOT from inside a neighborhood level —
-  Jake explicitly flagged this distinction, correctly, since that's a different code path.
-  `exitLevel()` (triggered by backing OUT of a neighborhood level, not by the recenter button)
-  remains completely unconfirmed — same map.setView -> jumpTo fix, never tested.
-
-- **2026-09-10 — recenter() from inside a neighborhood level: dimming stayed stuck, confirmed by
-  precise repro before touching code, and fixed.** Jake followed exact steps (tap into a
-  neighborhood, don't back out, open tools, tap Recenter) and confirmed the dimmed veil + its %
-  stat stayed locked on the original neighborhood even though the camera moved. This matched a
-  prediction made from reading the code BEFORE asking Jake to test — only `exitLevel()` (the
-  explicit back button) ever cleared `activeLevel`; `recenter()` never did, and the tools menu's
-  Recenter option is deliberately reachable from inside a level (gated on `!isListening &&
-  !activating`, unlike the header/city switcher which hide there) — a real, directly reachable path,
-  not a theoretical edge case.
-
-  **Fix:** extracted the React-state half of `exitLevel()`'s teardown into a shared
-  `teardownLevelState()` (activation token bump, `activeLevel`/`activating`/`selectedHood`/
-  `liveNowCount`/`activationError` cleared, `levelSegmentsRef` reset), so `exitLevel()` and
-  `recenter()` share one sequence instead of risking drift between two copies. `recenter()` now
-  calls it when `activeLevel` is set, and its injected JS also calls `window.exitLevel()` (tears
-  down the visual veil) before the `jumpTo` — the same call `exitLevel()` already makes
-  unconditionally, so this follows existing precedent. `tsc --noEmit` clean. Published OTA, update
-  group `62024161-9a4e-436f-9a10-2b28c2003078`. **Not yet re-tested by Jake** — same repro steps as
-  before should now show the dimming clearing.
-
-  **This is now the fourth real bug found from one original report** ("map doesn't change when I
-  enter a new city"): the setView/jumpTo API mismatch (3 call sites), the idle-recenter-effect
-  conflict with goToCity, the missing optimistic label restore on recenter, and now this
-  level-mode teardown gap. Each was found by testing the PREVIOUS fix rather than assuming it was
-  complete — worth keeping as the model for how this class of bug gets fully closed out rather than
-  declared fixed after the first plausible cause.
+- 2026-09-16 — The five-walk bimodal count mystery is resolved as a small-sample artifact, not a
+  mechanism. Read-only re-pull of all five `cleanups` docs by ID (full `motion_log`, 398
+  candidates) reverses the ledger's stated lead: raw accepted-event count tracks the split only
+  unnormalized — the walks run 172-248s, and per minute a low-cluster walk (`k3s8`, 12.91
+  accepted/min, 62.7% acceptance) outranks a high-cluster walk (`IPbJ`, 12.34, 50.5%), while the
+  1.23x over-counting walk emitted counts *slower* (8.95/min) than the 0.90x under-counting walk
+  (9.42/min). Only the terminal count series is gappy; every upstream series is smooth. The
+  acceptance step is explained — all between-walk variance sits in the rhythmic filter (10.9-33.8%
+  of candidates) and the relative pace gate (11.3-31.7%), i.e. the walks contained 3x different
+  amounts of striding despite being logged as one condition. Truth=30 is unverified on all five
+  (`ground_truth` is `"[]"` on every one). No detector/threshold/build change proposed or implied.
+  Full write-up: `~/pick-app/docs/DETECTOR_DIAGNOSTIC_HANDOFF.md`, section
+  "The five-walk 'bimodal' mystery, read from the raw per-candidate data — September 16, 2026".
+- 2026-09-16 — Pickup-detector offline review: the first pooled, properly cross-validated
+  multivariate model was fit and it is another null, at a higher level than the previous ones. All
+  187 labeled PICK/WALK/OTHER_MOTION events across all 6 filmed sessions (77/90/20; 121 independent
+  action clusters) were pooled, percentile-normalized against each session's own full candidate
+  population, and fit with a logistic regression evaluated leave-one-SESSION-out. Held-out
+  AUC 0.644 — 0.002 above the best single feature through the same pipeline, every per-session 95%
+  CI includes 0.50, permutation p = 0.064; at a 10% false-positive budget it recalls 9/77 picks
+  (~2.0 false counts/min against 8.2 real picks/min on the best session). LDA 0.607 and a depth-2
+  tree 0.562 rule out nonlinearity as the limiter. Closes the "needs a fundamentally different
+  modeling approach once there's enough data" open item — the data was there and the answer is that
+  the ceiling is in the feature family, not the combiner. Two corrections fall out:
+  `approachEnergyChange` is at chance (AUC 0.529, 7th of 12) once cross-validated, not the strong
+  survivor the report's summary called it, and sessions 1/2/4 carry a label time-position confound (AUC
+  0.88/0.80/0.00 from timing alone) that makes their earlier per-session separation claims
+  uninterpretable. Research only — no detector, threshold, build, OTA, or release change proposed or
+  implied. Full write-up: `~/pick-app/docs/PICKUP_DETECTOR_VIDEO_LABEL_REVIEW_SESSION1.md`, section
+  "The first pooled, cross-validated multivariate model — and the higher-order null it produces —
+  September 16, 2026"; summary paragraph in `~/pick-app/detector-analysis/README.md`.
+- 2026-09-16 — Jake's decision, direct in chat: detection accuracy is accepted as a fixed ceiling
+  for launch, not an open blocker. Three independent offline passes (the 6-session/3-person
+  feature review, the five-walk bimodal re-read, and today's pooled cross-validated model) all
+  landed at the same ceiling with the sensors and technique on hand. Product focus shifts to
+  launch UX, not further detector tuning. Any doc still framing "detector accuracy" as unresolved-
+  and-blocking should be reworded to "accepted ceiling, correction-flow UX is the real launch
+  dependency" on next reconciliation.
+- 2026-09-16 — `roadmap-ops` drafted `~/pick-app/docs/LAUNCH_UX_PLAN.md`, a launch-UX
+  prioritization following the ceiling decision above: a redesign proposal for the count-
+  correction flow (grounded in a direct read of `map.tsx`/`BagDetails.tsx`, not just the ledger's
+  description of it) plus a prioritized punch-list of open UX items. Draft only, nothing built.
+  Two findings from that read worth folding in, both sharper than what's currently on the ledger:
+  (1) the in-app "Pick Global" rebrand (Launch gates, open since 2026-08-01) is confirmed at
+  **zero** — `grep -rn "Pick Global" apps/companion/app apps/companion/src` returns no matches,
+  `app.json`'s name is still `"PICK"`, and every in-app string checked (share message, Settings
+  footer stamp, QR-invite subtitle, crash black-box copy) says "PICK" — sharper than the
+  existing "reportedly hasn't reached all screens" framing, it's total, not partial. (2) A new
+  item, not previously on the ledger: `map.tsx`'s `explainLocationPermissionIfNeeded()` (the
+  pre-permission-dialog explainer) never mentions the "Always" vs "While Using" location choice
+  at all — it only says location is used "to map the streets you clean." The only in-app handling
+  of a "While Using"-only grant is reactive (a mid-walk Alert pointing at Settings, after a session
+  has already degraded to foreground-only). `VOLUNTEER_ONE_PAGER.md` currently plugs this gap with
+  an organizer reading a script aloud, which doesn't scale to self-directed public-beta
+  onboarding. Full detail in `LAUNCH_UX_PLAN.md`.
