@@ -8,7 +8,7 @@
 // change on the same day (2026-09-01: a privacy-only reconciliation once
 // used a shared LEGAL_LAST_UPDATED and it silently back-dated the Terms
 // copy's claimed update date to a day nothing in the Terms actually changed).
-export const PRIVACY_LAST_UPDATED = 'September 13, 2026';
+export const PRIVACY_LAST_UPDATED = 'September 19, 2026';
 export const TERMS_LAST_UPDATED = 'June 11, 2026'; // matches web/terms.html — no substantive Terms change since
 
 /**
@@ -37,7 +37,7 @@ export const TERMS_LAST_UPDATED = 'June 11, 2026'; // matches web/terms.html —
  * so it must change whenever the TEXT materially changes — that string is the only
  * record of WHAT a given account actually agreed to. Suggested form: 'YYYY-MM-DD'.
  */
-export const DETECTOR_DISCLOSURE_VERSION = '2026-09-09';
+export const DETECTOR_DISCLOSURE_VERSION = '2026-09-19';
 
 /**
  * Draft A ("notice", not a checkbox), approved by Jake 2026-09-09.
@@ -55,9 +55,9 @@ export const DETECTOR_DISCLOSURE_VERSION = '2026-09-09';
  * of what a given account was actually shown.
  */
 export const DETECTOR_DISCLOSURE_TEXT =
-  "Before you start: PICK counts your pickups from your phone's motion sensors. " +
+  "Before you start: PICK estimates your pickups from your phone's motion sensors. " +
   'To make that counting more accurate, we analyze the walks you log: the motion ' +
-  'the app recorded, how many pickups it counted against the number you confirm ' +
+  'the app recorded, how many pickups it detected against the number you save ' +
   'at the end, your walking pace, how long the walk lasted, and which phone ' +
   'recorded it.\n\n' +
   'This is engineering work on the detector. It is never shown to other users, ' +
@@ -79,13 +79,13 @@ export const DETECTOR_DISCLOSURE_DETAIL = `What we analyze from a walk
 
 •  The motion log. For each motion the detector looked at: how strong it was, how long it lasted, how much your phone rotated, how confident the detector was, and whether it was counted as a pickup or rejected — and why.
 
-•  The counts. How many pickups the app detected, and the number you confirmed at the end.
+•  The counts. How many pickups the app detected, and the number you saved at the end.
 
 •  Your pace. Your median walking speed during the cleanup, how much of it was slow, and whether we could measure it reliably.
 
 •  How long the walk lasted.
 
-•  Which iPhone model recorded it, and whether the phone rode in a pocket or in your hand. Detection accuracy depends heavily on both, so without them one person's results can't be told apart from another's. This is a hardware model string — never your device's name, which you set yourself.
+•  Which phone model and operating-system version recorded it, and whether the phone rode in a pocket or in your hand. Detection accuracy depends heavily on these, so without them one person's results can't be told apart from another's. This is a hardware model string — never your device's name, which you set yourself.
 
 •  The date, to the day. Not the time.
 
@@ -107,7 +107,7 @@ WHAT WE COLLECT
 • Account info: display name, email, neighborhood, optional team or event name.
 • Cleanup sessions: pickup counts, duration, estimated/reported weight, date/time, and GPS data — your walking route and approximate pickup locations. Stored in our cloud database (Google Firebase) so history, maps, and leaderboards work.
 • Motion sensors: raw accelerometer/gyroscope samples are processed on your device in real time and never transmitted anywhere — only a compact summary of each detected motion event (strength, duration, accepted as a pickup or not) is kept, alongside the session data above.
-• Device and carry position: each cleanup records which iPhone model and iOS version the walk was recorded on (e.g. "iPhone14,3 (iPhone 13 Pro) / iOS 18.5") and, where the app could tell, whether the phone rode in a pocket or in your hand — worked out from the same motion sensors above, and left off entirely when it isn't confident. Both are kept only to make the detection-accuracy work below meaningful: detection performance depends heavily on which phone it runs on and where that phone rides. A hardware model string — never your device's name, which you set yourself.
+• Device and carry position: each cleanup records the phone's hardware model and operating-system version and, where the app could tell, whether the phone rode in a pocket or in your hand — worked out from the same motion sensors above, and left off entirely when it isn't confident. These are kept only to make the detection-accuracy work below meaningful: detection performance depends heavily on which phone it runs on and where that phone rides. A hardware model string — never your device's name, which you set yourself.
 • Session power mode: each cleanup also records whether you were using the app in the foreground (screen on) or background (screen off). Background location tracking needs "Always" location access to keep working with the screen off; without it, the app has to keep the screen on instead. Kept only to measure how often that happens, so we know whether it's worth building around.
 • Weight calibration entries stay on your device only.
 • Apple Health: if you enable it, we write each cleanup as a walking workout so it counts toward your activity rings and exercise minutes. We never read anything from Health — the read permission is only requested because Apple requires it alongside the write permission.
@@ -120,7 +120,7 @@ No contacts, microphone, or ad identifiers. No data sales. No ads. No location t
 
 HOW WE USE IT
 To run the app: maps, stats, streaks, badges, team totals, leaderboards, challenges. Your display name and aggregate stats may appear on leaderboards visible to other users. Street-cleaning status (which sidewalk segments were cleaned, and when) is shared across all users to power the community coverage map.
-To improve pickup detection: we analyze session data — the motion-event summaries above, how many pickups the app detected vs. the total you confirm at the end of a cleanup, your walking pace, and the device model and carry position above — to measure and improve detection accuracy. Internal engineering work only: never shown to other users, never used to profile you or make decisions about you. Email hello@pickglobal.org to have your account excluded.
+To improve pickup detection: we analyze session data — the motion-event summaries above, how many pickups the app detected vs. the total you save at the end of a cleanup, your walking pace, and the device model and carry position above — to measure and improve detection accuracy. Internal engineering work only: never shown to other users, never used to profile you or make decisions about you. Email hello@pickglobal.org to have your account excluded.
 
 LEGAL BASIS (EU/UK/EEA users)
 • Contract necessity: core account and cleanup-session data (email, GPS route, pickup counts, motion-detection summaries, timestamps) — needed to provide the app's core service.

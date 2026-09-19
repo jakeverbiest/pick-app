@@ -15,7 +15,7 @@
       "infoPlist": {
         "NSLocationWhenInUseUsageDescription": "PICK maps your cleanup route and marks which streets you've cleaned. Location is only tracked during an active cleanup session.",
         "NSLocationAlwaysAndWhenInUseUsageDescription": "Allowing background location lets PICK keep tracking your cleanup with the phone in your pocket and the screen off. Location is only used during active cleanup sessions.",
-        "NSMotionUsageDescription": "PICK uses motion sensors to automatically detect when you pick up trash, so you never have to press a button mid-cleanup.",
+        "NSMotionUsageDescription": "PICK uses motion sensors to estimate your pickups while you clean, so you do not have to press a button for every item.",
         "NSHealthShareUsageDescription": "PICK reads nothing from Health — this permission accompanies workout writing.",
         "NSHealthUpdateUsageDescription": "PICK logs each cleanup as a walking workout so your trash pickup counts toward your activity rings and exercise minutes.",
         "NSCameraUsageDescription": "PICK lets you snap a photo of the spot you cleaned up to share your impact.",
