@@ -10,7 +10,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, Share, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import ViewShot, { type ViewShotRef } from 'react-native-view-shot';
+import ViewShot from 'react-native-view-shot';
 import { Icon } from './Icon';
 import { GroupRecapCard } from './GroupRecapCard';
 import { C, Fonts, radius, shadow } from './theme';
@@ -33,7 +33,7 @@ export function GroupRecapModal({
   onPosted?: () => void;
 }) {
   const insets = useSafeAreaInsets();
-  const shotRef = useRef<ViewShotRef>(null);
+  const shotRef = useRef<ViewShot>(null);
   const [sharing, setSharing] = useState(false);
   const [posting, setPosting] = useState(false);
   // §11.2/§11.3: the card's map + photo strip need data this modal fetches

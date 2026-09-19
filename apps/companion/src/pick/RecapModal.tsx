@@ -13,7 +13,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Animated, Easing, Pressable, Share, StyleSheet, Text, View, Modal as RNModal } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import ViewShot, { type ViewShotRef } from 'react-native-view-shot';
+import ViewShot from 'react-native-view-shot';
 import { Icon, IconName } from './Icon';
 import { RecapCard } from './RecapCard';
 import { C, Fonts, radius, shadow } from './theme';
@@ -29,7 +29,7 @@ const SLIDE_MS = 3800;
  * so closing first (with a short delay for the dismiss animation) is required,
  * not optional polish.
  */
-async function shareCard(shotRef: React.RefObject<ViewShotRef | null>, caption: string, onClose: () => void) {
+async function shareCard(shotRef: React.RefObject<ViewShot | null>, caption: string, onClose: () => void) {
   let uri: string | undefined;
   try {
     uri = await shotRef.current?.capture?.();
@@ -88,7 +88,7 @@ function SimpleRecap({
   onClose: () => void;
 }) {
   const insets = useSafeAreaInsets();
-  const shotRef = useRef<ViewShotRef>(null);
+  const shotRef = useRef<ViewShot>(null);
   const [sharing, setSharing] = useState(false);
   const periodWord = recap.range.period === 'week' ? "week's" : "month's";
 
@@ -153,7 +153,7 @@ function WrappedStory({
   onClose: () => void;
 }) {
   const insets = useSafeAreaInsets();
-  const shotRef = useRef<ViewShotRef>(null);
+  const shotRef = useRef<ViewShot>(null);
   const [index, setIndex] = useState(0);
   const [sharing, setSharing] = useState(false);
   const progress = useRef(BEATS.map(() => new Animated.Value(0))).current;

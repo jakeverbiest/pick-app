@@ -10,7 +10,7 @@ import {
   StyleSheet, Text, TextInput, View, ActivityIndicator,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import ViewShot, { type ViewShotRef } from 'react-native-view-shot';
+import ViewShot from 'react-native-view-shot';
 import { Icon } from './Icon';
 import { C, Fonts, radius, shadow } from './theme';
 import { ImpactMap } from './ImpactMap';
@@ -45,7 +45,7 @@ export function ImpactComposer({
   const [impact, setImpact] = useState<MyImpact | null>(null);
   const [caption, setCaption] = useState('');
   const [displayName, setDisplayName] = useState('');
-  const shotRef = useRef<ViewShotRef>(null);
+  const shotRef = useRef<ViewShot>(null);
 
   useEffect(() => {
     if (!visible) return;
