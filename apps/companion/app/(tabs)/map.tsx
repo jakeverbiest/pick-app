@@ -22,7 +22,7 @@ import Constants from 'expo-constants';
 import { startBackgroundSession, stopBackgroundSession, drainBackgroundLocations, isBackgroundLocationTaskRunning } from '../../src/services/backgroundSession';
 import { beginSessionTrace, heartbeat, endSessionTrace, isSessionActiveFresh } from '../../src/services/crashRecorder';
 import { startMotionDiagnostics, stopMotionDiagnostics, recordMotionDiagnostic, motionDiagnosticStatus, subscribeMotionDiagnostics } from '../../src/services/motionDiagnostics';
-import { saveWalkDraft, clearWalkDraft, subscribeToWalkRestore } from '../../src/services/sessionRecovery';
+import { saveWalkDraft, loadWalkDraft, clearWalkDraft, subscribeToWalkRestore, type WalkDraft } from '../../src/services/sessionRecovery';
 import { startPresence, pingPresence, endPresence, getLiveWalks } from '../../src/services/presence';
 import { computeNeed, parseRoute, needColor, needTileKey, type NeedTile } from '../../src/services/needMap';
 import { syncWorkoutToHealth, isHealthSyncEnabled } from '../../src/services/healthService';
@@ -417,9 +417,22 @@ export default function MapScreen() {
   // window falsely restores the live-walk screen on top of the draft alert.
   useEffect(() => {
     let canceled = false;
-    Promise.all([isSessionActiveFresh(), isBackgroundLocationTaskRunning()]).then(([active, taskRunning]) => {
+    Promise.all([isSessionActiveFresh(), isBackgroundLocationTaskRunning()]).then(async ([active, taskRunning]) => {
       if (canceled) return;
-      if (active && taskRunning) setWalkIntent(true);
+      if (active && taskRunning) {
+        setWalkIntent(true);
+        // The walk is genuinely still running (confirmed above), but THIS
+        // screen instance's own isListening/elapsedSeconds/pickupCount reset
+        // to their mount defaults, same as any React state does on a
+        // remount — entering a neighborhood is one way that happens. Restore
+        // the real numbers from the autosaved draft (≤~20s stale) instead of
+        // leaving the UI showing "Start cleanup" over a live walk, which lets
+        // a single tap wipe it back to zero (2026-09-10, reported via a
+        // screen recording: entering Carroll Gardens mid-walk did exactly
+        // this).
+        const draft = await loadWalkDraft();
+        if (!canceled && draft) resumeWalkAfterRemount(draft);
+      }
       setWalkIntentChecked(true);
     });
     return () => { canceled = true; };
@@ -1691,43 +1704,19 @@ export default function MapScreen() {
     }
   };
 
-  const startCleanup = async () => {
-    // Re-entry guard: this fn is async and doesn't flip isListening until after
-    // GPS + listener setup, so rapid taps in that window were double-starting the
-    // background session and motion listener (the duplicate logs). Block it.
-    if (startingRef.current || isListening) return;
-    startingRef.current = true;
-    // Claim the walk for the watch NOW. `isListening` doesn't flip until GPS and
-    // the motion listener are up (seconds later) — and until it did, the watch
-    // bridge below kept pushing `idle`, which bounced the watch straight back to
-    // its Start screen right after you tapped Start on it.
-    watchSessionRef.current = `w${Date.now()}`;
-    setWalkIntent(true);
-    screenRemountsThisWalk = 0; // see the module-level declaration's comment
-    try {
-    // One-line context before the cold OS location dialog — first tap only.
-    // trackLocation() below is what actually triggers the system prompt (via
-    // getCurrentPositionAsync), so this has to run before it, not inside it.
-    await explainLocationPermissionIfNeeded();
-    setPickupCount(0);
-    // Per-SESSION counter. Was never reset (found 19 Aug 2026): it feeds
-    // commitSessionPickups() for the challenge live counter and the crash
-    // heartbeat, so the 2nd+ walk in one app lifetime over-reported both.
-    pickupCounterRef.current = 0;
-    groundTruthRef.current = [];
-    sessionModeRef.current = null;
-    sessionModeFailureRef.current = null;
-    setSegmentsCompleted(0);
-    setElapsedSeconds(0);
-    setSessionRoute([]);
-    lastFixRef.current = null; jumpRejectsRef.current = 0;
-    setPickupLocations([]);
-    PickupAggregator.resetSession();
-    await startMotionDiagnostics(watchSessionRef.current);
-
+  // GPS fix + motion-detector attachment, shared by a fresh start and a
+  // post-remount resume. Pulled out of startCleanup() (2026-09-10) once a
+  // second call site needed it: MotionDetector is a module-level singleton
+  // whose OWN `isListening` guard silently no-ops a second startListening()
+  // call, so stopListening() first is required here, not optional — without
+  // it, a resume after a remount would leave the ORIGINAL (now-unmounted)
+  // instance's stale callback attached, and every pickup for the rest of the
+  // walk would silently update a component nothing renders from.
+  const attachWalkListeners = async () => {
     // Get initial location
     await trackLocation();
 
+    MotionDetector.stopListening(); // idempotent no-op if nothing was attached
     await MotionDetector.startListening(
       async (event) => {
         setPickupCount((c) => c + 1);
@@ -1792,6 +1781,83 @@ export default function MapScreen() {
         [{ text: 'OK' }]
       );
     }
+  };
+
+  // Silently pick a walk back up after this screen remounts mid-cleanup
+  // (entering a neighborhood is one way that happens) instead of letting a
+  // stray "Start cleanup" tap wipe it. See the walkIntent-recovery effect:
+  // it confirms via the crash-recorder heartbeat AND the OS background
+  // location task that a walk is genuinely still running before calling
+  // this — never for a truly-ended walk (that's loadWalkDraft's other
+  // caller, the launch-time "Recover your last walk?" prompt).
+  //
+  // Deliberately does NOT call beginSessionTrace() or startBackgroundSession():
+  // both are already running from the walk's original startCleanup() call.
+  // The crash recorder's in-memory trace and the OS background-location task
+  // are module/OS-level singletons that survive this screen's remount, same
+  // as MotionDetector below — only this component's own React state (and
+  // MotionDetector's callback binding) needs re-establishing.
+  const resumeWalkAfterRemount = async (draft: WalkDraft) => {
+    if (startingRef.current || isListening) return;
+    startingRef.current = true;
+    watchSessionRef.current = `w${Date.now()}`;
+    try {
+      setSessionRoute(draft.route || []);
+      setPickupLocations(draft.pickups || []);
+      setPickupCount(draft.pickupCount || 0);
+      pickupCounterRef.current = draft.pickupCount || 0;
+      // Prefer wall-clock-since-start over the (up to ~20s stale) saved
+      // elapsedSeconds — same anchor the isListening timer effect uses.
+      const liveElapsed = Math.max(draft.elapsedSeconds || 0, Math.round((Date.now() - draft.startedAt) / 1000));
+      setElapsedSeconds(liveElapsed);
+      await attachWalkListeners();
+    } catch (e) {
+      console.error('Resume after remount failed:', e);
+    } finally {
+      startingRef.current = false;
+    }
+  };
+
+  const startCleanup = async () => {
+    // Re-entry guard: this fn is async and doesn't flip isListening until after
+    // GPS + listener setup, so rapid taps in that window were double-starting the
+    // background session and motion listener (the duplicate logs). Block it.
+    // Also blocks the narrow window where the walkIntent-recovery effect has
+    // confirmed a walk is genuinely still active (and set walkIntent) but
+    // hasn't finished resumeWalkAfterRemount() yet — without this, a tap
+    // landing in that gap would still see isListening===false and run the
+    // full reset this whole guard exists to prevent.
+    if (startingRef.current || isListening || walkIntent) return;
+    startingRef.current = true;
+    // Claim the walk for the watch NOW. `isListening` doesn't flip until GPS and
+    // the motion listener are up (seconds later) — and until it did, the watch
+    // bridge below kept pushing `idle`, which bounced the watch straight back to
+    // its Start screen right after you tapped Start on it.
+    watchSessionRef.current = `w${Date.now()}`;
+    setWalkIntent(true);
+    screenRemountsThisWalk = 0; // see the module-level declaration's comment
+    try {
+    // One-line context before the cold OS location dialog — first tap only.
+    // trackLocation() below is what actually triggers the system prompt (via
+    // getCurrentPositionAsync), so this has to run before it, not inside it.
+    await explainLocationPermissionIfNeeded();
+    setPickupCount(0);
+    // Per-SESSION counter. Was never reset (found 19 Aug 2026): it feeds
+    // commitSessionPickups() for the challenge live counter and the crash
+    // heartbeat, so the 2nd+ walk in one app lifetime over-reported both.
+    pickupCounterRef.current = 0;
+    groundTruthRef.current = [];
+    sessionModeRef.current = null;
+    sessionModeFailureRef.current = null;
+    setSegmentsCompleted(0);
+    setElapsedSeconds(0);
+    setSessionRoute([]);
+    lastFixRef.current = null; jumpRejectsRef.current = 0;
+    setPickupLocations([]);
+    PickupAggregator.resetSession();
+    await startMotionDiagnostics(watchSessionRef.current);
+
+    await attachWalkListeners();
 
     // Black box: drop a sentinel to disk so a screen-off crash leaves a trail
     // (recovered at next launch). Cleared on a clean Stop below. The build label
