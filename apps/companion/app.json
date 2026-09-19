@@ -71,7 +71,8 @@
         "expo-image-picker",
         {
           "photosPermission": "PICK lets you attach a photo from your library to share your cleanup impact.",
-          "cameraPermission": "PICK lets you snap a photo of the spot you cleaned up to share your impact."
+          "cameraPermission": "PICK lets you snap a photo of the spot you cleaned up to share your impact.",
+          "microphonePermission": false
         }
       ],
       [
