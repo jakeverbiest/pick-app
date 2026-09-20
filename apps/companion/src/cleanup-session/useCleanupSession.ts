@@ -1,9 +1,10 @@
 /**
  * React binding for the cleanup session — the spec's `useCleanupSession.ts`.
  *
- * Slice 1: written, imported nowhere. Slice 2 mounts `CleanupSessionProvider`
- * in app/_layout.tsx above the `(tabs)` Stack screen (spec Step 3: "the
- * controller must outlive Map screen remounts and tab changes"), after
+ * Slice 2 mounts `CleanupSessionProvider` in app/_layout.tsx above the
+ * `(tabs)` Stack screen (spec Step 3: "the controller must outlive Map screen
+ * remounts and tab changes") with the inert shadow controller from
+ * sessionShadow.ts — Map still owns the walk. It mounts after
  * `useAppInitialization` has finished — its launch-time
  * `recoverCrashedSession()` + `stopBackgroundSession()` pass
  * (src/hooks/useAppInitialization.ts:42-53) must run before any recovery

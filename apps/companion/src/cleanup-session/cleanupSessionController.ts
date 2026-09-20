@@ -378,12 +378,15 @@ export class CleanupSessionController {
 
   /**
    * Explicit intake for the slice-2 parallel run, where Map's own
-   * `trackLocation()` keeps GPS ownership and forwards each fix here. Same
-   * gates as the polled path.
+   * `trackLocation()` keeps GPS ownership and forwards what it gathered each
+   * tick: the foreground fix (null when it had none) plus the batch it drained
+   * from the OS queue, both raw — same gates, same batching as the polled path
+   * (`pollLocationOnce()` → `ingest(fix, queued)`), so the shadow's route is
+   * produced by exactly the code that goes live in slice 3.
    */
-  recordLocation(fix: LocationFix): void {
+  recordLocation(fix: LocationFix | null, queued: readonly LocationFix[] = []): void {
     if (!ROUTE_OPEN.has(this.status)) return;
-    this.ingest(fix, []);
+    this.ingest(fix, queued);
   }
 
   private async pollLocationOnce(id: string): Promise<void> {
