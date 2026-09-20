@@ -23,6 +23,8 @@ import { registerForPush, setupNotificationRouting } from '@/src/services/notifi
 import { LoadingView, ErrorView } from '@/src/pick/LoadingView';
 import { initErrorMonitoring } from '@/src/services/errorMonitoring';
 import { loadWalkDraft, clearWalkDraft, handOffWalkRestore } from '@/src/services/sessionRecovery';
+import { CleanupSessionProvider } from '@/src/cleanup-session/useCleanupSession'; // [session-shadow]
+import { getSessionShadow } from '@/src/cleanup-session/sessionShadow'; // [session-shadow]
 import * as Sentry from '@sentry/react-native';
 
 // Keep the native splash up until our own branded loading view is on screen,
@@ -85,13 +87,14 @@ export default Sentry.wrap(function RootLayout() {
     (async () => {
       const draft = await loadWalkDraft();
       if (canceled || !draft) return;
+      void getSessionShadow().observeLaunchDraft(draft); // [session-shadow] a read of the real draft — never cleared or rewritten by the shadow
       InteractionManager.runAfterInteractions(() => {
         if (canceled) return;
         Alert.alert(
           'Recover your last walk?',
           `A walk from ${new Date(draft.startedAt).toLocaleString()} with ${draft.pickupCount} pickup${draft.pickupCount === 1 ? '' : 's'} was never saved. Restore it so you can log it?`,
           [
-            { text: 'Discard', style: 'destructive', onPress: () => { clearWalkDraft(); } },
+            { text: 'Discard', style: 'destructive', onPress: () => { clearWalkDraft(); void getSessionShadow().observeDraftCleared('discarded'); } }, // [session-shadow]
             { text: 'Restore', onPress: () => { handOffWalkRestore(draft); } },
           ],
         );
@@ -130,11 +133,16 @@ export default Sentry.wrap(function RootLayout() {
 
   return (
     <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
-      <Stack screenOptions={{ headerShown: false }}>
-        <Stack.Screen name="index" options={{ animation: 'none' }} />
-        <Stack.Screen name="auth" />
-        <Stack.Screen name="(tabs)" />
-      </Stack>
+      {/* [session-shadow] Spec step 3: the session provider lives above the tabs so
+          the controller outlives Map remounts. In slice 2 it hosts the inert shadow
+          only (Map still owns the walk) and feeds AppState → reportAppState(). */}
+      <CleanupSessionProvider controller={getSessionShadow().controller}>
+        <Stack screenOptions={{ headerShown: false }}>
+          <Stack.Screen name="index" options={{ animation: 'none' }} />
+          <Stack.Screen name="auth" />
+          <Stack.Screen name="(tabs)" />
+        </Stack>
+      </CleanupSessionProvider>
       <StatusBar style="auto" />
     </ThemeProvider>
   );
