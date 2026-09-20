@@ -23,6 +23,7 @@ import { startBackgroundSession, stopBackgroundSession, drainBackgroundLocations
 import { beginSessionTrace, heartbeat, endSessionTrace, isSessionActiveFresh } from '../../src/services/crashRecorder';
 import { startMotionDiagnostics, stopMotionDiagnostics, recordMotionDiagnostic, motionDiagnosticStatus, subscribeMotionDiagnostics } from '../../src/services/motionDiagnostics';
 import { saveWalkDraft, loadWalkDraft, clearWalkDraft, subscribeToWalkRestore, type WalkDraft } from '../../src/services/sessionRecovery';
+import { getSessionShadow } from '../../src/cleanup-session/sessionShadow'; // [session-shadow]
 import { startPresence, pingPresence, endPresence, getLiveWalks } from '../../src/services/presence';
 import { computeNeed, parseRoute, needColor, needTileKey, type NeedTile } from '../../src/services/needMap';
 import { syncWorkoutToHealth, isHealthSyncEnabled } from '../../src/services/healthService';
@@ -66,6 +67,12 @@ const LOCATION_EXPLAINER_SHOWN_KEY = '@pick_location_explainer_shown';
 // observed. See docs/LEDGER_INBOX.md's 2026-09-10 entry for the reasoning
 // this exists to test before any recovery logic is written.
 let screenRemountsThisWalk = 0;
+
+// [session-shadow] Slice-2 parallel run: an inert session controller mounted
+// above the tabs (app/_layout.tsx) observes this walk through the touch points
+// tagged [session-shadow] below. It owns nothing here — Map keeps every
+// responsibility it has today. See src/cleanup-session/sessionShadow.ts.
+const sessionShadow = getSessionShadow(); // [session-shadow]
 
 export default function MapScreen() {
   // Fires once per actual mount (empty deps). The FIRST mount of a walk is
@@ -1014,6 +1021,7 @@ export default function MapScreen() {
   // it, no matter how many times this screen has remounted.
   useEffect(() => {
     const unsubscribe = subscribeToWalkRestore((draft) => {
+      void sessionShadow.observeRestoreToSummary(draft); // [session-shadow]
       setSessionRoute(draft.route || []);
       setPickupLocations(draft.pickups || []);
       setPickupCount(draft.pickupCount || 0);
@@ -1053,6 +1061,7 @@ export default function MapScreen() {
   const finishSession = () => {
     // Walk is fully done and saved — make sure no recovery draft lingers.
     clearWalkDraft();
+    void sessionShadow.observeDraftCleared('saved'); // [session-shadow]
     setShowResults(false);
     setPickupCount(0);
     setElapsedSeconds(0);
@@ -1411,18 +1420,24 @@ export default function MapScreen() {
       // tick still recovers every point the OS actually delivered in the
       // meantime, not just whatever's cached right now — this was the root
       // cause of walks recording only 2-7 GPS points for a whole session.
+      const drained = sessionMode === 'background' ? drainBackgroundLocations() : []; // [session-shadow] hoisted: the raw batch is forwarded below
       if (sessionMode === 'background') {
-        for (const q of drainBackgroundLocations()) {
+        for (const q of drained) { // [session-shadow] was: for (const q of drainBackgroundLocations())
           if (q.accuracy !== undefined && q.accuracy > ACCURACY_LIMIT_M) continue;
           newPoints.push({ lat: q.lat, lon: q.lon, timestamp: q.timestamp });
         }
       }
 
+      const fixAt = Date.now(); // [session-shadow] hoisted: the shadow gets the same receipt stamp
       if (fixAccuracy !== undefined && fixAccuracy > ACCURACY_LIMIT_M) {
         console.log(`📍 Skipped low-accuracy fix (${Math.round(fixAccuracy)}m)`);
       } else {
-        newPoints.push({ lat: latitude, lon: longitude, timestamp: Date.now() });
+        newPoints.push({ lat: latitude, lon: longitude, timestamp: fixAt }); // [session-shadow] was: timestamp: Date.now()
       }
+      // [session-shadow] Forward the RAW candidates, pre-gate: the shadow's route
+      // recorder applies its own port of the accuracy + jump gates below, so its
+      // route should equal sessionRoute exactly. Dropped by the shadow when idle.
+      sessionShadow.observeLocation({ lat: latitude, lon: longitude, accuracy: fixAccuracy, speed: evSpeed >= 0 ? evSpeed : undefined, timestamp: fixAt }, drained); // [session-shadow]
 
       if (newPoints.length === 0) return;
 
@@ -1719,6 +1734,7 @@ export default function MapScreen() {
     MotionDetector.stopListening(); // idempotent no-op if nothing was attached
     await MotionDetector.startListening(
       async (event) => {
+        sessionShadow.observePickup(event); // [session-shadow] tap — the shadow never attaches to the singleton
         setPickupCount((c) => c + 1);
         pickupCounterRef.current += 1;
 
@@ -1800,6 +1816,7 @@ export default function MapScreen() {
   const resumeWalkAfterRemount = async (draft: WalkDraft) => {
     if (startingRef.current || isListening) return;
     startingRef.current = true;
+    void sessionShadow.observeResume(draft); // [session-shadow] no-op if the shadow survived the remount; restore + resume after a relaunch
     watchSessionRef.current = `w${Date.now()}`;
     try {
       setSessionRoute(draft.route || []);
@@ -1857,6 +1874,10 @@ export default function MapScreen() {
     PickupAggregator.resetSession();
     await startMotionDiagnostics(watchSessionRef.current);
 
+    // [session-shadow] The shadow goes live here, before Map's first GPS fix and
+    // sensor attach, so it sees that first fix — its elapsed anchor therefore
+    // leads Map's by that latency (sessionShadowDiff.startedAt has both).
+    void sessionShadow.observeStart(); // [session-shadow]
     await attachWalkListeners();
 
     // Black box: drop a sentinel to disk so a screen-off crash leaves a trail
@@ -1872,6 +1893,7 @@ export default function MapScreen() {
     startBackgroundSession().then((mode) => {
       setSessionMode(mode);
       sessionModeRef.current = mode;
+      sessionShadow.observeBackgroundMode(mode); // [session-shadow] mirror — never a second OS session
       if (mode === 'foreground') {
         console.log('💡 Foreground-only (Expo Go or "Always" location not granted) — keeping screen on for this walk.');
         // Tell the user why locking the screen will pause their walk, and how to
@@ -1901,6 +1923,7 @@ export default function MapScreen() {
       // saves — this only changes what we can read afterwards.
       const why = (err && (err.message || String(err))) || 'unknown';
       sessionModeFailureRef.current = why.slice(0, 120);
+      sessionShadow.observeBackgroundFailure(why); // [session-shadow]
       console.warn('startBackgroundSession failed:', why);
     });
 
@@ -1908,6 +1931,7 @@ export default function MapScreen() {
       // Start failed (permissions, sensors) — release the watch so it doesn't
       // sit on a "starting" screen for a walk that never began.
       console.error('Start cleanup failed:', e);
+      void sessionShadow.observeStartFailed(String(e)); // [session-shadow] release the shadow's walk too
       void stopMotionDiagnostics('cleanup start failed');
       setWalkIntent(false);
       watchSessionRef.current = '';
@@ -1955,11 +1979,29 @@ export default function MapScreen() {
     stopBackgroundSession();
     // Clean stop — clear the black-box sentinel so launch sees no crash.
     endSessionTrace();
+    const shadowStop = sessionShadow.observeStop(); // [session-shadow] requestEnd() + confirmEnd(), beside Map's own detach; touches no singleton
     MotionDetector.stopListening();
+    const mapDetectorCount = MotionDetector.getPickupCount(); // [session-shadow] a read: the detector's own pre-trim count (events since its last attach)
     // Pocket-removal guard: pulling the phone out to tap Stop looks like a pickup
     // (June 11: 3.5s missed a removal — people take a beat before tapping Stop)
     const correctedCount = MotionDetector.trimRecentPickups(6000);
     recordMotionDiagnostic('cleanupEnd', { detectedBeforeTrim: pickupCount, detectedAfterTrim: correctedCount, truthMarks: groundTruthRef.current, sessionStartedAtMs: sessionStartRef.current });
+    // [session-shadow] The comparison record. Emitted here, synchronously, because
+    // stopMotionDiagnostics() below closes the recorder before any awaited result
+    // could land; the shadow's end count is computed over the same tap events its
+    // confirmEnd() trims a few microtasks later (cutoff pinned, so they agree).
+    sessionShadow.emitDiff({ // [session-shadow]
+      count: pickupCount, // [session-shadow]
+      corrected: correctedCount, // [session-shadow]
+      detectorCount: mapDetectorCount, // [session-shadow]
+      routePoints: sessionRoute.length, // [session-shadow]
+      distanceM: Math.round((parseFloat(String(calculateCoverage().distance)) || 0) * 1000), // [session-shadow] the saved distance_m expression
+      elapsedS: elapsedSeconds, // [session-shadow]
+      mode: sessionModeRef.current ?? (sessionModeFailureRef.current ? `unresolved:${sessionModeFailureRef.current}` : 'unresolved'), // [session-shadow] the saved session_mode rule
+      startedAt: sessionStartRef.current, // [session-shadow]
+      pickupPins: pickupLocations.length, // [session-shadow]
+      screenRemounts: screenRemountsThisWalk, // [session-shadow]
+    }, shadowStop); // [session-shadow]
     void stopMotionDiagnostics();
     setPickupCount(correctedCount);
     setIsListening(false);
@@ -2179,6 +2221,7 @@ export default function MapScreen() {
             style: 'destructive',
             onPress: () => {
               clearWalkDraft();
+              void sessionShadow.observeDraftCleared('discarded'); // [session-shadow]
               setShowSummary(false);
               setPickupCount(0);
               setElapsedSeconds(0);
@@ -2389,6 +2432,7 @@ export default function MapScreen() {
       // and syncs later), so the recovery draft can be dropped. If addCleanup
       // above threw, we skip this and the draft survives for next-launch restore.
       clearWalkDraft();
+      void sessionShadow.observeDraftCleared('saved'); // [session-shadow]
 
       // Mark walked street segments AND any park walked through as cleaned.
       if (sessionRoute.length > 0) {
@@ -4145,6 +4189,7 @@ ${MAPLIBRE_ANCHOR_FN}
                         style: 'destructive',
                         onPress: () => {
                           clearWalkDraft();
+                          void sessionShadow.observeDraftCleared('discarded'); // [session-shadow]
                           setShowSummary(false);
                           setPickupCount(0);
                           setElapsedSeconds(0);
