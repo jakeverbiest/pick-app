@@ -7,16 +7,14 @@
  * Run: npx -y tsx src/services/__tests__/tileStats.test.ts
  */
 import { tileId, tileBounds, getTileStats, TILE_SIZE_DEG, RenderSegment } from '../streetSegments';
+import { startSuite } from './harness';
 
-let pass = 0;
-let fail = 0;
+const suite = startSuite('tiles', 10_000);
 function check(name: string, cond: boolean, detail = '') {
-  if (cond) {
+  if (suite.record(cond)) {
     console.log(`✅ ${name}`);
-    pass++;
   } else {
     console.log(`❌ ${name} ${detail}`);
-    fail++;
   }
 }
 
@@ -74,5 +72,4 @@ check('empty coverage → 0% and 0 to go (no divide-by-zero)', empty.freshPct ==
 const allFresh = getTileStats(LAT, LON, [seg('a', midLat, midLon, 0), seg('b', midLat, midLon, 2)]);
 check('all fresh → 100% and 0 to go (completed tile)', allFresh.freshPct === 100 && allFresh.toGo === 0);
 
-console.log(`\n${fail === 0 ? '✅ ALL PASSED' : '❌ FAILED'} (${pass}/${pass + fail})`);
-process.exit(fail === 0 ? 0 : 1);
+suite.end();

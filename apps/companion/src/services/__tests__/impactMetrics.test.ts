@@ -16,16 +16,15 @@ import {
   PICKUPS_PER_BAG,
   BAG_SIZE_FACTORS,
 } from '../impactMetrics';
+import { startSuite } from './harness';
 
-let failures = 0;
+const suite = startSuite('impact', 10_000);
 function eq(name: string, actual: unknown, expected: unknown) {
-  const ok = actual === expected;
-  if (!ok) failures++;
+  const ok = suite.record(actual === expected);
   console.log(`${ok ? '✅' : '❌'} ${name}${ok ? '' : ` — got ${JSON.stringify(actual)}, want ${JSON.stringify(expected)}`}`);
 }
 function close(name: string, actual: number, expected: number, eps = 1e-9) {
-  const ok = Math.abs(actual - expected) <= eps;
-  if (!ok) failures++;
+  const ok = suite.record(Math.abs(actual - expected) <= eps);
   console.log(`${ok ? '✅' : '❌'} ${name}${ok ? '' : ` — got ${actual}, want ${expected}`}`);
 }
 
@@ -86,8 +85,4 @@ eq('display', est.display, '100 pickups · about ½ a bag');
 const rep = sessionImpact(100, 2);
 close('reported bags win', rep.bags, 2);
 
-if (failures > 0) {
-  console.error(`\n${failures} test(s) failed`);
-  process.exit(1);
-}
-console.log('\nAll impactMetrics tests passed');
+suite.end();

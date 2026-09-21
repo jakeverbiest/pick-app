@@ -8,16 +8,14 @@ import {
   routeCoverageFraction, pointInPolygon, offsetCoords, SNAP_DISTANCE_M, ROAD_SIDE_OFFSET_M,
   assignRoutePointsToNearestSegment, COVERAGE_THRESHOLD,
 } from '../streetSegments';
+import { startSuite } from './harness';
 
-let pass = 0;
-let fail = 0;
+const suite = startSuite('geometry', 10_000);
 function check(name: string, cond: boolean, detail = '') {
-  if (cond) {
+  if (suite.record(cond)) {
     console.log(`✅ ${name}`);
-    pass++;
   } else {
     console.log(`❌ ${name} ${detail}`);
-    fail++;
   }
 }
 
@@ -149,5 +147,4 @@ const covB = routeCoverageFraction(sidewalkB, buckets[1], SNAP_DISTANCE_M);
 check('walking sidewalk A (real, independently-mapped) still credits A', covA >= COVERAGE_THRESHOLD, `(got ${covA.toFixed(2)})`);
 check('walking sidewalk A no longer also credits independently-mapped B at 15m separation', covB < COVERAGE_THRESHOLD, `(got ${covB.toFixed(2)})`);
 
-console.log(`\n${fail === 0 ? '✅ ALL PASSED' : `❌ ${fail} FAILED`} (${pass}/${pass + fail})`);
-process.exit(fail === 0 ? 0 : 1);
+suite.end();

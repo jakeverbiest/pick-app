@@ -40,6 +40,7 @@ import {
   EvalProfile,
 } from '../motionEvaluation';
 import { simplifyRoute, dropOutliers, privacyTrimRoute } from '../routeUtils';
+import { startSuite } from './harness';
 
 // Every motion event from the June 10 log. peakAccelTime was only logged for
 // the timing rejection (2395ms); others use 800ms (mid-window, uncontroversial).
@@ -85,10 +86,9 @@ const GARBAGE: { name: string; profile: EvalProfile }[] = [
   { name: 'no settling (constant accel)', profile: { ...ev(1.3), lastAccel: 1.29 } },
 ];
 
-let failures = 0;
+const suite = startSuite('detector', 30_000);
 const check = (name: string, actual: boolean, expected: boolean) => {
-  const ok = actual === expected;
-  if (!ok) failures++;
+  const ok = suite.record(actual === expected);
   console.log(`${ok ? '✅' : '❌ FAIL'} ${name}`);
 };
 
@@ -634,5 +634,4 @@ check('peak window is 0.9-3.5g', THRESHOLDS.peakAccelMin === 0.9 && THRESHOLDS.p
   check('stop floor shared with the pause gate', RELATIVE_PACE.minStopMps === 0.35, true);
 }
 
-console.log(`\n${failures === 0 ? '✅ ALL PASSED' : `❌ ${failures} FAILURE(S)`}`);
-process.exit(failures === 0 ? 0 : 1);
+suite.end();

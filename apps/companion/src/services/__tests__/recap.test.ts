@@ -5,15 +5,15 @@
  */
 import { previousPeriodRange, listRecentRanges, buildRecap, buildRecapCaption, type RecapPeriod } from '../recap';
 import type { Cleanup } from '../firebaseDatabase';
+import { startSuite } from './harness';
 
-let failures = 0;
+const suite = startSuite('recap', 10_000);
 function eq(name: string, actual: unknown, expected: unknown) {
-  const ok = JSON.stringify(actual) === JSON.stringify(expected);
-  if (!ok) failures++;
+  const ok = suite.record(JSON.stringify(actual) === JSON.stringify(expected));
   console.log(`${ok ? '✅' : '❌'} ${name}${ok ? '' : ` — got ${JSON.stringify(actual)}, want ${JSON.stringify(expected)}`}`);
 }
 function ok(name: string, cond: boolean) {
-  if (!cond) failures++;
+  suite.record(cond);
   console.log(`${cond ? '✅' : '❌'} ${name}`);
 }
 
@@ -147,8 +147,4 @@ console.log('\n=== buildRecapCaption ===');
   ok('month caption uses possessive name', monthCaption.startsWith("Jake's month"));
 }
 
-if (failures > 0) {
-  console.error(`\n${failures} test(s) failed`);
-  process.exit(1);
-}
-console.log('\nAll recap tests passed');
+suite.end();

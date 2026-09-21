@@ -5,12 +5,12 @@
  * Run: npx -y tsx src/services/__tests__/polygonStats.test.ts
  */
 import { polygonStats, isFallbackCityWithNoSubdivision } from '../hoodMetrics';
+import { startSuite } from './harness';
 
-let pass = 0;
-let fail = 0;
+const suite = startSuite('hoods', 10_000);
 function check(name: string, cond: boolean, detail = '') {
-  if (cond) { console.log(`✅ ${name}`); pass++; }
-  else { console.log(`❌ ${name} ${detail}`); fail++; }
+  if (suite.record(cond)) console.log(`✅ ${name}`);
+  else console.log(`❌ ${name} ${detail}`);
 }
 
 // A square neighborhood around Carroll Gardens (~0.01° box).
@@ -68,5 +68,4 @@ check(
   isFallbackCityWithNoSubdivision(0, true) === false
 );
 
-console.log(`\n${fail === 0 ? '✅ ALL PASSED' : '❌ FAILED'} (${pass}/${pass + fail})`);
-process.exit(fail === 0 ? 0 : 1);
+suite.end();
