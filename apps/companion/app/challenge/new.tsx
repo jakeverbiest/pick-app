@@ -28,10 +28,11 @@ import DateTimePicker, { type DateTimePickerEvent } from '@react-native-communit
 import { Icon } from '../../src/pick/Icon';
 import { AreaPreview } from '../../src/pick/AreaPreview';
 import { C, Fonts, radius } from '../../src/pick/theme';
-import { osmNeighborhood } from '../../src/services/neighborhoods';
+import { osmNeighborhood, challengeNeighborhoodBoundary } from '../../src/services/neighborhoods';
 import {
   createChallenge,
   validateChallenge,
+  ringMatchesBoundary,
   type ChallengeAreaType,
   type ChallengeGoalType,
   type NewChallengeInput,
@@ -159,6 +160,29 @@ export default function NewChallengeScreen() {
     }
     setSaving(true);
     try {
+      // "Da count" (deleted 2026-09-21): a custom ring drawn ~1.3km from the
+      // neighborhood its label claimed, because the label comes from a
+      // reverse-geocode of wherever the phone was when this screen mounted
+      // (see the location effect above), never re-checked against where the
+      // ring actually got drawn. Catch that here, before it's ever written —
+      // block save rather than silently letting a mismatched area through.
+      // A lookup miss (no boundary found for `hood`, offline, an
+      // unrecognized name) is NOT treated as a mismatch — see
+      // ringMatchesBoundary's doc comment — so this can't block a legitimate
+      // save just because the boundary lookup came up empty.
+      if (input.area.type === 'custom' && input.area.ring && input.area.ring.length >= 3 && hood) {
+        let boundary: [number, number][] | null = null;
+        try {
+          boundary = await challengeNeighborhoodBoundary(hood);
+        } catch {}
+        if (!ringMatchesBoundary(input.area.ring, boundary)) {
+          Alert.alert(
+            "This doesn't look right",
+            `The area you drew doesn't look like it's in ${hood}. Redraw the boundary so it covers ${hood}, or switch to "Anywhere" if that's not what you meant.`,
+          );
+          return;
+        }
+      }
       const id = await createChallenge(input);
       router.replace(`/challenge/${id}` as any);
     } catch (e: any) {
