@@ -180,3 +180,57 @@ Also worth knowing before wiring: the watch bridge treats the walk as active fro
 | `src/cleanup-session/appSessionDeps.ts` | Real `SessionDeps` over the singletons — imported nowhere; exists so `tsc` proves the ports fit today. |
 | `src/cleanup-session/useCleanupSession.ts` | `CleanupSessionProvider`, `useCleanupSession()`, `useReportMapHealth()` — imported nowhere. |
 | `src/cleanup-session/__tests__/sessionController.test.ts` | `npm run test:session`; appended to `npm test`. |
+| `src/services/__tests__/harness.ts` | Shared end-of-suite guard for the six older tsx suites (`test:detector` … `test:recap`): a ref'd watchdog plus an `'exit'` listener, so a hung `await` fails non-zero with the assertion count instead of exiting 0 mid-suite (the failure mode slice 1 hit). Each suite keeps its own print format; only the counters and the exit moved. |
+
+---
+
+## Slice 3 prep — reader audit and open decisions
+
+_2026-09-20, on `session-controller` at `3b6716b`. Line numbers are `map.tsx` at that commit; the slice-1 numbers above for the same sites (:1534-1535, :1760-1761, :2308, :2455) have drifted under the shadow touch points to :1550, :1777, :2351, :2499._
+
+### H. The per-pickup / per-point "writes" never reach Firestore, and nothing reads them
+
+F3 asked who writes `db.addPickupLocation` / `db.addLocationPoint` once Map gives up the callback. The definitions settle it before the question is reached: neither is a Firestore write.
+
+| Writer | Definition | Call site | What it does | Readers |
+|---|---|---|---|---|
+| `db.addLocationPoint(lat, lon)` | `src/services/firebaseDatabase.ts:911-917` | `map.tsx:1550`, tail of `trackLocation()`, on every tick with at least one accuracy-gated fix (:1431-1442; one per 5-10 s while walking) | `this.sessionLocations.push({ lat, lon, timestamp: Date.now() })` — a private in-memory array on the `FirebaseDatabase` singleton (:908). No `addDoc`, no collection, no field. | `getSessionRoute()` (:927-929) returns the array — **no callers found**. `clearSessionData()` (:935-938) empties it — **no callers found**. |
+| `db.addPickupLocation(lat, lon)` | `firebaseDatabase.ts:919-925` | `map.tsx:1777`, inside the detector pickup callback, after `setPickupLocations` (:1760) | `this.pickupLocations.push({ … })` — the sibling array (:909). Never leaves the process. | `getPickupHeatmap()` (:931-933) — **no callers found**. `clearSessionData()` — no callers. |
+
+Searches, from the worktree root, `node_modules` excluded:
+
+```
+grep -rn "addPickupLocation\|addLocationPoint\|getSessionRoute\|getPickupHeatmap\|clearSessionData\|sessionLocations" \
+  --include='*.ts' --include='*.tsx' --include='*.js' --include='*.cjs' --include='*.swift' apps/companion
+grep -rn "getSessionRoute\|getPickupHeatmap\|clearSessionData\|addPickupLocation\|addLocationPoint" \
+  --include='*.js' --include='*.html' --include='*.ts' --include='*.py' --include='*.md' ~/pick-app      # web/, detector-analysis/, docs
+grep -ohn "collection(['\"][A-Za-z_/{}$.-]*['\"]" apps/companion/functions/{index,detectorExport,fetch-detector-export,repair-precache-seeds}.js apps/companion/functions/shared/*.js | sort | uniq -c
+grep -n "match /" apps/companion/firestore.rules        # no collection for either; /{document=**} at :480 denies everything else
+git log -S"getPickupHeatmap()" -- apps/companion/app     # empty: no caller under app/ at any commit
+```
+
+Hits: the two definitions, the two Map call sites, the three in-class readers, nothing else — not in `app/`, `src/`, `modules/`, `targets/`; not in `functions/` (`index.js`, `detectorExport.js`, `fetch-detector-export.js`, `repair-precache-seeds.js`, `shared/*` — the 32 collection names those files touch are all listed by the third command and none is a location/pickup collection); not in `~/pick-app/web/*.html`; not in `~/pick-app/detector-analysis/*.py`. Both methods date from the 2026-06-10 checkpoint (`0fbf663`). The in-app heatmap that would have consumed `getPickupHeatmap()` was removed 2026-07-20 (`cf2bd6e`; the comment at `map.tsx:1630`), and git history has no caller under `app/` even before that.
+
+What "hotspots moved to the web dashboard" actually refers to is a separate pipeline that these two writers never feed:
+
+- `saveSummary()` writes a `pickups` field on the cleanup document (`map.tsx:2371-2382`): Map's `pickupLocations` **React state** (:284, appended at :1760), deduped to 4-dp (~11 m) cells, as a JSON string. Not `db.pickupLocations`.
+- `rebuildPublicStats` (`functions/index.js:440-535`) reads `d.pickups` off `cleanups` (`addHot`, :457-467), bins to 3-dp cells, and writes `hotspots` onto `global_stats/summary` (:523) and `city_stats/<slug>` (:535).
+- The site reads those two docs (`web/index.html:379`, `web/map.html:271`, `web/city.html:205`) but no page touches `.hotspots` — zero hits for `hotspot` in `web/*.html`; only `web/README.md:78-79` still lists the field. `index.js:1270` dates the public layer's removal to 2026-09-06 (the earlier note said 09-03; the code comment is the nearer source). So `hotspots` is still computed and written server-side with no client reader — a separate cleanup candidate, not slice-3 scope.
+- The detector export (`functions/detectorExport.js:121-136`, `ALLOWED_TOP_LEVEL_FIELDS`) excludes `pickups`, `route_points`, and `distance_m` by design (:81). `detector-analysis/parse_sessions.py` reads the on-device diagnostics JSONL (`type: "location"` rows from `motionDiagnostics`), not Firestore.
+- `firestore.rules`: `cleanups` is owner-read (:32); no other rule is relevant.
+
+**Recommendation for slice 3: nobody writes them.** Delete the two call sites (`map.tsx:1550`, `:1777`) and the dead block in `firebaseDatabase.ts` (:905-938: both arrays, `addLocationPoint`, `addPickupLocation`, `getSessionRoute`, `getPickupHeatmap`, `clearSessionData`). The slice-2 suggestion — a Map-side store subscriber diffing `snapshot.route` / `snapshot.pickupLocations` and writing only the new tail — solves a problem that does not exist: there is no per-event write with a reader, so a subscriber would faithfully preserve a memory-only append that nothing consumes. One side effect worth naming: `clearSessionData()` is never called, so both arrays grow for the life of the process — every accepted fix and every pickup of every walk since launch. Small (tens of KB per hour walked) but unbounded; deleting the writers closes it.
+
+What slice 3 does need is narrower: the per-walk consumers of Map's React state read the controller's `SessionResult` instead — `route` for `route_points` (:2368, via `simplifyRoute(privacyTrimRoute(…))`) and `pickupLocations` for the `pickups` field (:2371-2382), plus the draft/diagnostic/export-sheet reads of `pickupLocations` (:1048 autosave draft, :2002 shadow diff, :2029 save-first draft, :2518 `calculateCoverage().pickups`, :2575, :2600-2602 `exportSession`). `SessionResult` already carries `route`, `pickupLocations`, `distanceMeters` (`types.ts:170-172`). No new port, no subscriber, no Firestore change.
+
+### I. `distance_m` — 10 m today, 1 m in the recorder; decide before the cutover
+
+- **Map, the saved value:** `map.tsx:2351` `distance_m: Math.round((parseFloat(String(calculateCoverage().distance)) || 0) * 1000)`. `calculateCoverage()` (:2499-2521) sums planar km and returns `distance: distance.toFixed(2)` (:2516) — a string at 10 m granularity, so every stored `distance_m` is a multiple of 10.
+- **Recorder:** `RouteRecorder.distanceMeters()` (`routeRecorder.ts:163-164`) = `Math.round(planarDistanceKm(route) * 1000)` — Map's formula verbatim (:40-52), 1 m granularity; surfaced as `SessionResult.distanceMeters` (`types.ts:172`).
+- **Parity today is unaffected:** the shadow diff compares Map's expression with `savedStyleDistanceM()` (`shadowSessionDeps.ts:421-428`), which re-applies the `toFixed(2)`, so `agree.distance` is byte-equality either way. This decision is only about what the save writes after the cutover.
+- **The same rounded km also feeds:** the in-walk top bar (:3001), the results modal (:4235, :4267), the share card's `distanceMi` (:4401), `exportSession` (:2532), two end-of-walk payloads (:2176, :2193), and the Apple Health workout distance (:2451-2456, `distanceKm: gpsKm`). Every display is 2-dp km/mi regardless; only Health and the stored field carry the number onward.
+- **Downstream readers of `distance_m`: none.** `grep -rn distance_m` over `app/`, `src/`, `modules/`: the writer, the shadow mirror, and two type declarations (`src/types/index.ts:53`, `firebaseDatabase.ts:72`). `functions/`: zero hits — not in the export allowlist, and no distance aggregation under another name (`grep -in distance functions/index.js` finds one point-to-polyline helper for adopted blocks, :3296). `~/pick-app/web/`, `~/pick-app/detector-analysis/`: zero. Not Impact totals (`impactMetrics.ts` is bags and items), not leaderboards (`team_stats` / `user_stats` rollups carry no distance), not challenge stats. Stored since 2026-09-08 precisely so a future consumer has the true figure (the type comment at `firebaseDatabase.ts:68-72`); write-only so far.
+- **Option A — keep Map's 10 m.** The save writes `Math.round(parseFloat(km.toFixed(2)) * 1000)` from the result's route. Byte-identical records across the cutover, nothing to annotate later; keeps a quantization in a field whose stated purpose is precision.
+- **Option B — adopt the recorder's 1 m.** The save writes `distanceMeters` as-is. Every record after the cutover differs from what Map would have written by at most 5 m — pure rounding, same route, same formula — and no reader exists to notice. Old records keep their 10 m quantization, so a future distance stat mixes granularities with no marker unless the cutover date is recorded.
+
+Not decided here. For the brief: **keep Map's 10 m rounding for `distance_m` after the cutover? `yes` (byte-parity) / `no` (1 m; a ≤5 m one-time difference on a field with no readers today).**
