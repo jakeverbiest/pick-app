@@ -1,6 +1,8 @@
 # Spec — Group Impact Map
 
-Status: **draft for review, nothing built.** Written 2026-09-07.
+Status: **partially implemented and OTA-deployed; organizer finish work remains.** Written 2026-09-07; status corrected 2026-09-11 after code and ledger review; correction refined 2026-09-21 to separate confirmed-deployed from confirmed-correct for the MapLibre page and `challengeImpact`.
+
+**Implementation correction.** The original “nothing built” status is stale. Challenge token/share-link support, roster-scoped challenge stats, privacy-floor marker aggregation, and join consent for new events are implemented. **Street coverage and the MapLibre web page are implemented and confirmed live — not confirmed correct end-to-end.** Verified directly 2026-09-21: `web/challenge.html` is complete, real MapLibre GL code (not a stub) calling the exact `challengeImpact` endpoint defined in `functions/index.js`; the deployed production endpoint is live and answers exactly as its source dictates (`403 missing token` on a bare request against the real URL). What's still unverified is whether a real, valid token renders a correct page end-to-end — no such smoke test has run, which matches rather than closes the gap already flagged in the ledger's 2026-09-08/09 entry and the 2026-09-18 website-reconciliation pass. This session could not close it either: that needs Firestore credentials this session wasn't granted, or minting a new production token, and manufacturing a token to pass the check was ruled out as scope. The remaining product work is organizer-facing access and sharing, event-boundary rendering, the social export, map crop/correctness fixes, optional photo strip, and a real three-or-more-person event test. Keep the build-order history below, but do not treat steps 1–4 as unstarted.
 
 ## 1. Why this exists
 
