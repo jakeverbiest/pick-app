@@ -152,6 +152,29 @@ export interface UserSettings {
   detector_telemetry_consent?: boolean;
   detector_telemetry_consent_at?: number;
   detector_telemetry_disclosure_version?: string;
+  /**
+   * Terms/Privacy acceptance, recorded once at account creation (2026-09-23,
+   * Option 2 of docs/TERMS_ACCEPTANCE_OPTIONS.md — a required checkbox that
+   * gates both the Apple and email signup buttons). ABSENT on every account
+   * created before that.
+   *
+   * Two independent pairs rather than one shared flag: Terms and Privacy
+   * deliberately carry separate `_LAST_UPDATED` constants in
+   * src/constants/legal.ts (a shared constant once silently back-dated the
+   * Terms copy's claimed update date — see that file's comment), so a single
+   * combined acceptance flag would misattribute which document's version was
+   * actually agreed to.
+   *
+   *  - `terms_accepted_version` / `privacy_accepted_version` the exact
+   *    TERMS_LAST_UPDATED / PRIVACY_LAST_UPDATED string shown at the moment
+   *    of acceptance — without it, a later copy change makes every prior
+   *    acceptance unauditable.
+   *  - `terms_accepted_at` / `privacy_accepted_at` epoch ms of the write.
+   */
+  terms_accepted_version?: string;
+  terms_accepted_at?: number;
+  privacy_accepted_version?: string;
+  privacy_accepted_at?: number;
   created_at: number;
   updated_at: number;
 }
@@ -676,12 +699,19 @@ class FirebaseDatabase {
    *   facts and only the second one is true today (there is no decline path;
    *   the disclosure is informational, shown at signup). Never pass a version
    *   from a code path that didn't render the copy.
+   * @param termsAcceptedVersion / @param privacyAcceptedVersion Same contract
+   *   as detectorDisclosureVersion above, one per document: pass the current
+   *   TERMS_LAST_UPDATED / PRIVACY_LAST_UPDATED (src/constants/legal.ts) only
+   *   from a code path that actually gated on the signup checkbox (see
+   *   app/auth/signup.tsx). Empty/omitted records nothing.
    */
   async initializeUserSettings(
     userId: string,
     displayName: string,
     neighborhood: string,
-    detectorDisclosureVersion?: string
+    detectorDisclosureVersion?: string,
+    termsAcceptedVersion?: string,
+    privacyAcceptedVersion?: string
   ) {
     const newSettings: UserSettings = {
       id: userId,
@@ -702,6 +732,14 @@ class FirebaseDatabase {
       newSettings.detector_telemetry_consent = true;
       newSettings.detector_telemetry_consent_at = Date.now();
       newSettings.detector_telemetry_disclosure_version = detectorDisclosureVersion;
+    }
+    if (termsAcceptedVersion) {
+      newSettings.terms_accepted_version = termsAcceptedVersion;
+      newSettings.terms_accepted_at = Date.now();
+    }
+    if (privacyAcceptedVersion) {
+      newSettings.privacy_accepted_version = privacyAcceptedVersion;
+      newSettings.privacy_accepted_at = Date.now();
     }
 
     try {
