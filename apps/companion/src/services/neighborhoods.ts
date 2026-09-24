@@ -3,6 +3,7 @@ import * as FileSystem from 'expo-file-system/legacy';
 import { getFirestore, doc, getDoc } from 'firebase/firestore';
 import { tileId, pointInPolygon } from './streetSegments';
 import { app } from './firebaseConfig';
+import { nominatimFetch } from './nominatim';
 // OSM administrative-boundary fetch/stitch pipeline lives under
 // functions/shared/ now, not here — a single implementation the Cloud
 // Functions precache-refresh job also imports, instead of a second copy
@@ -51,12 +52,7 @@ export async function osmNeighborhood(lat: number, lon: number): Promise<string>
   let name = '';
   try {
     const url = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lon}&zoom=16&addressdetails=1`;
-    const res = await fetch(url, {
-      headers: {
-        'User-Agent': 'PICK-cleanup-app/1.0 (neighborhood labeling)',
-        Accept: 'application/json',
-      },
-    });
+    const res = await nominatimFetch(url);
     if (res.ok) {
       const data: any = await res.json();
       const a = data?.address ?? {};
@@ -548,9 +544,7 @@ async function osmBoundaryByName(name: string, city: string): Promise<[number, n
   try {
     const q = encodeURIComponent(`${name}${city ? ', ' + city : ''}`);
     const url = `https://nominatim.openstreetmap.org/search?q=${q}&format=jsonv2&polygon_geojson=1&limit=8&addressdetails=1`;
-    const res = await fetch(url, {
-      headers: { 'User-Agent': 'PICK-cleanup-app/1.0 (neighborhood labeling)', Accept: 'application/json' },
-    });
+    const res = await nominatimFetch(url);
     if (res.ok) {
       const arr: any[] = await res.json();
       const isArea = (r: any) => r.geojson && (r.geojson.type === 'Polygon' || r.geojson.type === 'MultiPolygon');

@@ -16,7 +16,8 @@
     "test:hoods": "npx -y tsx src/services/__tests__/polygonStats.test.ts",
     "test:recap": "npx -y tsx src/services/__tests__/recap.test.ts",
     "test:cleanupsave": "npx -y tsx src/services/__tests__/cleanupSave.test.ts",
-    "test": "npm run test:detector && npm run test:geometry && npm run test:impact && npm run test:tiles && npm run test:hoods && npm run test:recap && npm run test:cleanupsave"
+    "test:nominatim": "npx -y tsx src/services/__tests__/nominatim.test.ts",
+    "test": "npm run test:detector && npm run test:geometry && npm run test:impact && npm run test:tiles && npm run test:hoods && npm run test:recap && npm run test:cleanupsave && npm run test:nominatim"
   },
   "dependencies": {
     "@bacons/apple-targets": "^5.0.0",
