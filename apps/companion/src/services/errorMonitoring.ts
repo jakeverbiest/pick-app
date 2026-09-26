@@ -31,6 +31,7 @@
  *    second, redundant path writing feedback somewhere else entirely.
  */
 import * as Sentry from '@sentry/react-native';
+import { scrubBreadcrumb, scrubEvent, scrubTransaction } from './sentryScrub';
 
 let initialized = false;
 
@@ -46,6 +47,10 @@ export function initErrorMonitoring() {
     tracesSampleRate: 0.2,
     enabled: !__DEV__,
     sendDefaultPii: false,
+    // Strip query strings/fragments from all URLs (Nominatim lat/lon, CARTO key).
+    beforeBreadcrumb: (b) => scrubBreadcrumb(b),
+    beforeSend: (e) => scrubEvent(e),
+    beforeSendTransaction: (e) => scrubTransaction(e),
   });
   initialized = true;
 }

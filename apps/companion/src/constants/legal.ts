@@ -8,7 +8,7 @@
 // change on the same day (2026-09-01: a privacy-only reconciliation once
 // used a shared LEGAL_LAST_UPDATED and it silently back-dated the Terms
 // copy's claimed update date to a day nothing in the Terms actually changed).
-export const PRIVACY_LAST_UPDATED = 'September 19, 2026';
+export const PRIVACY_LAST_UPDATED = 'September 25, 2026';
 export const TERMS_LAST_UPDATED = 'June 11, 2026'; // matches web/terms.html — no substantive Terms change since
 
 /**
@@ -104,19 +104,21 @@ Last updated: ${PRIVACY_LAST_UPDATED}
 Operated by John Larkin Verbiest, known publicly as Jake Verbiest ("we", "us").
 
 WHAT WE COLLECT
-• Account info: display name, email, neighborhood, optional team or event name.
+• Account info: display name, email, neighborhood, optional team or event name, and a record of which version of the Terms and Privacy Policy you accepted at signup and when.
 • Cleanup sessions: pickup counts, duration, estimated/reported weight, date/time, and GPS data — your walking route and approximate pickup locations. Stored in our cloud database (Google Firebase) so history, maps, and leaderboards work.
 • Motion sensors: raw accelerometer/gyroscope samples are processed on your device in real time and never transmitted anywhere — only a compact summary of each detected motion event (strength, duration, accepted as a pickup or not) is kept, alongside the session data above.
 • Device and carry position: each cleanup records the phone's hardware model and operating-system version and, where the app could tell, whether the phone rode in a pocket or in your hand — worked out from the same motion sensors above, and left off entirely when it isn't confident. These are kept only to make the detection-accuracy work below meaningful: detection performance depends heavily on which phone it runs on and where that phone rides. A hardware model string — never your device's name, which you set yourself.
 • Session power mode: each cleanup also records whether you were using the app in the foreground (screen on) or background (screen off). Background location tracking needs "Always" location access to keep working with the screen off; without it, the app has to keep the screen on instead. Kept only to measure how often that happens, so we know whether it's worth building around.
+• Map and place lookups: while the map is open, the app sends location-related requests to three outside map services, none of which receive your name, email, or account ID. (a) OpenStreetMap's Nominatim reverse-geocoding service receives your exact coordinates whenever you open or re-center the map, to look up your neighborhood name; results are cached on your device for about 30 days per roughly 500-meter tile. A city you type into search is sent to Nominatim as text and is not cached. Group Recap sends only a neighborhood name. (b) The CARTO basemap receives the map area you are viewing (tile positions) and your IP address whenever the map is open or panned. (c) Overpass (OpenStreetMap street data) receives coordinates rounded to five decimal places when street data for the area you are viewing is not already cached, on map open or pan at close zoom levels. These services have their own privacy policies.
 • Weight calibration entries stay on your device only.
 • Apple Health: if you enable it, we write each cleanup as a walking workout so it counts toward your activity rings and exercise minutes. We never read anything from Health — the read permission is only requested because Apple requires it alongside the write permission.
 • Photos: you can attach a photo to a cleanup post. It's stored in our cloud storage; if you post it, it's visible on the community feed or wherever you share it. Attaching a photo is always optional.
 • Feedback: if you use "Send feedback," we collect your message, display name, email, app version, and timestamp — read internally to fix problems, never shown publicly.
-• Crash reports: we use Sentry to catch crashes and errors. It receives device/app version and a technical stack trace — no cleanup content or location history.
+• Push notifications: if you allow notifications, we store an Expo push token linked to your account so we can send them (for example, when someone follows or likes you). The token is handled by Expo's push service and Apple/Google. It is deleted with your account. You can turn notifications off in your phone's settings.
+• Crash and error reports: we use Sentry to catch crashes and errors. It receives device/app version and a technical stack trace of what the app was doing when it crashed. For a sample of app launches (about one in five) it also receives performance timing data such as screen load and network request durations, and an anonymous per-install session identifier. Query strings (the part of a web address after the "?") are removed from the addresses in these reports, so coordinates in map requests are not sent to Sentry. No cleanup content, location history, or account details beyond what's needed to diagnose problems.
 
 WHAT WE DON'T DO
-No contacts, microphone, or ad identifiers. No data sales. No ads. No location tracking outside active cleanup sessions.
+No contacts, microphone, or ad identifiers. No data sales. No ads. Location is only tracked and saved during active cleanup sessions; opening the map also sends your location to the map services described above.
 
 HOW WE USE IT
 To run the app: maps, stats, streaks, badges, team totals, leaderboards, challenges. Your display name and aggregate stats may appear on leaderboards visible to other users. Street-cleaning status (which sidewalk segments were cleaned, and when) is shared across all users to power the community coverage map.
@@ -124,8 +126,8 @@ To improve pickup detection: we analyze session data — the motion-event summar
 
 LEGAL BASIS (EU/UK/EEA users)
 • Contract necessity: core account and cleanup-session data (email, GPS route, pickup counts, motion-detection summaries, timestamps) — needed to provide the app's core service.
-• Consent: optional features you turn on yourself (Apple Health, photo attachment, community sharing, Bluesky auto-post) — withdraw anytime in Settings.
-• Legitimate interests: the public aggregate map/stats, leaderboards, profile pages, the shared street-cleaning map, Sentry diagnostics, and the pickup-detection accuracy analysis above — each user-facing one has its own opt-out, and detection analysis can be opted out of by email. We don't process any special category (health/biometric/genetic) data under GDPR Art. 9; motion-sensor data only detects a pickup motion, it doesn't identify or profile you.
+• Consent: optional features you turn on yourself (Apple Health, photo attachment, community sharing, Bluesky auto-post) — withdraw anytime in Settings. Push notifications are likewise based on the permission you grant at the operating system prompt.
+• Legitimate interests: the public aggregate map/stats, leaderboards, profile pages, the shared street-cleaning map, the map lookups (OpenStreetMap, CARTO, Overpass) needed to show the map, Sentry diagnostics and performance monitoring, and the pickup-detection accuracy analysis above — each user-facing one has its own opt-out, and detection analysis can be opted out of by email. We don't process any special category (health/biometric/genetic) data under GDPR Art. 9; motion-sensor data only detects a pickup motion, it doesn't identify or profile you.
 
 INTERNATIONAL TRANSFERS
 This app's Firebase database runs in the US (us-central1). Google's Cloud Data Processing Addendum for Firebase/Google Cloud Platform — which applies automatically to this project — incorporates the EU Standard Contractual Clauses as the safeguard for this transfer.

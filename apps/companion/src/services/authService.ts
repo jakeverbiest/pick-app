@@ -120,13 +120,20 @@ class AuthService {
    *   from a screen that showed the copy — see initializeUserSettings' doc and
    *   DETECTOR_DISCLOSURE_VERSION in src/constants/legal.ts. Empty/omitted means
    *   no consent is recorded and the account never enters the telemetry export.
+   * @param termsAcceptedVersion / @param privacyAcceptedVersion Current
+   *   TERMS_LAST_UPDATED / PRIVACY_LAST_UPDATED (src/constants/legal.ts). Pass
+   *   them only from a screen that actually gated signup on the Terms/Privacy
+   *   checkbox (see app/auth/signup.tsx) — same empty-means-unrecorded contract
+   *   as detectorDisclosureVersion above.
    */
   async signup(
     email: string,
     password: string,
     displayName: string,
     neighborhood: string = '',
-    detectorDisclosureVersion?: string
+    detectorDisclosureVersion?: string,
+    termsAcceptedVersion?: string,
+    privacyAcceptedVersion?: string
   ): Promise<AuthUser> {
     try {
       console.log(`🚀 Signing up: ${email}`);
@@ -144,7 +151,14 @@ class AuthService {
 
       const db = await getDatabase();
       await db.initialize(cred.user.uid);
-      await db.initializeUserSettings(cred.user.uid, displayName, neighborhood, detectorDisclosureVersion);
+      await db.initializeUserSettings(
+        cred.user.uid,
+        displayName,
+        neighborhood,
+        detectorDisclosureVersion,
+        termsAcceptedVersion,
+        privacyAcceptedVersion
+      );
 
       this.currentUser = { uid: cred.user.uid, email, displayName, neighborhood, emailVerified: cred.user.emailVerified };
       await this.migrateLegacyAccount(cred.user.uid);
@@ -204,7 +218,11 @@ class AuthService {
    * from it when present; otherwise it's left for the user to set later
    * (Settings), same as the deferred-neighborhood pattern signup.tsx uses.
    */
-  async loginWithApple(detectorDisclosureVersion?: string): Promise<AuthUser> {
+  async loginWithApple(
+    detectorDisclosureVersion?: string,
+    termsAcceptedVersion?: string,
+    privacyAcceptedVersion?: string
+  ): Promise<AuthUser> {
     try {
       console.log('🍎 Starting Sign in with Apple');
 
@@ -264,8 +282,20 @@ class AuthService {
         // That screen does not render the disclosure today, so it passes no
         // version and those accounts land un-consented (excluded from the
         // export — fail-closed, not a leak). Showing the copy on login.tsx too
-        // is a `safety` copy decision, not something to paper over here.
-        await db.initializeUserSettings(cred.user.uid, derivedName, '', detectorDisclosureVersion);
+        // is a `safety` copy decision, not something to paper over here. The
+        // same gap applies to termsAcceptedVersion/privacyAcceptedVersion
+        // below: login.tsx's Apple button does not render the signup
+        // checkbox either, so an account created that way today records no
+        // Terms/Privacy acceptance — same fail-closed shape, same open
+        // decision.
+        await db.initializeUserSettings(
+          cred.user.uid,
+          derivedName,
+          '',
+          detectorDisclosureVersion,
+          termsAcceptedVersion,
+          privacyAcceptedVersion
+        );
       }
       const neighborhood = await this.loadNeighborhood(cred.user.uid);
 

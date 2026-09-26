@@ -2378,11 +2378,16 @@ async function promotedBoundaryCellsFromCleanups() {
 /** Forward-geocode a city name to a representative point via Nominatim —
  *  same client convention (User-Agent, endpoint) already used by the app's
  *  own osmBoundaryByName()/osmNeighborhood() in neighborhoods.ts. */
+let lastNominatimAt = 0;
 async function geocodeCityCentroid(city) {
   try {
+    // Nominatim policy: at most 1 request/sec across sequential calls.
+    const wait = lastNominatimAt + 1000 - Date.now();
+    if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+    lastNominatimAt = Date.now();
     const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(city)}&format=jsonv2&limit=1`;
     const res = await fetch(url, {
-      headers: { 'User-Agent': 'PICK-cleanup-app/1.0 (precache refresh)', Accept: 'application/json' },
+      headers: { 'User-Agent': 'PICK-cleanup-app/1.0 (+https://pickglobal.org; hello@pickglobal.org)', Accept: 'application/json' },
     });
     if (!res.ok) return null;
     const arr = await res.json();

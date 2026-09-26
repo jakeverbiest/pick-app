@@ -52,6 +52,7 @@ import { app } from './firebaseConfig';
 import { getAuthService } from './authService';
 import type { Cleanup } from './firebaseDatabase';
 import { cleanupBags } from './impactMetrics';
+import { metersBetween } from './motionEvaluation';
 
 const db = getFirestore(app);
 
@@ -169,6 +170,53 @@ export function pointInRing(lat: number, lon: number, ring: [number, number][]):
     if (intersects) inside = !inside;
   }
   return inside;
+}
+
+/** Centroid of a ring — the simple mean of its vertices. Good enough at
+ *  neighborhood scale for a distance check (same planar-approximation
+ *  tradeoff `pointInRing` above already takes). */
+export function ringCentroid(ring: [number, number][]): [number, number] {
+  let sumLat = 0, sumLon = 0;
+  for (const [lat, lon] of ring) { sumLat += lat; sumLon += lon; }
+  const n = ring.length || 1;
+  return [sumLat / n, sumLon / n];
+}
+
+/**
+ * How far a drawn ring's centroid may sit from its labeled neighborhood's
+ * real boundary before it's no longer "close enough" — hand-drawn rings are
+ * imprecise near an edge (the legitimate "Saturday Sweep" challenge's
+ * centroid sits 321m from Carroll Gardens' real centroid, well inside its
+ * polygon), but "Da count"'s centroid was 1,329m off and outside the
+ * polygon entirely. 600m sits comfortably between those two measurements.
+ */
+export const HOOD_MISMATCH_SLACK_METERS = 600;
+
+/**
+ * Does a drawn ring plausibly belong to the neighborhood it's labeled with?
+ * Pure and synchronous — `boundary` is the labeled neighborhood's own real
+ * polygon, already looked up by the caller (`challengeNeighborhoodBoundary()`
+ * or `hoodContaining()` in `neighborhoods.ts`); this function does no I/O so
+ * it stays trivially testable.
+ *
+ * Guards the exact gap that produced "Da count" (deleted 2026-09-21): a
+ * custom-drawn ring whose label came from a reverse-geocode of wherever the
+ * phone physically was when the create screen mounted, never checked against
+ * where the ring actually got drawn. `boundary === null` (the lookup found no
+ * shape for the label — no coverage there, a network miss, an unrecognized
+ * name) returns true: an unverifiable label isn't treated as a mismatch, so
+ * a lookup gap never blocks a legitimate save.
+ */
+export function ringMatchesBoundary(
+  ring: [number, number][],
+  boundary: [number, number][] | null,
+): boolean {
+  if (!boundary || boundary.length < 3) return true;
+  if (ring.length < 3) return true; // validateChallenge's own point-count check owns this case
+  const [cLat, cLon] = ringCentroid(ring);
+  if (pointInRing(cLat, cLon, boundary)) return true;
+  const [bLat, bLon] = ringCentroid(boundary);
+  return metersBetween(cLat, cLon, bLat, bLon) <= HOOD_MISMATCH_SLACK_METERS;
 }
 
 /** Does this cleanup fall inside the challenge's area? */

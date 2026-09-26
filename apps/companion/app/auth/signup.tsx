@@ -12,6 +12,8 @@ import {
   DETECTOR_DISCLOSURE_DETAIL,
   PRIVACY_POLICY_TEXT,
   TERMS_OF_SERVICE_TEXT,
+  PRIVACY_LAST_UPDATED,
+  TERMS_LAST_UPDATED,
 } from '../../src/constants/legal';
 
 export default function SignupScreen() {
@@ -37,6 +39,11 @@ export default function SignupScreen() {
   // the case this screen actually has to serve — a group of people installing
   // at the same time because their employer asked them to.
   const [showEmailForm, setShowEmailForm] = useState(false);
+  // Option 2 of docs/TERMS_ACCEPTANCE_OPTIONS.md (2026-09-23): a required
+  // checkbox above both the Apple button and the email submit button. Both
+  // stay disabled — not just visually, but non-functional — until this is
+  // checked, so acceptance is a real affirmative act on either auth path.
+  const [agreedToTerms, setAgreedToTerms] = useState(false);
 
   useEffect(() => {
     if (Platform.OS !== 'ios') return;
@@ -91,9 +98,14 @@ export default function SignupScreen() {
   const [legalDoc, setLegalDoc] = useState<'detail' | 'privacy' | 'terms' | null>(null);
 
   const handleAppleSignup = async () => {
+    // Guard, not the real gate — the real gate is the pointerEvents="none"
+    // wrapper around the Apple button below, which blocks the native view
+    // from receiving the tap at all. This just covers the theoretical case
+    // of onPress firing anyway.
+    if (!agreedToTerms) return;
     try {
       setLoading(true);
-      await getAuthService().loginWithApple(shownDisclosureVersion);
+      await getAuthService().loginWithApple(shownDisclosureVersion, TERMS_LAST_UPDATED, PRIVACY_LAST_UPDATED);
       console.log('✅ Sign in with Apple successful, navigating to home');
       await routeAfterAuth();
     } catch (error: any) {
@@ -119,6 +131,10 @@ export default function SignupScreen() {
   };
 
   const handleSignup = async () => {
+    // Real gate: the button below is `disabled` on !agreedToTerms, but that
+    // guards against Enter/accessibility-action submits that skip the
+    // TouchableOpacity's own disabled handling.
+    if (!agreedToTerms) return;
     if (!validateForm()) return;
 
     try {
@@ -127,7 +143,15 @@ export default function SignupScreen() {
       // Neighborhood is deferred off signup — it's freeform text with no
       // validation/autocomplete here; set later from the map or Settings
       // once the user's real location is known.
-      await authService.signup(email.trim(), password, displayName.trim(), '', shownDisclosureVersion);
+      await authService.signup(
+        email.trim(),
+        password,
+        displayName.trim(),
+        '',
+        shownDisclosureVersion,
+        TERMS_LAST_UPDATED,
+        PRIVACY_LAST_UPDATED
+      );
 
       console.log('✅ Signup successful, navigating to home');
       await routeAfterAuth();
@@ -159,16 +183,57 @@ export default function SignupScreen() {
 
         {/* Form */}
         <View style={styles.form}>
+          {/*
+            Required checkbox, Option 2 of docs/TERMS_ACCEPTANCE_OPTIONS.md.
+            Placed once, above both the Apple button and the email submit
+            button below, so a single tap gates both auth paths identically.
+          */}
+          <TouchableOpacity
+            style={styles.agreeRow}
+            onPress={() => setAgreedToTerms((prev) => !prev)}
+            disabled={loading}
+            accessibilityRole="checkbox"
+            accessibilityState={{ checked: agreedToTerms, disabled: loading }}
+            hitSlop={8}
+          >
+            <View style={[styles.checkbox, agreedToTerms && styles.checkboxChecked]}>
+              {agreedToTerms && <Text style={styles.checkboxMark}>✓</Text>}
+            </View>
+            <Text style={styles.agreeText}>
+              I agree to the{' '}
+              <Text style={styles.agreeLink} onPress={() => setLegalDoc('terms')}>
+                Terms
+              </Text>{' '}
+              and{' '}
+              <Text style={styles.agreeLink} onPress={() => setLegalDoc('privacy')}>
+                Privacy Policy
+              </Text>
+            </Text>
+          </TouchableOpacity>
+
           {/* Fastest path first. See the showEmailForm comment above. */}
           {appleAvailable && (
             <>
-              <AppleAuthentication.AppleAuthenticationButton
-                buttonType={AppleAuthentication.AppleAuthenticationButtonType.SIGN_UP}
-                buttonStyle={AppleAuthentication.AppleAuthenticationButtonStyle.BLACK}
-                cornerRadius={radius.button}
-                style={styles.appleBtn}
-                onPress={handleAppleSignup}
-              />
+              {/*
+                pointerEvents="none" is the REAL gate — AppleAuthenticationButton
+                has no `disabled` prop (it wraps a native ASAuthorizationAppleIDButton
+                view, not a plain RN Touchable), so the only way to make it
+                actually non-functional rather than just dimmed is to stop the
+                tap from reaching the native view at all. The onPress guard in
+                handleAppleSignup is defense-in-depth, not the primary gate.
+              */}
+              <View
+                pointerEvents={agreedToTerms ? 'auto' : 'none'}
+                style={!agreedToTerms && styles.appleBtnDisabled}
+              >
+                <AppleAuthentication.AppleAuthenticationButton
+                  buttonType={AppleAuthentication.AppleAuthenticationButtonType.SIGN_UP}
+                  buttonStyle={AppleAuthentication.AppleAuthenticationButtonStyle.BLACK}
+                  cornerRadius={radius.button}
+                  style={styles.appleBtn}
+                  onPress={handleAppleSignup}
+                />
+              </View>
               {!showEmailForm && (
                 <TouchableOpacity
                   onPress={() => setShowEmailForm(true)}
@@ -237,11 +302,13 @@ export default function SignupScreen() {
             <Text style={styles.hint}>At least 6 characters</Text>
           )}
 
-          {/* Signup Button */}
+          {/* Signup Button — disabled prop actually blocks TouchableOpacity's
+              onPress, not just the dimmed style; see handleSignup's own guard
+              for the accessibility-action edge case. */}
           <TouchableOpacity
-            style={[styles.signupButton, loading && styles.buttonDisabled]}
+            style={[styles.signupButton, (loading || !agreedToTerms) && styles.buttonDisabled]}
             onPress={handleSignup}
-            disabled={loading}
+            disabled={loading || !agreedToTerms}
           >
             {loading ? (
               <ActivityIndicator color="#fff" />
@@ -440,7 +507,46 @@ const styles = StyleSheet.create({
   dividerRow: { flexDirection: 'row', alignItems: 'center', marginTop: 6, gap: 10 },
   dividerLine: { flex: 1, height: 1, backgroundColor: C.border },
   dividerText: { fontFamily: Fonts.body, color: C.muted, fontSize: 12 },
+  agreeRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 10,
+    paddingBottom: 4,
+  },
+  checkbox: {
+    width: 20,
+    height: 20,
+    borderRadius: 4,
+    borderWidth: 1.5,
+    borderColor: C.border,
+    backgroundColor: C.white,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 1,
+  },
+  checkboxChecked: {
+    backgroundColor: C.primary,
+    borderColor: C.primary,
+  },
+  checkboxMark: {
+    color: C.creamText,
+    fontSize: 13,
+    fontFamily: Fonts.bodyBold,
+  },
+  agreeText: {
+    flex: 1,
+    fontFamily: Fonts.body,
+    fontSize: 13,
+    lineHeight: 19,
+    color: C.dark,
+  },
+  agreeLink: {
+    fontFamily: Fonts.bodySemibold,
+    color: C.rust,
+    textDecorationLine: 'underline',
+  },
   appleBtn: { height: 50, width: '100%' },
+  appleBtnDisabled: { opacity: 0.4 },
   altToggle: { alignSelf: 'center', paddingVertical: 12, paddingHorizontal: 8 },
   altToggleText: { fontFamily: Fonts.body, color: C.muted, fontSize: 14, textDecorationLine: 'underline' },
   disclosure: {

@@ -13,6 +13,7 @@ import { itemsToBags, reportedBags, formatBags, formatKitchenBags, BAG_SIZE_OPTI
 import { BagDetails } from '../../src/pick/BagDetails';
 import { getCoverage, markRouteCleaned, getParkCoverage, markParksCleaned, getTileStats, tileId, getCoverageForRing, routeCoverageFraction, nearestStreetSegment, assignRoutePointsToNearestSegment, SNAP_DISTANCE_M, COVERAGE_THRESHOLD, type RenderSegment } from '../../src/services/streetSegments';
 import { saveAdoptedBlock, listMyAdoptions } from '../../src/services/adoptions';
+import { nominatimFetch } from '../../src/services/nominatim';
 import { osmNeighborhood, getHoodsInBounds, getOsmHoodsInBounds, hoodLabelsNeeded, hasNeighborhoods, polygonStats, HoodShape, citySlug, isFallbackCityWithNoSubdivision, hoodContaining } from '../../src/services/neighborhoods';
 import { getFunctions, httpsCallable } from 'firebase/functions';
 import { app } from '../../src/services/firebaseConfig';
@@ -22,6 +23,7 @@ import Constants from 'expo-constants';
 import { startBackgroundSession, stopBackgroundSession, drainBackgroundLocations, isBackgroundLocationTaskRunning } from '../../src/services/backgroundSession';
 import { beginSessionTrace, heartbeat, endSessionTrace, isSessionActiveFresh } from '../../src/services/crashRecorder';
 import { startMotionDiagnostics, stopMotionDiagnostics, recordMotionDiagnostic, motionDiagnosticStatus, subscribeMotionDiagnostics } from '../../src/services/motionDiagnostics';
+import { saveCleanupThenClearDraft } from '../../src/services/cleanupSave';
 import { saveWalkDraft, loadWalkDraft, clearWalkDraft, subscribeToWalkRestore, type WalkDraft } from '../../src/services/sessionRecovery';
 import { getSessionShadow } from '../../src/cleanup-session/sessionShadow'; // [session-shadow]
 import { startPresence, pingPresence, endPresence, getLiveWalks } from '../../src/services/presence';
@@ -100,6 +102,8 @@ export default function MapScreen() {
   const fgWarnedRef = useRef(false);
   const [showSummary, setShowSummary] = useState(false);
   const [showResults, setShowResults] = useState(false);
+  const [savingCleanup, setSavingCleanup] = useState(false);
+  const savingCleanupRef = useRef(false);
   const [photoUri, setPhotoUri] = useState<string | null>(null);
   const [neighborhood, setNeighborhood] = useState('');
   const [communitySharing, setCommunitySharing] = useState(true);
@@ -2236,17 +2240,13 @@ export default function MapScreen() {
       );
       return;
     }
-    setShowSummary(false);
-    // One-screen close (design audit): no "Cleanup saved" recap step. If a
-    // photo needs a manual community post, open that sheet; otherwise the
-    // walk just finishes. The recap modal remains only as the community
-    // compose host + session export (dev).
-    if (photoUri && communitySharing && !communityAutoPost) {
-      setShowResults(true);
-    } else {
-      finishSession();
-    }
-
+    // Do NOT close the summary or clear the recovery draft yet. The draft is the
+    // only copy of this walk until addCleanup succeeds; on failure the summary
+    // stays open so "Save & log" can simply be tapped again.
+    if (savingCleanupRef.current) return;
+    savingCleanupRef.current = true;
+    setSavingCleanup(true);
+    let saved = false;
     try {
       // The user's bag report wins; otherwise derive bags from the pickup count.
       const finalBags = bagReported
@@ -2318,7 +2318,7 @@ export default function MapScreen() {
         area = { city, neighborhood: neighborhood || city };
       } catch {}
 
-      await db.addCleanup({
+      const saveResult = await saveCleanupThenClearDraft(() => db.addCleanup({
         timestamp: Date.now(),
         location_lat: centerLat,
         location_lon: centerLon,
@@ -2405,7 +2405,26 @@ export default function MapScreen() {
         // mechanism, unlike walkIntent) to 0 with nothing to restore it from.
         // Not yet acted on — this exists to confirm or rule that out first.
         screen_remounts: screenRemountsThisWalk,
-      } as any);
+      } as any), async () => {
+        await clearWalkDraft();
+        void sessionShadow.observeDraftCleared('saved'); // [session-shadow] runs only after addCleanup resolved (main 8011764 ordering)
+      });
+
+      if (!saveResult.ok) {
+        console.error('Failed to save cleanup:', saveResult.error);
+        showSaveFailedAlert();
+        return;
+      }
+      saved = true;
+      // Saved (the DB layer caches offline and syncs later) and the draft is
+      // already cleared. Only now close the summary. One-screen close (design
+      // audit): no recap step unless a photo needs a manual community post.
+      setShowSummary(false);
+      if (photoUri && communitySharing && !communityAutoPost) {
+        setShowResults(true);
+      } else {
+        finishSession();
+      }
 
       const updatedStats = await db.getCleanupStats();
       setStats(updatedStats);
@@ -2427,12 +2446,6 @@ export default function MapScreen() {
           await syncWeeklyGoalReminder({ done: computeStreak(ts).thisCalendarWeek, goal: await getWeeklyGoal() });
         } catch {}
       })();
-
-      // Walk is now durably saved (the DB layer caches offline with synced=false
-      // and syncs later), so the recovery draft can be dropped. If addCleanup
-      // above threw, we skip this and the draft survives for next-launch restore.
-      clearWalkDraft();
-      void sessionShadow.observeDraftCleared('saved'); // [session-shadow]
 
       // Mark walked street segments AND any park walked through as cleaned.
       if (sessionRoute.length > 0) {
@@ -2485,9 +2498,22 @@ export default function MapScreen() {
         );
       }
     } catch (error) {
-      console.error('Failed to save cleanup:', error);
+      console.error(saved ? 'Post-save step failed (walk is saved):' : 'Failed to save cleanup:', error);
+      // A failure BEFORE the save leaves the draft and summary intact — tell
+      // the user. After the save it is a non-fatal side effect; stay quiet.
+      if (!saved) showSaveFailedAlert();
+    } finally {
+      savingCleanupRef.current = false;
+      setSavingCleanup(false);
     }
   };
+
+  const showSaveFailedAlert = () =>
+    Alert.alert(
+      "Couldn't save your walk",
+      'Your walk has not been lost — it is still on this screen and stored on your phone. Check your connection and tap Save & log to try again.',
+      [{ text: 'OK' }],
+    );
 
   const formatTime = (seconds: number) => {
     const hrs = Math.floor(seconds / 3600);
@@ -2648,9 +2674,7 @@ Generated by Pick App - Share this with the development team
     setCitySearching(true);
     try {
       const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(query)}&format=jsonv2&limit=6&addressdetails=1`;
-      const res = await fetch(url, {
-        headers: { 'User-Agent': 'PICK-cleanup-app/1.0 (city search)', Accept: 'application/json' },
-      });
+      const res = await nominatimFetch(url);
       if (res.ok) {
         const arr: any[] = await res.json();
         const results = (arr || [])
@@ -4171,8 +4195,8 @@ ${MAPLIBRE_ANCHOR_FN}
                 </TouchableOpacity>
               )}
 
-              <TouchableOpacity style={styles.primarySave} onPress={saveSummary} activeOpacity={0.85}>
-                <Text style={styles.primarySaveText}>Save & log</Text>
+              <TouchableOpacity style={[styles.primarySave, savingCleanup && { opacity: 0.6 }]} onPress={saveSummary} disabled={savingCleanup} activeOpacity={0.85}>
+                <Text style={styles.primarySaveText}>{savingCleanup ? 'Saving…' : 'Save & log'}</Text>
               </TouchableOpacity>
               <TouchableOpacity
                 style={styles.discardLink}
